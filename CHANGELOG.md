@@ -33,6 +33,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
+- Cardmarket's price guides, Europe's prices in euros for every game Cardmarket sells (Magic, Flesh and Blood,
+  One Piece, and 17 more) and its accessories: each product's low, average, and trend prices and its 1-, 7-, and
+  30-day averages, foils too, sealed products included. `riffle ingest prices` and `riffle sync` keep each game's
+  guide once per day Cardmarket makes one, gzipped as returned, in
+  `~/.local/share/riffle/cardmarket/daily/<day>/<game>.json.gz`, `<day>` being Cardmarket's own date for it. A
+  guide under 20 hours old isn't asked for again. Each game fetched is a step of its own; Magic, Flesh and Blood,
+  and One Piece fail when Cardmarket has no guide for them, and the rest are skipped then. If Cardmarket doesn't
+  answer at all, the games after it fail at once instead of each waiting out its own retries.
 - GoatBots' MTGO prices, from a large MTGO bot chain beside Cardhoarder (whose prices Scryfall and MTGJSON carry):
   `riffle ingest prices` and `riffle sync` keep its average sell price in tix for every MTGO card it trades, once
   per day it publishes, in `~/.local/share/riffle/goatbots/daily/<day>.zip`, and its card definitions (name, set,

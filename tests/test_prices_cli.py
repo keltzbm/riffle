@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from riffle import net
 from riffle.cli import app
-from riffle.ingest import goatbots, mtgjson, scryfall, scryfall_catalog, tcgcsv
+from riffle.ingest import cardmarket, goatbots, mtgjson, scryfall, scryfall_catalog, tcgcsv
 
 
 def fake_snapshot(fetched: dict[str, int], failed: dict[str, str] | None = None):
@@ -28,8 +28,8 @@ def fake_snapshot(fetched: dict[str, int], failed: dict[str, str] | None = None)
 
 
 def fake_source(label: str, outcome: tuple[str, str] = ("ok", "already have 2026-09-24")):
-    """A stand-in for a price source's snapshot (mtgjson, goatbots) that reports one step; the
-    real ones report one or more."""
+    """A stand-in for a price source's snapshot (mtgjson, goatbots, cardmarket) that reports one
+    step; the real ones report one or more."""
 
     def snapshot(tracker):
         step = tracker.step(label, unit="bytes")
@@ -43,9 +43,10 @@ def fake_source(label: str, outcome: tuple[str, str] = ("ok", "already have 2026
 
 @pytest.fixture(autouse=True)
 def quiet_sources(monkeypatch):
-    """No test here reaches MTGJSON or GoatBots; tests that care replace these."""
+    """No test here reaches MTGJSON, GoatBots, or Cardmarket; tests that care replace these."""
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices"))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices"))
+    monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg"))
 
 
 def test_ingest_prices_reports_every_source(monkeypatch):
@@ -56,6 +57,9 @@ def test_ingest_prices_reports_every_source(monkeypatch):
     monkeypatch.setattr(
         goatbots, "snapshot", fake_source("GoatBots prices", ("ok", "kept 2026-09-24, 76,070 prices"))
     )
+    monkeypatch.setattr(
+        cardmarket, "snapshot", fake_source("Cardmarket mtg", ("ok", "kept 2026-09-24, 98,512 products"))
+    )
     monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"fab": 105, "op": 87}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 0, result.output
@@ -64,8 +68,9 @@ def test_ingest_prices_reports_every_source(monkeypatch):
     assert "  Scryfall prices: kept 2026-09-24 (" in lines[1]
     assert "  MTGJSON prices: kept 2026-09-24, 5.2 MB (" in lines[2]
     assert "  GoatBots prices: kept 2026-09-24, 76,070 prices (" in lines[3]
-    assert "  tcgcsv fab: 105 groups (" in lines[4] and "  tcgcsv op: 87 groups (" in lines[5]
-    assert lines[6] == "tcgcsv prices: 2026-09-24 · 193 requests"
+    assert "  Cardmarket mtg: kept 2026-09-24, 98,512 products (" in lines[4]
+    assert "  tcgcsv fab: 105 groups (" in lines[5] and "  tcgcsv op: 87 groups (" in lines[6]
+    assert lines[7] == "tcgcsv prices: 2026-09-24 · 193 requests"
 
 
 def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
@@ -78,15 +83,17 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     monkeypatch.setattr(scryfall, "snapshot_prices", no_bulk)
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices", ("fail", "Meta.json: HTTP 404")))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices", ("fail", "HTTP 403")))
+    monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg", ("fail", "HTTP 503")))
     monkeypatch.setattr(tcgcsv, "snapshot", down)
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
     assert "! Scryfall prices: no bulk file yet — run: riffle ingest scryfall" in result.output
     assert "! MTGJSON prices: Meta.json: HTTP 404" in result.output
     assert "! GoatBots prices: HTTP 403" in result.output
+    assert "! Cardmarket mtg: HTTP 503" in result.output
     assert "! tcgcsv prices: no answer after 3 tries" in result.output
     assert result.output.rstrip().endswith(
-        "4 steps failed: Scryfall prices, MTGJSON prices, GoatBots prices, tcgcsv prices"
+        "5 steps failed: Scryfall prices, MTGJSON prices, GoatBots prices, Cardmarket mtg, tcgcsv prices"
     )
 
 
@@ -97,11 +104,13 @@ def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypat
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-24.jsonl.gz"), False))
     monkeypatch.setattr(mtgjson, "snapshot", full)
     monkeypatch.setattr(goatbots, "snapshot", full)
+    monkeypatch.setattr(cardmarket, "snapshot", full)
     monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"mtg": 456}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
     assert "! MTGJSON prices: [Errno 28] No space left on device" in result.output
     assert "! GoatBots prices: [Errno 28] No space left on device" in result.output
+    assert "! Cardmarket prices: [Errno 28] No space left on device" in result.output
     assert "  tcgcsv mtg: 456 groups (" in result.output
 
 

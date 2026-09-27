@@ -95,8 +95,8 @@ them.
 ## Price history (every game)
 
 ```bash
-riffle ingest prices                        # today's prices: tcgcsv for every game, Scryfall and MTGJSON for
-                                            # Magic, GoatBots for MTGO
+riffle ingest prices                        # today's prices: tcgcsv and Cardmarket for every game, Scryfall
+                                            # and MTGJSON for Magic, GoatBots for MTGO
 ```
 
 Riffle keeps its own price history, one snapshot a day, stored as the sources
@@ -125,6 +125,10 @@ returned it under `~/.local/share/riffle/`:
   keeps only the last few years, so the first sync keeps every one it still
   has, and this year's again, whole, once the year is over; `<year>.none`
   marks the year before the oldest it has, so it isn't asked for again.
+- `cardmarket/daily/<day>/<game>.json.gz` — Cardmarket's price guide for every
+  game it sells, and its accessories, in euros: each product's low, average, and
+  trend prices, and its averages over 1, 7, and 30 days, foils too. A guide under
+  20 hours old isn't asked for again, so a rerun costs nothing.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
