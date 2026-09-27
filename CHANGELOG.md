@@ -33,6 +33,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
+- Card Kingdom's whole price list, once a day: for every Magic single it lists, what it sells it for and how many
+  it has in each condition (NM, EX, VG, G), foil and etched too, and what it pays and how many it wants; for every
+  sealed product, the same without conditions. MTGJSON carries only its Near Mint sell price and its buy price,
+  each only while it has copies or wants them, and nothing about the other conditions or quantities.
+  `riffle ingest prices` and `riffle sync` keep `/api/v2/pricelist` and `/api/sealed_pricelist` as returned,
+  gzipped, in `~/.local/share/riffle/cardkingdom/daily/<day>/`, `<day>` being the Mac's date, since the list's
+  `created_at` has no time zone to go by. A list kept today isn't asked for again; each is checked at both ends to
+  look like one whole JSON object with a `data` key first.
 - Cardmarket's price guides, Europe's prices in euros for every game Cardmarket sells (Magic, Flesh and Blood,
   One Piece, and 17 more) and its accessories: each product's low, average, and trend prices and its 1-, 7-, and
   30-day averages, foils too, sealed products included. `riffle ingest prices` and `riffle sync` keep each game's

@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from riffle import cli, net
 from riffle.cli import app
-from riffle.ingest import cardmarket, goatbots, mtgjson, scryfall, scryfall_catalog, tcgcsv
+from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, scryfall_catalog, tcgcsv
 from riffle.progress import Watched
 
 NOTE = "---\ngame: mtg\nformat: modern\n---\n\n## Moxfield import\n\n```\n4 Lightning Bolt\n```\n"
@@ -122,6 +122,7 @@ def online_steps(monkeypatch, calls, refresh_fails=False):
     monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson"))
     monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots"))
     monkeypatch.setattr(cardmarket, "snapshot", lambda tracker: calls.append("cardmarket"))
+    monkeypatch.setattr(pricelists, "snapshot", lambda lists, tracker: calls.append(lists[0].store))
     monkeypatch.setattr(tcgcsv, "snapshot", snapshot)
 
 
@@ -144,7 +145,7 @@ def test_a_network_that_comes_up_late_is_waited_for(vault, monkeypatch):
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 0, result.output
     assert "network: up after 20.0s" in result.output
-    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "tcgcsv"]
+    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "tcgcsv"]
 
 
 def test_a_network_that_is_up_goes_unmentioned(vault, monkeypatch):
@@ -161,7 +162,7 @@ def test_a_failed_download_doesnt_stop_the_sync(vault, monkeypatch):
     online_steps(monkeypatch, calls, refresh_fails=True)
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 1, result.output
-    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "tcgcsv"]
+    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "tcgcsv"]
     assert "1 decks · 2 notes updated" in result.output
     assert result.output.rstrip().endswith("1 step failed: Scryfall bulk data")
 

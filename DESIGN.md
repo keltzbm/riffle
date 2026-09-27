@@ -23,7 +23,7 @@ Both are the same bug: **name is not a key.**
 |---|---|
 | Key cards by Riffle's `card_id` | Names collide and differ across printings. Resolve once, at the edge. The ID is derived from Scryfall's `oracle_id` and outlives it. |
 | Scryfall bulk JSON, not scraping (MTGO decklists are the one scrape — no API exists) | Daily, authoritative, includes legalities and prices — **paper USD and MTGO tix** (Scryfall sources tix from Cardhoarder). |
-| Price history is our own daily snapshot, stored raw | tcgcsv took its bulk archive down in September 2026, so its history can't be backfilled. Each day Riffle fetches every set's price file for the games it covers (one file at a time, once a day, as tcgcsv asks), keeps Scryfall's prices for Magic, keeps MTGJSON's, several stores in one file, whose 90-day file starts Magic's history three months back, keeps GoatBots' MTGO prices, with its yearly archives for the years before, and keeps Cardmarket's price guide for every game it sells and its accessories. Files are stored as returned so any later loader can re-read them. |
+| Price history is our own daily snapshot, stored raw | tcgcsv took its bulk archive down in September 2026, so its history can't be backfilled. Each day Riffle fetches every set's price file for the games it covers (one file at a time, once a day, as tcgcsv asks), keeps Scryfall's prices for Magic, keeps MTGJSON's, several stores in one file, whose 90-day file starts Magic's history three months back, keeps GoatBots' MTGO prices, with its yearly archives for the years before, keeps Cardmarket's price guide for every game it sells and its accessories, and keeps Card Kingdom's whole price list, every condition and quantity. Files are stored as returned so any later loader can re-read them. |
 | Postgres for the system of record (v0.4.0) | Constraints, transactions, and many writers; the catalog and events move there patch by patch. Migrations (Alembic) ship inside the package, and a test checks they build exactly what the ORM models define. |
 | Riffle's own IDs, derived from the source's | Cards, printings, and sets get a UUIDv5 of a fixed namespace and the creating source's ID (`db/ids.py`): the same on every machine, so the catalog can be rebuilt from its sources. One source per game creates rows (Scryfall for Magic); others only map their IDs onto them in `external_ids`. |
 | Loads stage, then merge | COPY into temporary tables, ANALYZE them, then one join-filtered upsert per table (`db/catalog.py`): only new and changed rows are written, so a repeat load writes nothing. Rows the source stops listing are retired, never deleted. |
@@ -76,7 +76,7 @@ src/riffle/
 ├── sync.py         the work behind `riffle sync`, CLI- and DB-free
 ├── models/         Printing, Prices, Deck, DeckEntry, Holding
 ├── ingest/         scryfall, scryfall_catalog (bulk file → Postgres), manabox, decklist, arena, mtgo, tcgcsv,
-│                   mtgjson, goatbots, cardmarket
+│                   mtgjson, goatbots, cardmarket, pricelists (whole store price lists)
 ├── store/          Catalog protocol + Postgres implementation
 ├── db/             Postgres: engine, ORM models, migrations, `db up`, ids (derived IDs, aliases.toml),
 │                   catalog (the stage-and-merge loader any game's source uses)
