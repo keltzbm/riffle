@@ -33,11 +33,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
-- Daily price snapshots, Riffle's own price history: `riffle ingest prices` (and `riffle sync`) fetch every
-  set's TCGplayer price file from tcgcsv.com for Magic, Flesh and Blood, and One Piece, one file at a time and
-  once per day, into `~/.local/share/riffle/tcgcsv/daily/<day>/<game>/`, and keep each Magic printing's
-  Scryfall prices from the bulk file already downloaded, in `scryfall/daily/<day>.jsonl.gz`. Files are stored
-  as the sources returned them. Game category IDs are looked up on tcgcsv by name, never hard-coded.
+- Daily price snapshots, Riffle's own price history: `riffle ingest prices` (and `riffle sync`) fetch every set's
+  TCGplayer price file from tcgcsv.com for every card game it carries, about 60 of its 94 categories (the rest
+  are comics, supplies, miniatures, and board games), one file at a time and once per day, into
+  `~/.local/share/riffle/tcgcsv/daily/<day>/<game>/`, and keep each Magic printing's Scryfall prices from the
+  bulk file already downloaded, in `scryfall/daily/<day>.jsonl.gz`. Files are stored as the sources returned
+  them. Magic, Flesh and Blood, and One Piece are looked up on tcgcsv by name and get a progress step each; every
+  other game shares one step and is named by its category (`yugioh`, `pokemon-japan`). A run stays under 9,000
+  requests, tcgcsv's limit being 10,000 a day.
 - CI on GitHub Actions for every push to `main` and every pull request: `ruff check`, `ruff format --check`,
   and the test suite on Linux and macOS with Python 3.12, 3.13, and 3.14 (the versions `requires-python`
   allows).
