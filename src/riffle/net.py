@@ -6,9 +6,16 @@ for Retry-After when the server sends one — before the next try. A 404 is an
 answer, not a failure: callers get None and decide what "missing" means.
 
 Downloads stream to <dest>.part and are renamed into place only when
-complete, so an interrupted run never leaves a truncated file.
+complete, so an interrupted run never leaves a truncated file. An answer cut
+off partway is a FetchError like any other failure: a connection dropped or
+timed out mid-read, a chunked answer that ends early (http.client's
+IncompleteRead, which isn't an OSError), or a download that ends short of its
+Content-Length (http.client just stops reading there). A host that gives no
+answer at all, try after try, is a NoAnswer, so a source asking it for many
+files can stop there instead of waiting out each one.
 """
 
+import http.client
 import socket
 import time
 import urllib.error
@@ -27,6 +34,15 @@ Progress = Callable[[int, int | None], None]  # (bytes so far, total bytes if kn
 
 class FetchError(RuntimeError):
     """A source didn't answer, or answered with an error that retrying won't fix."""
+
+
+class NoAnswer(FetchError):
+    """No answer at all, however many tries: the host is down or unreachable, so a source's
+    other requests won't do better this run."""
+
+
+def _why(e: BaseException) -> str:
+    return str(e) or type(e).__name__
 
 
 def _retry_after(e: urllib.error.HTTPError) -> float | None:
@@ -50,9 +66,11 @@ def _open(url: str, accept: str, timeout: float, retries: int):
             if e.code not in RETRY_STATUS or attempt == retries:
                 raise FetchError(f"HTTP {e.code}") from e
             wait = _retry_after(e) or backoff
-        except (TimeoutError, urllib.error.URLError, ConnectionError) as e:
+        except (OSError, http.client.HTTPException) as e:  # timeouts, refusals, resets, a garbled answer
             if attempt == retries:
-                raise FetchError(f"no answer after {retries + 1} tries ({getattr(e, 'reason', e)})") from e
+                raise NoAnswer(
+                    f"no answer after {retries + 1} tries ({getattr(e, 'reason', None) or _why(e)})"
+                ) from e
             wait = backoff
         time.sleep(wait)
     raise AssertionError("unreachable")
@@ -78,7 +96,10 @@ def get(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) ->
     if r is None:
         return None
     with r:
-        return r.read()
+        try:
+            return r.read()  # a short Content-Length body raises IncompleteRead here
+        except (OSError, http.client.HTTPException) as e:
+            raise FetchError(f"answer broke off while reading ({_why(e)})") from e
 
 
 def get_text(url: str, accept: str = "text/html", timeout: float = 60, retries: int = 2) -> str:
@@ -113,11 +134,17 @@ def download(
                 done += len(chunk)
                 if progress:
                     progress(done, total)
-    except OSError as e:  # includes timeouts and dropped connections mid-stream
+    except (
+        OSError,
+        http.client.HTTPException,
+    ) as e:  # timeouts, dropped connections, a cut-off chunked answer
         tmp.unlink(missing_ok=True)
-        raise FetchError(f"download interrupted after {done:,} bytes ({e})") from e
+        raise FetchError(f"download interrupted after {done:,} bytes ({_why(e)})") from e
     except BaseException:  # Ctrl-C: leave nothing half-written behind
         tmp.unlink(missing_ok=True)
         raise
+    if total is not None and done != total:
+        tmp.unlink(missing_ok=True)
+        raise FetchError(f"download cut off after {done:,} of {total:,} bytes")
     tmp.replace(dest)
     return done
