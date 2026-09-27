@@ -170,7 +170,7 @@ def test_pretty_printed_response_still_takes_one_line(data_dir, sleeps):
     assert lines(path)[0] == {"groupId": 100, "response": json.loads(prices(1))}
 
 
-def test_default_games_are_the_three_riffle_covers():
+def test_the_games_with_a_step_of_their_own_are_the_three_played():
     assert list(tcgcsv.GAMES) == ["mtg", "fab", "op"]
 
 
@@ -192,3 +192,94 @@ def test_a_stored_game_is_a_finished_step(data_dir, sleeps, tracker):
 def test_an_unknown_category_fails_its_step(data_dir, sleeps, tracker):
     tcgcsv.snapshot({"xx": "Nope"}, fetch=fake_fetch(fab_answers())[0], tracker=tracker)
     assert tracker.outcomes() == {"tcgcsv xx": ("fail", "tcgcsv has no category named 'Nope'")}
+
+
+# ---- every card game --------------------------------------------------------------------
+
+EVERY_CAT = json.dumps(
+    {
+        "success": True,
+        "errors": [],
+        "results": [
+            {"categoryId": 1, "name": "Magic"},
+            {"categoryId": 62, "name": "Flesh & Blood TCG"},
+            {"categoryId": 68, "name": "One Piece Card Game"},
+            {"categoryId": 2, "name": "YuGiOh"},
+            {"categoryId": 85, "name": "Pokemon Japan"},
+            {"categoryId": 69, "name": "Marvel Comics"},
+            {"categoryId": 31, "name": "Card Sleeves"},
+        ],
+    }
+).encode()
+
+
+def every_game_answers(**overrides):
+    answers = fab_answers(
+        **{
+            f"{B}/tcgplayer/categories": EVERY_CAT,
+            f"{B}/tcgplayer/1/groups": groups(10),
+            f"{B}/tcgplayer/1/10/prices": prices(1),
+            f"{B}/tcgplayer/68/groups": groups(7),
+            f"{B}/tcgplayer/68/7/prices": prices(9),
+            f"{B}/tcgplayer/2/groups": groups(21, 20),
+            f"{B}/tcgplayer/2/20/prices": prices(5),
+            f"{B}/tcgplayer/2/21/prices": prices(6),
+            f"{B}/tcgplayer/85/groups": groups(30),
+            f"{B}/tcgplayer/85/30/prices": prices(8),
+        }
+    )
+    answers.update(overrides)
+    return answers
+
+
+def test_card_games_leave_out_comics_supplies_and_miniatures():
+    cats = [*json.loads(EVERY_CAT)["results"], {"x": 1}]
+    assert tcgcsv.card_games(cats) == {
+        "magic": 1,
+        "flesh-blood-tcg": 62,
+        "one-piece-card-game": 68,
+        "yugioh": 2,
+        "pokemon-japan": 85,
+    }
+
+
+def test_by_default_every_card_game_is_kept(data_dir, sleeps, tracker):
+    fetch, asked = fake_fetch(every_game_answers())
+    snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
+    assert snap.fetched == ["mtg", "fab", "op", "yugioh", "pokemon-japan"] and not snap.failed
+    day = tcgcsv.daily_dir() / "2026-09-24"
+    assert (day / "categories.json").read_bytes() == EVERY_CAT
+    assert lines(day / "pokemon-japan" / "prices.jsonl.gz") == [
+        {"groupId": 30, "response": json.loads(prices(8))}
+    ]
+    assert not [
+        url for url in asked if "/69/" in url or "/31/" in url
+    ]  # comics and sleeves aren't card games
+    more = next(step for step in tracker.steps if step.label == "tcgcsv 2 more games")
+    assert more.outcome == ("ok", "2 games, 3 groups")
+    assert (more.unit, more.updates[0], more.updates[-1]) == ("groups", (0, 3), (3, None))
+    assert tracker.outcomes()["tcgcsv mtg"] == ("ok", "1 group")
+
+
+def test_a_rerun_the_same_day_costs_one_request(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(fetch=fake_fetch(every_game_answers())[0])
+    fetch, asked = fake_fetch(every_game_answers())
+    snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
+    assert asked == [f"{B}/last-updated.txt"]  # the day's category list is kept too
+    assert tracker.outcomes()["tcgcsv 2 more games"] == ("ok", "already have 2026-09-24")
+    assert sorted(snap.skipped) == ["fab", "mtg", "op", "pokemon-japan", "yugioh"]
+
+
+def test_the_other_games_fail_one_at_a_time(data_dir, sleeps, tracker):
+    fetch, _ = fake_fetch(every_game_answers(**{f"{B}/tcgplayer/2/21/prices": net.FetchError("HTTP 503")}))
+    snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
+    assert snap.failed == [("yugioh", "HTTP 503")] and "pokemon-japan" in snap.fetched
+    assert not tcgcsv.day_dir(DAY, "yugioh").joinpath("prices.jsonl.gz").exists()  # the next run tries again
+    assert tracker.outcomes()["tcgcsv 2 more games"] == ("fail", "1 game, 1 group; 1 failed: yugioh")
+
+
+def test_games_past_the_daily_request_budget_wait_a_day(data_dir, sleeps, monkeypatch):
+    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 12)  # yugioh would be requests 12 and 13
+    snap = tcgcsv.snapshot(fetch=fake_fetch(every_game_answers())[0])
+    assert snap.failed == [("yugioh", tcgcsv.OVER_BUDGET)] and "pokemon-japan" in snap.fetched
+    assert snap.requests == 12

@@ -102,8 +102,9 @@ Riffle keeps its own price history, one snapshot a day, stored as the sources
 returned it under `~/.local/share/riffle/`:
 
 - `tcgcsv/daily/<day>/<game>/` — every set's TCGplayer price file from
-  tcgcsv.com for Magic, Flesh and Blood, and One Piece, fetched one file at a
-  time, once per day (tcgcsv's own rule since it took its bulk archive down).
+  tcgcsv.com for every card game it carries (about 60; not its comics, supplies,
+  or miniatures), fetched one file at a time, once per day (tcgcsv's own rule
+  since it took its bulk archive down).
 - `scryfall/daily/<day>.jsonl.gz` — each Magic printing's prices (USD, EUR,
   MTGO tix) from the Scryfall bulk file the sync already downloads.
 
