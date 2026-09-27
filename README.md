@@ -95,7 +95,8 @@ them.
 ## Price history (every game)
 
 ```bash
-riffle ingest prices                        # today's prices: tcgcsv for every game, Scryfall and MTGJSON for Magic
+riffle ingest prices                        # today's prices: tcgcsv for every game, Scryfall and MTGJSON for
+                                            # Magic, GoatBots for MTGO
 ```
 
 Riffle keeps its own price history, one snapshot a day, stored as the sources
@@ -115,6 +116,15 @@ returned it under `~/.local/share/riffle/`:
   it. The first sync keeps one, so the history starts three months back;
   a day missed after that (the Mac was off) comes back with the next one, kept
   when a day is missing, at most every 30 days.
+- `goatbots/daily/<day>.zip` — GoatBots' average sell price in tix for every
+  MTGO card it trades; GoatBots is a large MTGO bot chain beside Cardhoarder,
+  whose prices Scryfall and MTGJSON carry. `goatbots/card-definitions.zip`
+  names each MTGO ID it prices: name, set, rarity, and foil.
+- `goatbots/yearly/<year>.zip` — GoatBots' archive of every day in a year, or
+  `<year>-partial.zip` for this year, as it stood when first kept. GoatBots
+  keeps only the last few years, so the first sync keeps every one it still
+  has, and this year's again, whole, once the year is over; `<year>.none`
+  marks the year before the oldest it has, so it isn't asked for again.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.

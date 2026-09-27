@@ -33,6 +33,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
+- GoatBots' MTGO prices, from a large MTGO bot chain beside Cardhoarder (whose prices Scryfall and MTGJSON carry):
+  `riffle ingest prices` and `riffle sync` keep its average sell price in tix for every MTGO card it trades, once
+  per day it publishes, in `~/.local/share/riffle/goatbots/daily/<day>.zip`, and its card definitions (name, set,
+  rarity, and foil for each MTGO ID it prices) in `goatbots/card-definitions.zip`, fetched again while they're
+  older than the newest day. The first run also keeps its yearly archives of every day, from this year back to the
+  first year it has none for (marked `<year>.none`); GoatBots keeps only the last few years, so what it still has
+  is kept now. This year's archive is kept as it stands (`<year>-partial.zip`) and again, whole, once the year is
+  over. Zips are kept as returned, after checking they hold what they should; one that doesn't says what it held.
 - MTGJSON prices for Magic, several stores in one file: Card Kingdom's retail and buylist prices, TCGplayer,
   Mana Pool, Cardmarket (EUR), and Cardhoarder (MTGO tix). `riffle ingest prices` and `riffle sync` keep MTGJSON's
   `AllPricesToday` once per MTGJSON build, in `~/.local/share/riffle/mtgjson/daily/<day>.json.xz`, and on the first
