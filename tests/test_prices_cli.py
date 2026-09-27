@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from riffle import net
 from riffle.cli import app
-from riffle.ingest import scryfall, scryfall_catalog, tcgcsv
+from riffle.ingest import mtgjson, scryfall, scryfall_catalog, tcgcsv
 
 
 def fake_snapshot(fetched: dict[str, int], failed: dict[str, str] | None = None):
@@ -26,21 +26,36 @@ def fake_snapshot(fetched: dict[str, int], failed: dict[str, str] | None = None)
     return snapshot
 
 
-def test_ingest_prices_reports_both_sources(monkeypatch):
+def fake_mtgjson(outcome: tuple[str, str] = ("ok", "already have 2026-09-24")):
+    """An mtgjson.snapshot that reports to the tracker as the real one does."""
+
+    def snapshot(tracker):
+        step = tracker.step("MTGJSON prices", unit="bytes")
+        if outcome[0] == "ok":
+            step.ok(outcome[1])
+        else:
+            step.fail(outcome[1])
+
+    return snapshot
+
+
+def test_ingest_prices_reports_every_source(monkeypatch):
     monkeypatch.setattr(
         scryfall, "snapshot_prices", lambda: (Path("/d/scryfall/daily/2026-09-24.jsonl.gz"), True)
     )
+    monkeypatch.setattr(mtgjson, "snapshot", fake_mtgjson(("ok", "kept 2026-09-24, 5.2 MB")))
     monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"fab": 105, "op": 87}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert lines[0].endswith("  riffle ingest prices")
     assert "  Scryfall prices: kept 2026-09-24 (" in lines[1]
-    assert "  tcgcsv fab: 105 groups (" in lines[2] and "  tcgcsv op: 87 groups (" in lines[3]
-    assert lines[4] == "tcgcsv prices: 2026-09-24 · 193 requests"
+    assert "  MTGJSON prices: kept 2026-09-24, 5.2 MB (" in lines[2]
+    assert "  tcgcsv fab: 105 groups (" in lines[3] and "  tcgcsv op: 87 groups (" in lines[4]
+    assert lines[5] == "tcgcsv prices: 2026-09-24 · 193 requests"
 
 
-def test_ingest_prices_reports_both_sources_failing_then_exits_1(monkeypatch):
+def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     def no_bulk():
         raise FileNotFoundError("no Scryfall bulk file yet")
 
@@ -48,16 +63,32 @@ def test_ingest_prices_reports_both_sources_failing_then_exits_1(monkeypatch):
         raise net.FetchError("no answer after 3 tries")
 
     monkeypatch.setattr(scryfall, "snapshot_prices", no_bulk)
+    monkeypatch.setattr(mtgjson, "snapshot", fake_mtgjson(("fail", "Meta.json: HTTP 404")))
     monkeypatch.setattr(tcgcsv, "snapshot", down)
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
     assert "! Scryfall prices: no bulk file yet — run: riffle ingest scryfall" in result.output
+    assert "! MTGJSON prices: Meta.json: HTTP 404" in result.output
     assert "! tcgcsv prices: no answer after 3 tries" in result.output
-    assert result.output.rstrip().endswith("2 steps failed: Scryfall prices, tcgcsv prices")
+    assert result.output.rstrip().endswith("3 steps failed: Scryfall prices, MTGJSON prices, tcgcsv prices")
+
+
+def test_a_disk_error_in_mtgjson_is_reported_and_tcgcsv_still_runs(monkeypatch):
+    def full(tracker):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-24.jsonl.gz"), False))
+    monkeypatch.setattr(mtgjson, "snapshot", full)
+    monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"mtg": 456}))
+    result = CliRunner().invoke(app, ["ingest", "prices"])
+    assert result.exit_code == 1, result.output
+    assert "! MTGJSON prices: [Errno 28] No space left on device" in result.output
+    assert "  tcgcsv mtg: 456 groups (" in result.output
 
 
 def test_a_game_that_failed_is_named(monkeypatch):
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-24.jsonl.gz"), False))
+    monkeypatch.setattr(mtgjson, "snapshot", fake_mtgjson())
     monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"mtg": 456}, failed={"fab": "HTTP 503"}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert "  Scryfall prices: already have 2026-09-24 (" in result.output

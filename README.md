@@ -95,7 +95,7 @@ them.
 ## Price history (every game)
 
 ```bash
-riffle ingest prices                        # today's prices: tcgcsv for every game, Scryfall for Magic
+riffle ingest prices                        # today's prices: tcgcsv for every game, Scryfall and MTGJSON for Magic
 ```
 
 Riffle keeps its own price history, one snapshot a day, stored as the sources
@@ -107,6 +107,14 @@ returned it under `~/.local/share/riffle/`:
   own rule since it took its bulk archive down).
 - `scryfall/daily/<day>.jsonl.gz` — each Magic printing's prices (USD, EUR,
   MTGO tix) from the Scryfall bulk file the sync already downloads.
+- `mtgjson/daily/<day>.json.xz` — MTGJSON's prices for every Magic printing,
+  several stores in one file: Card Kingdom (what it sells for and what it pays),
+  TCGplayer, Mana Pool, Cardmarket (EUR), and Cardhoarder (MTGO tix). Each file
+  is checked against MTGJSON's checksum of it before it's kept.
+- `mtgjson/90-days/<day>.json.xz` — the same for `<day>` and the 90 days before
+  it. The first sync keeps one, so the history starts three months back;
+  a day missed after that (the Mac was off) comes back with the next one, kept
+  when a day is missing, at most every 30 days.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
