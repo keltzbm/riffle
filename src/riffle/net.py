@@ -1,5 +1,5 @@
 """HTTP for every outside source: Scryfall, mtgo.com, tcgcsv.com, MTGJSON, GoatBots,
-Cardmarket, Card Kingdom.
+Cardmarket, Card Kingdom, Mana Pool.
 
 Every request sends a descriptive User-Agent, as the first three ask.
 Scryfall also says a 429 must never be ignored or powered through, so

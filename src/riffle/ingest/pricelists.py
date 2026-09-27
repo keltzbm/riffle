@@ -1,4 +1,4 @@
-"""Daily snapshots of whole store price lists: Card Kingdom's.
+"""Daily snapshots of whole store price lists: Card Kingdom's and Mana Pool's.
 
 Card Kingdom publishes everything it sells and buys as JSON lists, without a key:
 
@@ -23,9 +23,25 @@ missing on some rows and repeats on others (a double-faced token has one per bac
 isn't a unique key. The response is sometimes wrapped in <html><head></head><body> ...
 </body></html>.
 
+Mana Pool, a US marketplace, publishes its prices the same way, as {"data": [...]}:
+
+    https://manapool.com/api/v1/prices/singles    a row per printing: "scryfall_id",
+                                                  "tcgplayer_product_id", "set_code", "number",
+                                                  "available_quantity", "price_market" and
+                                                  "price_market_foil", and "price_cents" (the
+                                                  cheapest copy), "price_cents_nm", and
+                                                  "price_cents_lp_plus" (Lightly Played or
+                                                  better), each also with "_foil" and "_etched"
+    https://manapool.com/api/v1/prices/variants   a row per printing, language, condition, and
+                                                  finish: "language_id", "condition_id",
+                                                  "finish_id", "low_price", "available_quantity"
+    https://manapool.com/api/v1/prices/sealed     a row per sealed product
+
+Its prices are integer cents in USD.
+
 A store's list is its prices right now, with no date of its own to go by (Card Kingdom's
-created_at has no time zone), so Riffle keeps one a day, named by the Mac's date, as returned
-but gzipped:
+created_at has no time zone; Mana Pool's lists may carry none), so Riffle keeps one a day,
+named by the Mac's date, as returned but gzipped:
 
     <data_dir>/<store>/daily/<day>/<list>.json.gz
 
@@ -63,6 +79,11 @@ CARD_KINGDOM = (
     PriceList(
         "cardkingdom", "sealed", "Card Kingdom sealed", "https://api.cardkingdom.com/api/sealed_pricelist"
     ),
+)
+MANA_POOL = (
+    PriceList("manapool", "singles", "Mana Pool singles", "https://manapool.com/api/v1/prices/singles"),
+    PriceList("manapool", "variants", "Mana Pool variants", "https://manapool.com/api/v1/prices/variants"),
+    PriceList("manapool", "sealed", "Mana Pool sealed", "https://manapool.com/api/v1/prices/sealed"),
 )
 
 Download = Callable[[str, Path, net.Progress | None], int | None]  # url, dest -> bytes, or None for 404

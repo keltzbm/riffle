@@ -96,7 +96,7 @@ them.
 
 ```bash
 riffle ingest prices                        # today's prices: tcgcsv and Cardmarket for every game; Scryfall,
-                                            # MTGJSON, and Card Kingdom for Magic; GoatBots for MTGO
+                                            # MTGJSON, Card Kingdom, and Mana Pool for Magic; GoatBots for MTGO
 ```
 
 Riffle keeps its own price history, one snapshot a day, stored as the sources
@@ -135,6 +135,11 @@ returned it under `~/.local/share/riffle/`:
   etched too, and what it pays and how many it wants; for every sealed product,
   the same without conditions. `<day>` is the Mac's date; a list kept today
   isn't asked for again.
+- `manapool/daily/<day>/singles.json.gz`, `variants.json.gz`, and
+  `sealed.json.gz` — Mana Pool's price lists, the same way: each printing's
+  market price (nonfoil and foil) and its cheapest, Near Mint, and Lightly
+  Played or better prices in every finish; the lowest price and how many are
+  listed for each language, condition, and finish; and every sealed product.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
