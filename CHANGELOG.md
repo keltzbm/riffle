@@ -70,10 +70,6 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   fails its step, and is retried next run. Three bad answers in a row pause the run for 30 s, then 60 s and 120 s
   after later streaks, and a bad streak after that stops it with exit 1. Months and events go newest first, event
   pages get 60 s to answer instead of 20, and the summary prints even when a step failed.
-- Progress bars are drawn in block cells instead of a thin line: the leading cell fills from the bottom up
-  (`▁▂▃▄▅▆▇█`) before the next one starts, over a dim `▁` track, and a step with no total shows a block sliding
-  along the track, its front cell filling as its back cell empties. The display redraws 20 times a second
-  instead of 10, so both move smoothly.
 - `riffle decks` sizes each column to its longest value, so a long slug no longer pushes its row out of line.
   Widths count terminal cells, so accented and wide characters line up too, and a format or status left empty
   or written as a list no longer stops the command.
@@ -97,10 +93,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 - Tests run with their own config and data folders and a database URL nothing listens on, so no test can
   touch real files or the real database.
 - Long-running commands (`sync`, `ingest scryfall`, `ingest prices`, `ingest mtgo`) show their steps as they
-  happen. On a terminal, a running step has a spinner, a bar with its count (or bytes and speed), and the
-  time so far; a finished one becomes a line with a green ✔ (red ✘ if it failed), its result, and how long it
-  took. Anywhere else, as in the scheduled job's `sync.log`, nothing animates: a dated line starts the run
-  and a timestamped line ends each step.
+  happen. On a terminal, a running step has a spinner; a purple bar of braille dots that fills one dot at a
+  time, glides toward its count, and has a spinner sweeping through it, with its percentage; its count (or bytes
+  and speed); and the time so far, then about how long is left, or how long it has been waiting once it goes 10
+  seconds without progress. A step with no total shows a braille snake crawling along the track. A finished step
+  becomes a line with a green ✔ (red ✘ if it failed), its result, and how long it took. Anywhere else, as in the
+  scheduled job's `sync.log`, nothing animates: a dated line starts the run and a timestamped line ends each step.
 - `riffle ingest mtgo` reads every month's index before fetching events, so each format's progress has a
   total, and an event linked from two months is fetched once. One line per format replaces one per event.
 - Rich, already installed with Typer, is a declared dependency.

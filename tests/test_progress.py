@@ -2,6 +2,7 @@
 
 import io
 import itertools
+import math
 import sys
 from datetime import datetime
 
@@ -77,65 +78,138 @@ def test_amount_shows_counts_or_bytes(total, done, unit, text):
     ("fraction", "cells"),
     [
         (0, [0, 0, 0, 0]),
-        (1 / 32, [1, 0, 0, 0]),  # the leading cell starts at the bottom
-        (7 / 32, [7, 0, 0, 0]),
-        (8 / 32, [8, 0, 0, 0]),  # and fills before the next one begins
-        (9 / 32, [8, 1, 0, 0]),
+        (1 / 32, [1, 0, 0, 0]),  # one dot at a time
+        (9 / 32, [8, 1, 0, 0]),  # a cell fills before the next begins
         (0.999, [8, 8, 8, 7]),  # full only when done
         (1, [8, 8, 8, 8]),
         (1.5, [8, 8, 8, 8]),
         (-0.5, [0, 0, 0, 0]),
     ],
 )
-def test_a_bar_fills_one_cell_from_the_bottom_up_before_the_next(fraction, cells):
-    assert progress.filled(fraction, width=4) == cells
+def test_a_bar_fills_one_dot_at_a_time(fraction, cells):
+    assert progress.dots(fraction, width=4) == cells
 
 
-@pytest.mark.parametrize(
-    ("step", "cells"),
-    [
-        (0, [0] * 8),  # about to come in at the left
-        (5, [5, 0, 0, 0, 0, 0, 0, 0]),  # its front rises in the first cell
-        (20, [4, 8, 4, 0, 0, 0, 0, 0]),  # back cell half empty, front cell half full
-        (64, [0, 0, 0, 0, 0, 0, 8, 8]),  # at the right end
-        (76, [0, 0, 0, 0, 0, 0, 0, 4]),  # on its way out
-        (80, [0] * 8),  # and around again
-        (85, [5, 0, 0, 0, 0, 0, 0, 0]),
-    ],
-)
-def test_a_bar_without_a_total_slides_a_block_an_eighth_at_a_time(step, cells):
-    assert progress.sliding(step, width=8) == cells
+def test_the_gradient_runs_from_violet_to_orchid():
+    colors = progress.gradient(5)
+    assert (colors[0], colors[2], colors[4]) == progress.GRADIENT
 
 
-def test_the_sliding_block_keeps_its_size_while_inside_the_bar():
-    assert {sum(progress.sliding(step, width=8)) for step in range(16, 65)} == {16}
+def test_a_bar_glides_toward_its_real_count():
+    assert progress.glide(0.0, 1.0, 0.0) == 0.0
+    assert progress.glide(0.0, 1.0, progress.GLIDE) == pytest.approx(1 - math.exp(-1))
+    twice = progress.glide(progress.glide(0.0, 1.0, 0.1), 1.0, 0.1)
+    assert twice == pytest.approx(progress.glide(0.0, 1.0, 0.2))  # the pace doesn't depend on redraws
+    assert progress.glide(0.9995, 1.0, 0.01) == 1.0  # it lands exactly
+    assert progress.glide(0.8, 0.5, 5.0) == 0.5  # and glides back when a total grows
 
 
-def test_the_bar_is_green_blocks_over_a_dim_track():
-    bar = Progress()
-    bar.update(bar.add_task("x", total=4), completed=1)
-    text = progress._bar(bar.tasks[0])
-    assert text.plain == "█" * 7 + "▁" * 21
-    assert {str(s.style) for s in text.spans[:7]} == {"green"}
-    assert {str(s.style) for s in text.spans[7:]} == {"dim"}
+def test_the_spinner_sweeps_through_the_full_cells_then_rests():
+    speed, rest = progress.SWEEP_SPEED, progress.SWEEP_REST
+    cells = [progress.sweep((n + 0.5) / speed, 5) for n in range(5 + rest + 2)]
+    assert cells == [0, 1, 2, 3, 4] + [None] * rest + [0, 1]
+    assert progress.sweep(3.5 / speed, 0) is None  # nothing full yet
 
 
-def test_a_step_without_a_total_or_with_nothing_to_do_still_draws():
-    bar = Progress()
-    bar.add_task("waiting", total=None)
-    bar.add_task("nothing", total=0)
-    waiting, nothing = (progress._bar(task).plain for task in bar.tasks)
-    assert len(waiting) == progress.BAR_WIDTH and set(waiting) <= set("▁▂▃▄▅▆▇█")
-    assert nothing == "█" * progress.BAR_WIDTH
+def test_the_snake_crawls_along_the_track():
+    speed = progress.SNAKE_SPEED
+    assert progress.snake(0.5 / speed, width=10) == [0] + [None] * 9  # its head coming in
+    assert progress.snake(3.5 / speed, width=10)[:5] == [3, 2, 1, 0, None]
+    assert progress.snake(12.5 / speed, width=10) == [None] * 5 + [7, 6, 5, 4, 3]  # its tail going out
 
 
-def test_the_live_display_draws_block_bars():
-    buf = io.StringIO()
-    console = Console(file=buf, force_terminal=True, width=100, color_system=None)
-    live = progress.LiveTracker(console)
-    live.step("tcgcsv mtg", total=8, unit="groups").update(3)
-    console.print(live.progress.make_tasks_table(live.progress.tasks))
-    assert "█" * 10 + "▄" + "▁" * 17 in buf.getvalue()  # 3/8 of 28 cells is 10.5
+def test_a_bar_is_its_dots_on_the_track_then_its_percentage():
+    text = progress._bar(20.5 / progress.SWEEP_SPEED, 0.5)  # the spinner is resting
+    assert text.plain == "⣿" * 15 + "⣀" * 15 + "  50%"
+    assert [span.style.color.triplet for span in text.spans[:15]] == list(progress.gradient()[:15])
+    assert {span.style.color.triplet for span in text.spans[15:30]} == {progress.TRACK}
+    percentage = text.spans[-1].style
+    assert percentage.bold and percentage.color.triplet == progress.gradient()[14]  # the leading edge's color
+
+
+def test_a_spinner_sweeps_through_the_filled_part():
+    text = progress._bar(3.5 / progress.SWEEP_SPEED, 0.5)
+    assert text.plain[:3] == "⣿⣿⣿" and text.plain[3] in progress._SPIN
+    assert text.spans[3].style.color.triplet == progress.ACCENT
+
+
+def test_a_bar_with_no_total_shows_the_snake():
+    text = progress._bar(3.5 / progress.SNAKE_SPEED, None)
+    assert text.plain == "⣇⣧⣷⣿" + "⣀" * 26  # no percentage
+    assert text.spans[3].style.color.triplet == progress.gradient()[3]  # the head, in full color
+
+
+def _clocked(width=120):
+    """A live display on a clock the test moves by hand."""
+    buf, now = io.StringIO(), [100.0]
+    live = progress.LiveTracker(Console(file=buf, force_terminal=True, width=width, color_system=None))
+
+    def clock():
+        return now[0]
+
+    live.progress.get_time = clock
+    return live, now, buf
+
+
+def test_the_live_bar_glides_to_its_count():
+    live, now, buf = _clocked()
+    live.step("tcgcsv mtg", total=8, unit="groups").update(4)
+    live.progress.make_tasks_table(live.progress.tasks)  # the first redraw starts from empty
+    now[0] += 5.5
+    live.console.print(live.progress.make_tasks_table(live.progress.tasks))
+    line = buf.getvalue()
+    assert "tcgcsv mtg" in line and "⣿" * 15 + "⣀" * 15 + "  50%" in line
+    assert "4/8 groups" in line and "0:05" in line
+
+
+def test_a_step_says_how_long_it_has_been_waiting():
+    live, now, _ = _clocked()
+    step = live.step("mtgo modern", total=10, unit="events")
+
+    def times():
+        return progress._times(live.progress.tasks[0]).plain
+
+    now[0] += 2
+    step.update(1)
+    now[0] += 3
+    step.update(2)
+    assert times() == "0:05 · 0:24 left"
+    now[0] += 11
+    step.update(2)  # no progress: still waiting
+    assert times() == "0:16 · waiting 0:11"
+    step.update(3)
+    assert "waiting" not in times()
+
+
+def test_bars_narrow_so_a_line_never_wraps():
+    assert [progress.bar_width(columns) for columns in (120, 102, 90, 80, 40)] == [30, 30, 18, 8, 8]
+    live, now, buf = _clocked(width=80)
+    download = live.step("scryfall bulk data", total=84_000_000, unit="bytes")
+    events = live.step("mtgo modern", total=24, unit="events")
+    for step_by, got, done in ((2.0, 10_000_000, 10), (3.0, 31_900_000, 17)):
+        now[0] += step_by
+        download.update(got)
+        events.update(done)
+    live.console.print(live.progress.make_tasks_table(live.progress.tasks))
+    lines = buf.getvalue().splitlines()
+    assert len(lines) == 2 and "MB/s" in lines[0] and "left" in lines[0]  # speed and time left still fit
+
+
+def test_times_add_what_is_left_once_the_pace_is_known():
+    now = [0.0]
+    bar = Progress(get_time=lambda: now[0])
+    task_id = bar.add_task("x", total=10)
+    assert progress._times(bar.tasks[0]).plain == "0:00"
+    now[0] = 2.0
+    bar.update(task_id, completed=2)
+    now[0] = 5.0
+    bar.update(task_id, completed=5, moved=5.0)
+    assert progress._times(bar.tasks[0]).plain == "0:05 · 0:05 left"
+
+
+@pytest.mark.parametrize(("seconds", "text"), [(0, "0:00"), (65.9, "1:05"), (3723, "1:02:03")])
+def test_clock(seconds, text):
+    assert progress._clock(seconds) == text
 
 
 def test_live_display_turns_finished_steps_into_lines():
