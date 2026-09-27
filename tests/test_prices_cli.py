@@ -27,12 +27,13 @@ def fake_snapshot(fetched: dict[str, int], failed: dict[str, str] | None = None)
     return snapshot
 
 
-def fake_source(label: str, outcome: tuple[str, str] = ("ok", "already have 2026-09-24")):
+def fake_source(label: str | None, outcome: tuple[str, str] = ("ok", "already have 2026-09-24")):
     """A stand-in for a price source's snapshot (mtgjson, goatbots, cardmarket, pricelists) that
-    reports one step; the real ones report one or more."""
+    reports one step, labelled label or, for a store's lists (label None), by its first list; the
+    real ones report one or more."""
 
     def snapshot(*lists, tracker):
-        step = tracker.step(label, unit="bytes")
+        step = tracker.step(label or lists[0][0].label, unit="bytes")
         if outcome[0] == "ok":
             step.ok(outcome[1])
         else:
@@ -47,7 +48,7 @@ def quiet_sources(monkeypatch):
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices"))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices"))
     monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg"))
-    monkeypatch.setattr(pricelists, "snapshot", fake_source("Card Kingdom singles"))
+    monkeypatch.setattr(pricelists, "snapshot", fake_source(None))
 
 
 def test_ingest_prices_reports_every_source(monkeypatch):
@@ -71,8 +72,9 @@ def test_ingest_prices_reports_every_source(monkeypatch):
     assert "  GoatBots prices: kept 2026-09-24, 76,070 prices (" in lines[3]
     assert "  Cardmarket mtg: kept 2026-09-24, 98,512 products (" in lines[4]
     assert "  Card Kingdom singles: already have 2026-09-24 (" in lines[5]
-    assert "  tcgcsv fab: 105 groups (" in lines[6] and "  tcgcsv op: 87 groups (" in lines[7]
-    assert lines[8] == "tcgcsv prices: 2026-09-24 · 193 requests"
+    assert "  Mana Pool singles: already have 2026-09-24 (" in lines[6]
+    assert "  tcgcsv fab: 105 groups (" in lines[7] and "  tcgcsv op: 87 groups (" in lines[8]
+    assert lines[9] == "tcgcsv prices: 2026-09-24 · 193 requests"
 
 
 def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
@@ -86,7 +88,7 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices", ("fail", "Meta.json: HTTP 404")))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices", ("fail", "HTTP 403")))
     monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg", ("fail", "HTTP 503")))
-    monkeypatch.setattr(pricelists, "snapshot", fake_source("Card Kingdom singles", ("fail", "HTTP 502")))
+    monkeypatch.setattr(pricelists, "snapshot", fake_source(None, ("fail", "HTTP 502")))
     monkeypatch.setattr(tcgcsv, "snapshot", down)
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
@@ -95,10 +97,11 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     assert "! GoatBots prices: HTTP 403" in result.output
     assert "! Cardmarket mtg: HTTP 503" in result.output
     assert "! Card Kingdom singles: HTTP 502" in result.output
+    assert "! Mana Pool singles: HTTP 502" in result.output
     assert "! tcgcsv prices: no answer after 3 tries" in result.output
     assert result.output.rstrip().endswith(
-        "6 steps failed: Scryfall prices, MTGJSON prices, GoatBots prices, Cardmarket mtg, "
-        "Card Kingdom singles, tcgcsv prices"
+        "7 steps failed: Scryfall prices, MTGJSON prices, GoatBots prices, Cardmarket mtg, "
+        "Card Kingdom singles, Mana Pool singles, tcgcsv prices"
     )
 
 
@@ -118,6 +121,7 @@ def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypat
     assert "! GoatBots prices: [Errno 28] No space left on device" in result.output
     assert "! Cardmarket prices: [Errno 28] No space left on device" in result.output
     assert "! Card Kingdom prices: [Errno 28] No space left on device" in result.output
+    assert "! Mana Pool prices: [Errno 28] No space left on device" in result.output
     assert "  tcgcsv mtg: 456 groups (" in result.output
 
 

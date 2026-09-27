@@ -101,6 +101,10 @@ def vault(tmp_path, monkeypatch, opened):
     return mtg
 
 
+# What an online sync does, in order: the Scryfall download and catalog load, then each price source.
+ONLINE = ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "manapool", "tcgcsv"]
+
+
 def online_steps(monkeypatch, calls, refresh_fails=False):
     """The online steps, recorded in calls, each reporting a step as the real one does."""
 
@@ -145,7 +149,7 @@ def test_a_network_that_comes_up_late_is_waited_for(vault, monkeypatch):
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 0, result.output
     assert "network: up after 20.0s" in result.output
-    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "tcgcsv"]
+    assert calls == ONLINE
 
 
 def test_a_network_that_is_up_goes_unmentioned(vault, monkeypatch):
@@ -162,7 +166,7 @@ def test_a_failed_download_doesnt_stop_the_sync(vault, monkeypatch):
     online_steps(monkeypatch, calls, refresh_fails=True)
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 1, result.output
-    assert calls == ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "tcgcsv"]
+    assert calls == ONLINE
     assert "1 decks · 2 notes updated" in result.output
     assert result.output.rstrip().endswith("1 step failed: Scryfall bulk data")
 

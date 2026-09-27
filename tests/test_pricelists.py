@@ -170,6 +170,21 @@ def test_no_answer_skips_the_store_s_other_lists(data_dir):
     ]
 
 
+def test_mana_pool_is_three_lists_in_its_own_folder(data_dir, tracker):
+    body = json.dumps({"data": [{"scryfall_id": "a", "price_cents": 180, "price_cents_nm": 218}]}).encode()
+    source = Source({plist.url: body for plist in pricelists.MANA_POOL})
+    snap = pricelists.snapshot(pricelists.MANA_POOL, download=source.download, tracker=tracker, today=DAY)
+    assert snap.kept == ["Mana Pool singles", "Mana Pool variants", "Mana Pool sealed"]
+    day = data_dir / "manapool" / "daily" / "2026-09-27"
+    assert sorted(p.name for p in day.iterdir()) == ["sealed.json.gz", "singles.json.gz", "variants.json.gz"]
+    assert gzip.decompress((day / "variants.json.gz").read_bytes()) == body
+
+
+def test_every_store_list_has_its_own_file():
+    lists = [*pricelists.CARD_KINGDOM, *pricelists.MANA_POOL]
+    assert len({(p.store, p.name) for p in lists}) == len({p.label for p in lists}) == len(lists) == 5
+
+
 def test_a_big_list_is_checked_at_its_ends(data_dir):
     rows = ck(20_000)
     assert len(rows) > 8192

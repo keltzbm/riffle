@@ -33,6 +33,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
+- Mana Pool's price lists, once a day, kept the same way as Card Kingdom's, in
+  `~/.local/share/riffle/manapool/daily/<day>/`: `singles` (each printing's market price, nonfoil and foil; its
+  cheapest, Near Mint, and Lightly Played or better prices in every finish, etched included; and how many are
+  listed), `variants` (the lowest price and how many are listed for each language, condition, and finish), and
+  `sealed`. MTGJSON carries only its cheapest price per finish.
 - Card Kingdom's whole price list, once a day: for every Magic single it lists, what it sells it for and how many
   it has in each condition (NM, EX, VG, G), foil and etched too, and what it pays and how many it wants; for every
   sealed product, the same without conditions. MTGJSON carries only its Near Mint sell price and its buy price,

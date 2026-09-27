@@ -266,7 +266,7 @@ def ingest_mtgo(
 def ingest_prices(
     delay: float = typer.Option(0.1, help="Seconds between tcgcsv requests"),
 ) -> None:
-    """Keep today's prices from tcgcsv, Cardmarket, Scryfall, MTGJSON, GoatBots, and Card Kingdom."""
+    """Keep today's prices: tcgcsv, Cardmarket, Scryfall, MTGJSON, GoatBots, Card Kingdom, Mana Pool."""
     with _tracked("riffle ingest prices") as tracker:
         _snapshot_prices(tracker, online=True, delay=delay)
 
@@ -308,6 +308,10 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         pricelists.snapshot(pricelists.CARD_KINGDOM, tracker=tracker)
     except OSError as e:
         tracker.step("Card Kingdom prices").fail(str(e))
+    try:
+        pricelists.snapshot(pricelists.MANA_POOL, tracker=tracker)
+    except OSError as e:
+        tracker.step("Mana Pool prices").fail(str(e))
     try:
         snap = tcgcsv.snapshot(delay=delay, tracker=tracker)
     except (OSError, net.FetchError) as e:
