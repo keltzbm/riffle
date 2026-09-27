@@ -182,7 +182,7 @@ def test_a_step_says_how_long_it_has_been_waiting():
 
 
 def test_bars_narrow_so_a_line_never_wraps():
-    assert [progress.bar_width(columns) for columns in (120, 102, 90, 80, 40)] == [30, 30, 18, 8, 8]
+    assert [progress.bar_width(columns) for columns in (120, 106, 90, 80, 40)] == [30, 30, 14, 8, 8]
     live, now, buf = _clocked(width=80)
     download = live.step("scryfall bulk data", total=84_000_000, unit="bytes")
     events = live.step("mtgo modern", total=24, unit="events")
@@ -193,6 +193,14 @@ def test_bars_narrow_so_a_line_never_wraps():
     live.console.print(live.progress.make_tasks_table(live.progress.tasks))
     lines = buf.getvalue().splitlines()
     assert len(lines) == 2 and "MB/s" in lines[0] and "left" in lines[0]  # speed and time left still fit
+
+
+def test_a_long_label_ends_in_an_ellipsis_instead_of_wrapping():
+    live, _, buf = _clocked()
+    live.step("tcgcsv riftbound-league-of-legends-trading-card-game", total=3, unit="groups").update(1)
+    live.console.print(live.progress.make_tasks_table(live.progress.tasks))
+    (line,) = buf.getvalue().splitlines()
+    assert "tcgcsv riftbound-league…" in line and "1/3 groups" in line
 
 
 def test_times_add_what_is_left_once_the_pace_is_known():
