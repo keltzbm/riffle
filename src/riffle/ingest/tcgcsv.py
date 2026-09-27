@@ -12,8 +12,8 @@ It used to publish a daily archive of every price file at once. That was taken
 down in September 2026 (server costs; the maintainer is waiting on TCGplayer
 for terms), with the request that clients fetch the price files one at a time
 and never the same file twice in a day. So Riffle keeps its own history: once
-a day, for every card game tcgcsv carries, it fetches every group's price file
-and stores the responses as returned, in
+a day, for everything tcgcsv carries but comics, it fetches every group's price
+file and stores the responses as returned, in
 
     <data_dir>/tcgcsv/daily/<day>/categories.json           the category list that day
     <data_dir>/tcgcsv/daily/<day>/<game>/groups.json        the groups response
@@ -23,12 +23,11 @@ and stores the responses as returned, in
 <day> is the date from last-updated.txt, so a day is fetched once however
 often sync runs. The games in GAMES are named by their tcgcsv category and
 resolved to IDs at run time; every other category is kept too, named by its
-slug (pokemon-japan), unless NOT_CARD_GAMES lists it. Nothing here reads the
+slug (pokemon-japan), except the comics SKIPPED lists. Nothing here reads the
 files back: the price loader (v0.4.0) does. Headers, retries, and 429
 handling: riffle.net.
 """
 
-import functools
 import gzip
 import json
 import re
@@ -40,48 +39,15 @@ from pathlib import Path
 
 from riffle import net
 from riffle.config import data_dir
-from riffle.progress import SILENT, Step, Tracker
+from riffle.progress import SILENT, Tracker
 
 BASE = "https://tcgcsv.com"
 # Game code -> the game's category name on tcgcsv; IDs are looked up at run time. These are the
-# games played, a progress step each; every other card game is kept too, under one step.
+# games played; every other category is kept too, named by its slug. Each game is its own step.
 GAMES = {"mtg": "Magic", "fab": "Flesh & Blood TCG", "op": "One Piece Card Game"}
-# Categories that aren't card games, by ID: comics, supplies, miniatures, board games. Never
-# fetched: Marvel and DC comics alone are 19,800 groups, twice tcgcsv's daily request limit.
-NOT_CARD_GAMES = {
-    4: "Axis & Allies",
-    5: "Boardgames",
-    6: "D & D Miniatures",
-    8: "Heroclix",
-    9: "Monsterpocalypse",
-    11: "Star Wars Miniatures",
-    12: "World of Warcraft Miniatures",
-    14: "Supplies",
-    15: "Organizers & Stores",
-    22: "TCGplayer",
-    29: "Funko",
-    31: "Card Sleeves",
-    32: "Deck Boxes",
-    33: "Card Storage Tins",
-    34: "Life Counters",
-    35: "Playmats",
-    39: "Warhammer Books",
-    40: "Warhammer Big Box Games",
-    41: "Warhammer Box Sets",
-    42: "Warhammer Clampacks",
-    43: "Citadel Paints",
-    44: "Citadel Tools",
-    45: "Warhammer Game Accessories",
-    46: "Books",
-    49: "Protective Pages",
-    50: "Storage Albums",
-    51: "Collectible Storage",
-    52: "Supply Bundles",
-    56: "Bulk Lots",
-    69: "Marvel Comics",
-    70: "DC Comics",
-    82: "TCGplayer Supplies",
-}
+# The only categories not kept, by ID: Marvel and DC comics alone are 19,800 groups, twice
+# tcgcsv's daily request limit. Card games, miniatures, board games, and supplies all are.
+SKIPPED = {69: "Marvel Comics", 70: "DC Comics"}
 DAILY_REQUESTS = 9_000  # tcgcsv asks for under 10,000 a day; games past this wait for the next day
 OVER_BUDGET = "past the day's request budget; the next day's run gets it"
 
@@ -170,13 +136,13 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
 
 
-def card_games(cats: list[dict]) -> dict[str, int]:
-    """Game code -> categoryId for every card game in tcgcsv's category list, each code the
-    category's name as a slug."""
+def kept(cats: list[dict]) -> dict[str, int]:
+    """Game code -> categoryId for every category in tcgcsv's list but SKIPPED, each code
+    the category's name as a slug."""
     return {
         _slug(str(c.get("name", ""))) or str(c["categoryId"]): int(c["categoryId"])
         for c in cats
-        if "categoryId" in c and int(c["categoryId"]) not in NOT_CARD_GAMES
+        if "categoryId" in c and int(c["categoryId"]) not in SKIPPED
     }
 
 
@@ -251,66 +217,34 @@ def _prices(
     tmp.replace(target)
 
 
-def _advance(step: Step, base: int, n: int) -> None:
-    step.update(base + n)
-
-
-def _game(game: str, category: int, snap: Snapshot, fetch: Fetch, delay: float, step: Step) -> None:
-    """One of GAMES, as its own step."""
-    group_ids = _groups(category, day_dir(snap.day, game), fetch, snap)
-    step.update(0, len(group_ids))
-    _prices(category, group_ids, _target(snap.day, game), fetch, delay, snap, step.update)
-    snap.groups[game] = len(group_ids)
-
-
-def _more_games(
-    snap: Snapshot, cats: list[dict], played: set[int], delay: float, fetch: Fetch, tracker: Tracker
+def _game(
+    game: str,
+    category: int | None,
+    name: str,
+    snap: Snapshot,
+    fetch: Fetch,
+    delay: float,
+    tracker: Tracker,
 ) -> None:
-    """Every other card game under one step. Each game's groups are listed first, so the step
-    knows its total; then each game's prices, a game at a time, all or nothing."""
-    games = {game: cid for game, cid in card_games(cats).items() if cid not in played}
-    todo = {game: cid for game, cid in games.items() if not _target(snap.day, game).exists()}
-    snap.skipped.extend(game for game in games if game not in todo)
-    label = f"tcgcsv {len(games)} more games"
-    if not todo:
-        tracker.step(label).ok(f"already have {snap.day}")
-        return
-    step, listed = tracker.step(label, unit="groups"), {}
-    for game, cid in todo.items():
-        try:
-            if snap.requests >= DAILY_REQUESTS:
-                raise net.FetchError(OVER_BUDGET)
-            time.sleep(delay)
-            listed[game] = _groups(cid, day_dir(snap.day, game), fetch, snap)
-        except net.FetchError as e:
-            snap.failed.append((game, str(e)))
-    step.update(0, sum(map(len, listed.values())))
-    done = 0
-    for game, group_ids in listed.items():
-        try:
-            _prices(
-                todo[game],
-                group_ids,
-                _target(snap.day, game),
-                fetch,
-                delay,
-                snap,
-                functools.partial(_advance, step, done),
-            )
-        except net.FetchError as e:
-            snap.failed.append((game, str(e)))
-        else:
-            snap.fetched.append(game)
-            snap.groups[game] = len(group_ids)
-        done += len(group_ids)
-        step.update(done)
-    kept = [game for game in todo if game in snap.groups]
-    note = f"{_count(len(kept), 'game')}, {_count(sum(snap.groups[game] for game in kept), 'group')}"
-    failed = [game for game, _ in snap.failed if game in todo]
-    if failed:
-        step.fail(f"{note}; {len(failed)} failed: {', '.join(failed)}")
+    """One game as its own step: its groups, then every group's price file. category is
+    None when no category goes by the game's name."""
+    step = tracker.step(f"tcgcsv {game}", unit="groups")
+    try:
+        if category is None:
+            raise net.FetchError(f"tcgcsv has no category named {name!r}")
+        if snap.requests >= DAILY_REQUESTS:
+            raise net.FetchError(OVER_BUDGET)
+        time.sleep(delay)
+        group_ids = _groups(category, day_dir(snap.day, game), fetch, snap)
+        step.update(0, len(group_ids))
+        _prices(category, group_ids, _target(snap.day, game), fetch, delay, snap, step.update)
+    except net.FetchError as e:
+        snap.failed.append((game, str(e)))
+        step.fail(str(e))
     else:
-        step.ok(note)
+        snap.groups[game] = len(group_ids)
+        snap.fetched.append(game)
+        step.ok(_count(len(group_ids), "group"))
 
 
 def snapshot(
@@ -319,14 +253,15 @@ def snapshot(
     fetch: Fetch = _get,
     tracker: Tracker = SILENT,
 ) -> Snapshot:
-    """Store today's price files for every card game on tcgcsv that doesn't have them yet,
-    or with `games` (code -> category name), for just those.
+    """Store today's price files for every category tcgcsv carries but SKIPPED, or with
+    `games` (code -> category name) for just those, skipping what's already stored.
 
     "Today" is tcgcsv's last-updated date. A stored game costs no request, and neither does
-    the day's category list once stored. Each game in GAMES (or `games`) is a step on the
-    tracker; every other card game shares one. A game that fails part-way keeps nothing, so
+    the day's category list once stored. Each game fetched is a step on the tracker; the ones
+    already stored beyond GAMES share one line. A game that fails part-way keeps nothing, so
     the next run fetches it whole, and a game that would take the day past DAILY_REQUESTS
-    waits for the next day. delay is the pause before each request (tcgcsv asks for ~100 ms).
+    waits for the next day. delay is the pause before each request after the day's first
+    two (tcgcsv asks for ~100 ms).
     """
     stamp = last_updated(fetch)
     snap = Snapshot(day=stamp.date())
@@ -347,17 +282,14 @@ def snapshot(
         _write(stamp_file, stamp.strftime("%Y-%m-%dT%H:%M:%S%z").encode())
     ids = resolve(cats, named)
     for game in todo:
-        step = tracker.step(f"tcgcsv {game}", unit="groups")
-        try:
-            if game not in ids:
-                raise net.FetchError(f"tcgcsv has no category named {named[game]!r}")
-            _game(game, ids[game], snap, fetch, delay, step)
-        except net.FetchError as e:
-            snap.failed.append((game, str(e)))
-            step.fail(str(e))
-        else:
-            snap.fetched.append(game)
-            step.ok(_count(snap.groups[game], "group"))
+        _game(game, ids.get(game), named[game], snap, fetch, delay, tracker)
     if games is None:
-        _more_games(snap, cats, set(ids.values()), delay, fetch, tracker)
+        others = {game: cid for game, cid in sorted(kept(cats).items()) if cid not in ids.values()}
+        stored = [game for game in others if _target(snap.day, game).exists()]
+        if stored:
+            snap.skipped.extend(stored)
+            tracker.step(f"tcgcsv {_count(len(stored), 'more game')}").ok(f"already have {snap.day}")
+        for game, cid in others.items():
+            if game not in stored:
+                _game(game, cid, game, snap, fetch, delay, tracker)
     return snap

@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from rich.style import Style
     from rich.text import Text
 
-LABEL_WIDTH = 20
-BAR_WIDTH = 30  # cells, on a terminal 102 columns wide or more; see bar_width()
+LABEL_WIDTH = 24
+BAR_WIDTH = 30  # cells, on a terminal 106 columns wide or more; see bar_width()
 REFRESH = 20  # redraws a second
 STALL = 10.0  # seconds without progress before a running step says how long it's been waiting
 
@@ -174,7 +174,7 @@ _DOTS = "⠀⡀⡄⡆⡇⣇⣧⣷⣿"  # a cell with 0 to 8 dots: its left colum
 _RAIL = "⣀"  # an empty cell: a stretch of dotted track
 _SPIN = "⣾⣽⣻⢿⡿⣟⣯⣷"  # the sweeping spinner: one dot missing, going around
 _SNAKE = "⣿⣷⣧⣇⡇⡆⡄⡀"  # the snake, head to tail
-_BESIDE = 72  # columns the rest of a download's line can take: spinner, label, percentage, amount, times
+_BESIDE = 76  # columns the rest of a download's line can take: spinner, label, percentage, amount, times
 
 
 def _amount(task: "Task") -> "Text":
@@ -351,7 +351,11 @@ class LiveTracker:
         self.console = console
         self.progress: Progress = RichProgress(
             SpinnerColumn(style=_ink(GRADIENT[1])),
-            TextColumn("{task.description}", markup=False, table_column=Column(width=LABEL_WIDTH)),
+            TextColumn(
+                "{task.description}",
+                markup=False,
+                table_column=Column(width=LABEL_WIDTH, no_wrap=True, overflow="ellipsis"),
+            ),
             Bar(),
             Amount(),
             Times(),

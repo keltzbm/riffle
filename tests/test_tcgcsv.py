@@ -108,7 +108,7 @@ def test_snapshot_stores_a_game_as_returned_under_tcgcsv_day(data_dir, sleeps):
     ]
     by_id = [f"{B}/tcgplayer/62/100/prices", f"{B}/tcgplayer/62/200/prices"]
     assert asked[-2:] == by_id  # sorted by id, not in the listing's order
-    assert sleeps == [0.1, 0.1]  # one pause before each price file
+    assert sleeps == [0.1, 0.1, 0.1]  # a pause before each request after the day's first two
     assert tcgcsv.stored_days(FAB) == [DAY]
     assert not list(day.rglob("*.part"))
 
@@ -194,7 +194,7 @@ def test_an_unknown_category_fails_its_step(data_dir, sleeps, tracker):
     assert tracker.outcomes() == {"tcgcsv xx": ("fail", "tcgcsv has no category named 'Nope'")}
 
 
-# ---- every card game --------------------------------------------------------------------
+# ---- everything but comics --------------------------------------------------------------
 
 EVERY_CAT = json.dumps(
     {
@@ -206,8 +206,9 @@ EVERY_CAT = json.dumps(
             {"categoryId": 68, "name": "One Piece Card Game"},
             {"categoryId": 2, "name": "YuGiOh"},
             {"categoryId": 85, "name": "Pokemon Japan"},
+            {"categoryId": 41, "name": "Warhammer Box Sets"},
             {"categoryId": 69, "name": "Marvel Comics"},
-            {"categoryId": 31, "name": "Card Sleeves"},
+            {"categoryId": 70, "name": "DC Comics"},
         ],
     }
 ).encode()
@@ -226,38 +227,51 @@ def every_game_answers(**overrides):
             f"{B}/tcgplayer/2/21/prices": prices(6),
             f"{B}/tcgplayer/85/groups": groups(30),
             f"{B}/tcgplayer/85/30/prices": prices(8),
+            f"{B}/tcgplayer/41/groups": groups(40),
+            f"{B}/tcgplayer/41/40/prices": prices(4),
         }
     )
     answers.update(overrides)
     return answers
 
 
-def test_card_games_leave_out_comics_supplies_and_miniatures():
+def test_everything_but_comics_is_kept():
     cats = [*json.loads(EVERY_CAT)["results"], {"x": 1}]
-    assert tcgcsv.card_games(cats) == {
+    assert tcgcsv.kept(cats) == {
         "magic": 1,
         "flesh-blood-tcg": 62,
         "one-piece-card-game": 68,
         "yugioh": 2,
         "pokemon-japan": 85,
+        "warhammer-box-sets": 41,
     }
 
 
-def test_by_default_every_card_game_is_kept(data_dir, sleeps, tracker):
+def test_by_default_every_game_is_a_step_of_its_own(data_dir, sleeps, tracker):
     fetch, asked = fake_fetch(every_game_answers())
     snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
-    assert snap.fetched == ["mtg", "fab", "op", "yugioh", "pokemon-japan"] and not snap.failed
+    games = [
+        "mtg",
+        "fab",
+        "op",
+        "pokemon-japan",
+        "warhammer-box-sets",
+        "yugioh",
+    ]  # played first, then by name
+    assert snap.fetched == games and not snap.failed
+    assert [step.label for step in tracker.steps] == [f"tcgcsv {game}" for game in games]
     day = tcgcsv.daily_dir() / "2026-09-24"
     assert (day / "categories.json").read_bytes() == EVERY_CAT
-    assert lines(day / "pokemon-japan" / "prices.jsonl.gz") == [
-        {"groupId": 30, "response": json.loads(prices(8))}
+    assert lines(day / "warhammer-box-sets" / "prices.jsonl.gz") == [
+        {"groupId": 40, "response": json.loads(prices(4))}
     ]
-    assert not [
-        url for url in asked if "/69/" in url or "/31/" in url
-    ]  # comics and sleeves aren't card games
-    more = next(step for step in tracker.steps if step.label == "tcgcsv 2 more games")
-    assert more.outcome == ("ok", "2 games, 3 groups")
-    assert (more.unit, more.updates[0], more.updates[-1]) == ("groups", (0, 3), (3, None))
+    assert not [url for url in asked if "/69/" in url or "/70/" in url]  # comics are never asked for
+    yugioh = tracker.steps[-1]
+    assert (yugioh.unit, yugioh.updates, yugioh.outcome) == (
+        "groups",
+        [(0, 2), (1, None), (2, None)],
+        ("ok", "2 groups"),
+    )
     assert tracker.outcomes()["tcgcsv mtg"] == ("ok", "1 group")
 
 
@@ -266,20 +280,25 @@ def test_a_rerun_the_same_day_costs_one_request(data_dir, sleeps, tracker):
     fetch, asked = fake_fetch(every_game_answers())
     snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
     assert asked == [f"{B}/last-updated.txt"]  # the day's category list is kept too
-    assert tracker.outcomes()["tcgcsv 2 more games"] == ("ok", "already have 2026-09-24")
-    assert sorted(snap.skipped) == ["fab", "mtg", "op", "pokemon-japan", "yugioh"]
+    assert tracker.outcomes() == {
+        "tcgcsv mtg": ("ok", "already have 2026-09-24"),
+        "tcgcsv fab": ("ok", "already have 2026-09-24"),
+        "tcgcsv op": ("ok", "already have 2026-09-24"),
+        "tcgcsv 3 more games": ("ok", "already have 2026-09-24"),
+    }
+    assert len(snap.skipped) == 6 and not snap.fetched
 
 
-def test_the_other_games_fail_one_at_a_time(data_dir, sleeps, tracker):
+def test_one_game_failing_leaves_the_rest(data_dir, sleeps, tracker):
     fetch, _ = fake_fetch(every_game_answers(**{f"{B}/tcgplayer/2/21/prices": net.FetchError("HTTP 503")}))
     snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
-    assert snap.failed == [("yugioh", "HTTP 503")] and "pokemon-japan" in snap.fetched
+    assert snap.failed == [("yugioh", "HTTP 503")] and "warhammer-box-sets" in snap.fetched
     assert not tcgcsv.day_dir(DAY, "yugioh").joinpath("prices.jsonl.gz").exists()  # the next run tries again
-    assert tracker.outcomes()["tcgcsv 2 more games"] == ("fail", "1 game, 1 group; 1 failed: yugioh")
+    assert tracker.outcomes()["tcgcsv yugioh"] == ("fail", "HTTP 503")
 
 
 def test_games_past_the_daily_request_budget_wait_a_day(data_dir, sleeps, monkeypatch):
-    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 12)  # yugioh would be requests 12 and 13
+    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 14)  # yugioh's price files would be requests 15 and 16
     snap = tcgcsv.snapshot(fetch=fake_fetch(every_game_answers())[0])
-    assert snap.failed == [("yugioh", tcgcsv.OVER_BUDGET)] and "pokemon-japan" in snap.fetched
-    assert snap.requests == 12
+    assert snap.failed == [("yugioh", tcgcsv.OVER_BUDGET)] and "warhammer-box-sets" in snap.fetched
+    assert snap.requests == 14
