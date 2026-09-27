@@ -60,6 +60,7 @@ class Snapshot:
     fetched: list[str] = field(default_factory=list)  # games stored this run
     skipped: list[str] = field(default_factory=list)  # games already stored for the day
     failed: list[tuple[str, str]] = field(default_factory=list)  # (game, why)
+    empty: list[str] = field(default_factory=list)  # games tcgcsv lists but has no set list for
     groups: dict[str, int] = field(default_factory=dict)  # game -> price files fetched
     requests: int = 0
 
@@ -175,12 +176,13 @@ def _categories(snap: Snapshot, fetch: Fetch) -> list[dict]:
     return cats
 
 
-def _groups(category: int, game_dir: Path, fetch: Fetch, snap: Snapshot) -> list[int]:
-    """A game's group IDs, sorted, keeping its groups response as groups.json."""
+def _groups(category: int, game_dir: Path, fetch: Fetch, snap: Snapshot) -> list[int] | None:
+    """A game's group IDs, sorted, keeping its groups response as groups.json; None when
+    tcgcsv has no group list for the category (404)."""
     body = fetch(f"{BASE}/tcgplayer/{category}/groups")
     snap.requests += 1
     if body is None:
-        raise net.FetchError("groups: HTTP 404")
+        return None
     group_ids = sorted(int(g["groupId"]) for g in _results(body, "groups"))
     _write(game_dir / "groups.json", body)
     return group_ids
@@ -227,7 +229,8 @@ def _game(
     tracker: Tracker,
 ) -> None:
     """One game as its own step: its groups, then every group's price file. category is
-    None when no category goes by the game's name."""
+    None when no category goes by the game's name. A category tcgcsv lists but has no group
+    list for is skipped, noted on its step, unless it's one of GAMES: then it fails."""
     step = tracker.step(f"tcgcsv {game}", unit="groups")
     try:
         if category is None:
@@ -236,6 +239,12 @@ def _game(
             raise net.FetchError(OVER_BUDGET)
         time.sleep(delay)
         group_ids = _groups(category, day_dir(snap.day, game), fetch, snap)
+        if group_ids is None:
+            if game in GAMES:
+                raise net.FetchError("groups: HTTP 404")
+            snap.empty.append(game)
+            step.ok("no sets on tcgcsv (HTTP 404); skipped")
+            return
         step.update(0, len(group_ids))
         _prices(category, group_ids, _target(snap.day, game), fetch, delay, snap, step.update)
     except net.FetchError as e:

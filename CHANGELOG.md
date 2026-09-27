@@ -158,6 +158,10 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A category tcgcsv lists but has no set list for (its groups answer 404, as My Little Pony's does) is skipped
+  and noted on its step instead of failing every sync; Magic, Flesh and Blood, and One Piece still fail. The live
+  progress display also clears itself when a command ends, so a step that failed last can't leave its spinner line
+  behind.
 - An answer cut off partway is a failed step, retried the next run, like any other failure. A tcgcsv answer cut
   off partway, chunked or short of its Content-Length, raised an error that stopped `riffle sync` and
   `riffle ingest prices` outright, skipping the rest of tcgcsv's games and everything after them; a timeout or

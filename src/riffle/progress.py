@@ -361,6 +361,7 @@ class LiveTracker:
             Times(),
             console=console,
             refresh_per_second=REFRESH,
+            transient=True,  # finished steps are printed lines; the running ones leave nothing behind
         )
 
     def __enter__(self) -> "LiveTracker":

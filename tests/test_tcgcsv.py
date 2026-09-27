@@ -297,6 +297,24 @@ def test_one_game_failing_leaves_the_rest(data_dir, sleeps, tracker):
     assert tracker.outcomes()["tcgcsv yugioh"] == ("fail", "HTTP 503")
 
 
+def test_a_category_without_a_group_list_is_skipped_and_noted(data_dir, sleeps, tracker):
+    snap = tcgcsv.snapshot(
+        fetch=fake_fetch(every_game_answers(**{f"{B}/tcgplayer/85/groups": None}))[0], tracker=tracker
+    )
+    assert snap.empty == ["pokemon-japan"] and not snap.failed
+    assert tracker.outcomes()["tcgcsv pokemon-japan"] == ("ok", "no sets on tcgcsv (HTTP 404); skipped")
+    assert not tcgcsv.day_dir(DAY, "pokemon-japan").joinpath("prices.jsonl.gz").exists()
+    assert "warhammer-box-sets" in snap.fetched  # the rest carry on
+
+
+def test_a_played_game_without_a_group_list_fails(data_dir, sleeps, tracker):
+    snap = tcgcsv.snapshot(
+        FAB, fetch=fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/groups": None}))[0], tracker=tracker
+    )
+    assert snap.failed == [("fab", "groups: HTTP 404")]
+    assert tracker.outcomes()["tcgcsv fab"] == ("fail", "groups: HTTP 404")
+
+
 def test_games_past_the_daily_request_budget_wait_a_day(data_dir, sleeps, monkeypatch):
     monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 14)  # yugioh's price files would be requests 15 and 16
     snap = tcgcsv.snapshot(fetch=fake_fetch(every_game_answers())[0])
