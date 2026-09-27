@@ -266,14 +266,14 @@ def ingest_mtgo(
 def ingest_prices(
     delay: float = typer.Option(0.1, help="Seconds between tcgcsv requests"),
 ) -> None:
-    """Keep today's prices: tcgcsv's price files for every game Riffle covers, and Scryfall's for Magic."""
+    """Keep today's prices: tcgcsv's for everything it carries, Scryfall's and MTGJSON's for Magic."""
     with _tracked("riffle ingest prices") as tracker:
         _snapshot_prices(tracker, online=True, delay=delay)
 
 
 def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None:
     """Today's price snapshot. Problems are reported, never raised: a sync must finish without it."""
-    from riffle.ingest import scryfall, tcgcsv
+    from riffle.ingest import mtgjson, scryfall, tcgcsv
 
     step = tracker.step("Scryfall prices")
     try:
@@ -292,6 +292,10 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
             step.drop()  # offline resyncs (watch, ingest manabox) shouldn't repeat "already have"
     if not online:
         return
+    try:
+        mtgjson.snapshot(tracker=tracker)
+    except OSError as e:
+        tracker.step("MTGJSON prices").fail(str(e))
     try:
         snap = tcgcsv.snapshot(delay=delay, tracker=tracker)
     except (OSError, net.FetchError) as e:
@@ -624,7 +628,9 @@ def _resync() -> None:
 
 
 @app.command("sync")
-def sync_cmd(offline: bool = typer.Option(False, help="Skip the Scryfall refresh and tcgcsv prices")) -> None:
+def sync_cmd(
+    offline: bool = typer.Option(False, help="Skip the Scryfall refresh and price downloads"),
+) -> None:
     """Refresh card data, keep today's prices, pick up a ManaBox export, rewrite _generated/, append _log/."""
     with _tracked("riffle sync") as tracker:
         _run_sync(tracker, offline=offline)

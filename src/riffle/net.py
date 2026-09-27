@@ -1,9 +1,10 @@
-"""HTTP for every outside source: Scryfall, mtgo.com, tcgcsv.com.
+"""HTTP for every outside source: Scryfall, mtgo.com, tcgcsv.com, MTGJSON.
 
-All three ask clients to send a descriptive User-Agent. Scryfall also says a
-429 must never be ignored or powered through, so rate-limit answers wait —
-for Retry-After when the server sends one — before the next try. A 404 is an
-answer, not a failure: callers get None and decide what "missing" means.
+Every request sends a descriptive User-Agent, as the first three ask.
+Scryfall also says a 429 must never be ignored or powered through, so
+rate-limit answers wait — for Retry-After when the server sends one — before
+the next try. A 404 is an answer, not a failure: callers get None and decide
+what "missing" means.
 
 Downloads stream to <dest>.part and are renamed into place only when
 complete, so an interrupted run never leaves a truncated file. An answer cut

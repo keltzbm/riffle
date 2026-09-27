@@ -33,6 +33,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   metadata too. Card data and images stay under their sources' terms.
 - Test coverage: every `uv run pytest` measures line and branch coverage (pytest-cov) and lists the files with
   untested code. CI fails a run below 75%, a floor to raise as coverage grows.
+- MTGJSON prices for Magic, several stores in one file: Card Kingdom's retail and buylist prices, TCGplayer,
+  Mana Pool, Cardmarket (EUR), and Cardhoarder (MTGO tix). `riffle ingest prices` and `riffle sync` keep MTGJSON's
+  `AllPricesToday` once per MTGJSON build, in `~/.local/share/riffle/mtgjson/daily/<day>.json.xz`, and on the first
+  run its `AllPrices`, the past 90 days, in `mtgjson/90-days/`, so the history starts three months back. A day
+  missed later (the Mac was off) comes back with a new 90-day file, kept when a day is missing, at most every 30
+  days. Files are kept as returned, named by the date inside, once each matches MTGJSON's `.sha256` of it and
+  decompresses whole. Cardhoarder's prices are tix, though MTGJSON labels them "USD". `Meta.json` says whether there's a new day, so a rerun costs one request.
 - Daily price snapshots, Riffle's own price history: `riffle ingest prices` (and `riffle sync`) fetch every set's
   TCGplayer price file from tcgcsv.com for everything it carries except comics, 92 of its 94 categories (card
   games, miniatures, board games, and supplies), one file at a time and once per day, into
