@@ -122,6 +122,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- An answer cut off partway is a failed step, retried the next run, like any other failure. A tcgcsv answer cut
+  off partway, chunked or short of its Content-Length, raised an error that stopped `riffle sync` and
+  `riffle ingest prices` outright, skipping the rest of tcgcsv's games and everything after them; a timeout or
+  dropped connection while reading one stopped the rest of tcgcsv's games; and a Scryfall bulk file that ended
+  short of its Content-Length was kept as if whole. Any connection error before an answer, and a garbled status
+  line, is retried like a dropped connection.
 - Art Series cards ("Sol Ring // Sol Ring", about 2,200 of them) no longer count as the real card. The DuckDB
   catalog folded them onto it along with Secret Lair reversibles, so an art card in a collection counted as
   owning the card, its price could become the card's cheapest, and, as the newest printing, it replaced the

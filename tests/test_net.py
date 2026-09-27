@@ -1,5 +1,6 @@
 """riffle.net against a fake urlopen: retries, rate limits, 404s, and streamed downloads."""
 
+import http.client
 import io
 import urllib.error
 
@@ -55,9 +56,17 @@ def test_stalls_are_retried_with_growing_waits(server):
 
 def test_gives_up_after_the_last_retry(server):
     server["answers"] = [urllib.error.URLError("down")] * 3
-    with pytest.raises(net.FetchError, match="no answer after 3 tries"):
+    with pytest.raises(net.NoAnswer, match=r"no answer after 3 tries \(down\)"):
         net.get("https://example.test")
     assert len(server["requests"]) == 3
+
+
+def test_any_connection_error_is_retried_then_no_answer(server):
+    server["answers"] = [OSError(65, "No route to host"), OSError(65, "No route to host"), Resp(b"ok")]
+    assert net.get("https://example.test") == b"ok"
+    server["answers"] = [ConnectionRefusedError()] * 3
+    with pytest.raises(net.NoAnswer, match=r"no answer after 3 tries \(ConnectionRefusedError\)"):
+        net.get("https://example.test")
 
 
 def test_rate_limit_waits_for_retry_after(server):
@@ -119,6 +128,53 @@ def test_interrupted_download_leaves_no_file(server, tmp_path):
     with pytest.raises(net.FetchError, match="interrupted"):
         net.download("https://example.test", dest)
     assert not dest.exists() and not (tmp_path / "f.part").exists()
+
+
+def test_a_chunked_download_cut_off_is_a_fetch_error(server, tmp_path):
+    class CutOff(Resp):
+        def read(self, n=-1):
+            raise http.client.IncompleteRead(b"par", 10)
+
+    server["answers"] = [CutOff(b"", length=False)]
+    with pytest.raises(net.FetchError, match=r"interrupted after 0 bytes \(IncompleteRead\(3 bytes read"):
+        net.download("https://example.test", tmp_path / "f")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_download_short_of_its_content_length_is_kept_nowhere(server, tmp_path):
+    short = Resp(b"01234")
+    short.headers = {"Content-Length": "10"}  # the server promised 10 bytes and closed after 5
+    server["answers"] = [short]
+    with pytest.raises(net.FetchError, match="cut off after 5 of 10 bytes"):
+        net.download("https://example.test", tmp_path / "f")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_answer_cut_off_mid_read_is_a_fetch_error(server):
+    class CutOff(Resp):
+        def read(self, n=-1):
+            raise http.client.IncompleteRead(b"{", 100)
+
+    server["answers"] = [CutOff(b"")]
+    with pytest.raises(net.FetchError, match="answer broke off while reading"):
+        net.get("https://example.test")
+
+
+def test_a_timeout_mid_read_is_a_fetch_error(server):
+    class Stalled(Resp):
+        def read(self, n=-1):
+            raise TimeoutError("timed out")
+
+    server["answers"] = [Stalled(b"")]
+    with pytest.raises(net.FetchError, match=r"answer broke off while reading \(timed out\)") as e:
+        net.get("https://example.test")
+    assert not isinstance(e.value, net.NoAnswer)  # it answered; only this answer is lost
+
+
+def test_a_garbled_status_line_is_retried(server):
+    server["answers"] = [http.client.BadStatusLine("garbage"), Resp(b"ok")]
+    assert net.get("https://example.test") == b"ok"
+    assert server["sleeps"] == [2.0]
 
 
 def test_download_404_writes_nothing(server, tmp_path):
