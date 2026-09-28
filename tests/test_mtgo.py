@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from typer.testing import CliRunner
 
-from riffle import net, trickle
+from riffle import net, times, trickle
 from riffle.analysis import metagame
 from riffle.ingest import mtgo
 from riffle.ingest.decklist import parse_text
@@ -410,6 +410,22 @@ def test_a_404_or_a_redirect_is_an_ordinary_miss(no_index):
     assert owed[OLD].tries == owed[OLDER].tries == 1
 
 
+def test_a_retry_waits_and_goes_after_every_event_never_asked_for(no_index):
+    _owe(YOUNG, OLD, OLDER)
+    trickle.save_pace(mtgo.SOURCE, trickle.Pace(level=1))
+    pages = {_url(s): _page(CHALLENGE) for s in (YOUNG, OLD, OLDER)}
+    site, clock = Site(pages, moved={_url(YOUNG): "https://www.mtgo.com/decklists"}), Clock()
+    for step in (timedelta(0), timedelta(minutes=10), timedelta(hours=1), timedelta(minutes=10)):
+        clock.at += step
+        _trickle(site, clock)
+    # the newest first, which redirects; then, while it waits its hour and after, the events
+    # never asked for; only then the retry
+    assert site.asked == [_url(s) for s in (YOUNG, OLD, OLDER, YOUNG)]
+    owed = trickle.load_owed(mtgo.SOURCE)
+    assert list(owed) == [YOUNG] and (owed[YOUNG].tries, owed[YOUNG].asks) == (2, 2)
+    assert owed[YOUNG].retry_at() == clock.at + timedelta(hours=2)
+
+
 def test_a_429_throttles_without_asking_for_a_stored_event(no_index):
     _owe(OLD)
     site = Site({_url(OLD): 429})
@@ -469,7 +485,7 @@ def test_forget_and_status(no_index):
     log.add(trickle.Request(trickle.stamp(NOW - timedelta(minutes=5)), "x", 200, 1, 1, "whole"))
     log.add(trickle.Request(trickle.stamp(NOW - timedelta(hours=2)), "x", 200, 1, 1, "empty"))
     st = mtgo.status(Clock())
-    assert list(st.owed) == [OLD] and st.due == 1 and (len(st.window), len(st.day)) == (1, 2)
+    assert list(st.owed) == [OLD] and st.at == NOW and (len(st.window), len(st.day)) == (1, 2)
     assert not st.sweep_done and st.paused_until is None
 
 
@@ -540,12 +556,35 @@ def test_the_status_command():
     assert result.exit_code == 0
     for line in (
         "pace       2 pages a run, up a level after 140 more whole answers",
-        "owed       2 events, 2 due now",
+        "owed       2 events: 2 never asked, 0 to retry",
         "2026-09  1",
         "2026-08  1",
         "indexes    read back to 2026-09, still going back",
     ):
         assert line in result.output
+
+
+def test_the_status_command_lists_the_retries_newest_first():
+    at = trickle.now()
+    owed = trickle.load_owed(mtgo.SOURCE)
+    owed["never-asked"] = trickle.Owed(day=at.date().isoformat(), found="x")
+    for n in range(12):  # each a day older than the last
+        slug = f"retry-{n:02}"
+        owed[slug] = trickle.Owed(day=(at - timedelta(days=n)).date().isoformat(), found="x")
+        owed[slug].tried(at - timedelta(minutes=30), "redirect", miss=True)
+    owed["retry-01"].last_try = trickle.stamp(at - timedelta(hours=3))  # asked twice, its 2 hours up
+    owed["retry-01"].last, owed["retry-01"].asks = "not published yet", 2
+    trickle.save_owed(mtgo.SOURCE, owed)
+    lines = _cli("mtgo", "status").output.splitlines()
+    assert "owed       13 events: 1 never asked, 12 to retry" in lines
+    first = lines.index(next(line for line in lines if line.startswith("retries")))
+    soon = times.utc(owed["retry-00"].retry_at())
+    assert lines[first : first + 3] == [
+        f"retries    retry-00  redirect, asked once, next try {soon}",
+        "           retry-01  not published yet, asked 2 times, due now",
+        f"           retry-02  redirect, asked once, next try {times.utc(owed['retry-02'].retry_at())}",
+    ]
+    assert lines[first + 9].startswith("           retry-09") and lines[first + 10] == "           and 2 more"
 
 
 def test_the_forget_command():

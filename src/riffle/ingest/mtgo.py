@@ -349,9 +349,13 @@ def _event_id(slug: str) -> int:
 
 
 def due(owed: dict[str, trickle.Owed], at: datetime) -> list[str]:
-    """Owed events due a try, newest first."""
+    """Owed events due a try: those never asked for, newest first, then retries, newest
+    first. A retry gets only the pages new events leave, so one that keeps missing can't
+    hold up the rest."""
     return sorted(
-        (s for s, o in owed.items() if o.due(at)), key=lambda s: (owed[s].day, _event_id(s)), reverse=True
+        (s for s, o in owed.items() if o.due(at)),
+        key=lambda s: (owed[s].last_try is None, owed[s].day, _event_id(s)),
+        reverse=True,
     )
 
 
@@ -569,8 +573,8 @@ def run_trickle(
     tracker: Tracker = SILENT,
 ) -> TrickleResult:
     """One run: what the job does every 10 minutes. Paused after a throttle, it asks for
-    nothing; otherwise at most one index page, then owed events that are due, newest
-    first, as many as the pace allows."""
+    nothing; otherwise at most one index page, then owed events that are due (never
+    asked for first, then retries, each newest first), as many as the pace allows."""
     with _lock() as held:
         if not held:
             return TrickleResult(busy=True)
@@ -637,12 +641,12 @@ def forget(slug: str) -> bool:
 
 @dataclass
 class TrickleStatus:
+    at: datetime
     pace: trickle.Pace
     paused_until: datetime | None
     window: list[trickle.Request]  # the last trickle.WINDOW
     day: list[trickle.Request]  # the last 24 hours
     owed: dict[str, trickle.Owed]
-    due: int
     months: dict[str, dict]
     sweep_done: bool
 
@@ -658,4 +662,4 @@ def status(clock: Callable[[], datetime] = trickle.now) -> TrickleStatus:
     day = log.since(at - timedelta(days=1))
     window = [r for r in day if r.at >= trickle.stamp(at - trickle.WINDOW)]
     done = bool(months) and sweep_next(months, at) is None
-    return TrickleStatus(pace, pace.paused(at), window, day, owed, len(due(owed, at)), months, done)
+    return TrickleStatus(at, pace, pace.paused(at), window, day, owed, months, done)

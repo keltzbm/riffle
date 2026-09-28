@@ -190,6 +190,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- An MTGO event that keeps missing no longer holds up the trickle. Owed events went newest first, and one under
+  30 days old was asked again on every run, so a new event that redirected took one of each run's two pages; with
+  the index sweep taking the other, the trickle stored nothing. Events never asked for now come first, newest
+  first, and retries get only the pages left over. A retry waits an hour after its try, doubling with each try up
+  to a day, and a week once it's 30 days old; nothing is dropped. `riffle mtgo status` counts the events never
+  asked for and those to retry, and lists the newest 10 retries with what each last came to, how many times it
+  was asked, and when it's next due.
 - Card Kingdom's and Mana Pool's lists are dated by their own stamps, Card Kingdom's `created_at` (read as Pacific
   time) and Mana Pool's `as_of` (UTC), not by the Mac's date. A run after midnight kept the day before's list under
   the new day, and the new day's own list was never asked for. A list for a day already kept isn't kept again, and
