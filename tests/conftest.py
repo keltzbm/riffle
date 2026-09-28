@@ -1,8 +1,11 @@
 """Shared fixtures: an in-memory Catalog (no database, no download) and a test Postgres."""
 
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,6 +106,8 @@ PRINTINGS = {
 
 
 class FakeCatalog:
+    day: date | None = date(2026, 9, 21)  # the Scryfall prices it holds
+
     def resolve(self, name):
         key = name.strip().lower()
         for oid, (n, *_) in CARDS.items():
@@ -115,6 +120,9 @@ class FakeCatalog:
 
     def prices(self, card_ids):
         return {c: Prices(*CARDS[c][2:4]) for c in card_ids if c in CARDS}
+
+    def prices_day(self):
+        return self.day
 
     def printings(self, sids):
         return {s: PRINTINGS[s] for s in sids if s in PRINTINGS}
@@ -175,6 +183,27 @@ def isolated(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
 
 
+# ---- times ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def denver():
+    """The Mac's clock set to Denver's time (MDT in summer), for what the terminal shows."""
+    with pytest.MonkeyPatch.context() as m:
+        m.setenv("TZ", "America/Denver")
+        time.tzset()
+        yield
+    time.tzset()
+
+
+@pytest.fixture
+def on_a_terminal(denver, monkeypatch):
+    """riffle.times.shown thinks it prints to a terminal, in Denver."""
+    from riffle import times
+
+    monkeypatch.setattr(times, "sys", SimpleNamespace(stdout=SimpleNamespace(isatty=lambda: True)))
+
+
 # ---- progress -----------------------------------------------------------------------
 
 
@@ -184,13 +213,16 @@ class RecordedStep:
     total: int | None
     unit: str
     updates: list[tuple[int, int | None]] = field(default_factory=list)
-    outcome: tuple[str, ...] | None = None  # ("ok", note), ("fail", why), ("drop",)
+    outcome: tuple[str, ...] | None = None  # ("ok", note), ("warn", note), ("fail", why), ("drop",)
 
     def update(self, done: int, total: int | None = None) -> None:
         self.updates.append((done, total))
 
     def ok(self, note: str = "") -> None:
         self.outcome = ("ok", note)
+
+    def warn(self, note: str) -> None:
+        self.outcome = ("warn", note)
 
     def fail(self, why: str) -> None:
         self.outcome = ("fail", why)

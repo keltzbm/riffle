@@ -24,12 +24,14 @@ the zips as returned:
     <data_dir>/goatbots/card-definitions.zip       the latest definitions
 
 The daily zip is small, so each run fetches it and keeps it when its day is new. The
-definitions are fetched again whenever they're older than the newest day kept. The yearly
-archives are the history before Riffle's own: GoatBots keeps only the last few years, so
-every year it still has is kept once, newest first, until a year it has none for, which is
-noted so it isn't asked for again. The current year's is kept as it stands, and again whole
-once the year is over. Nothing here reads the prices back: the price loader does. Headers,
-retries, and 429 handling: riffle.net.
+definitions are fetched again whenever they're older than the newest day kept. An empty
+price file ({}) keeps nothing, and empty definitions don't replace the kept ones; either is
+asked for again next run, and is a warning after seven runs in a row (riffle.ingest.empties).
+The yearly archives are the history before Riffle's own: GoatBots keeps only the last few
+years, so every year it still has is kept once, newest first, until a year it has none for,
+which is noted so it isn't asked for again. The current year's is kept as it stands, and
+again whole once the year is over. Nothing here reads the prices back: the price loader
+does. Headers, retries, and 429 handling: riffle.net.
 """
 
 import json
@@ -42,8 +44,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from riffle import net
+from riffle import net, times
 from riffle.config import data_dir
+from riffle.ingest import empties
 from riffle.progress import SILENT, Step, Tracker
 
 BASES = ("https://www.goatbots.com/download/prices", "https://www.goatbots.com/download")
@@ -167,6 +170,10 @@ def _latest(snap: Snapshot, download: Download, step: Step) -> None:
             raise net.FetchError(f"{LATEST}: HTTP 404")
         day, n = _prices(fresh)
         snap.day = day
+        if not n:
+            empties.report(step, "goatbots/prices", "empty price file")
+            return
+        empties.clear("goatbots/prices")
         dest = daily_dir() / f"{day.isoformat()}.zip"
         if dest.exists():
             step.ok(f"already have {day}")
@@ -188,7 +195,7 @@ def definitions_due() -> bool:
 
 
 def _definitions(snap: Snapshot, download: Download, step: Step) -> None:
-    """The latest card definitions, replacing the last."""
+    """The latest card definitions, replacing the last unless they're empty."""
     dest = goatbots_dir() / DEFINITIONS
     fresh = goatbots_dir() / f"{DEFINITIONS}.new"
     try:
@@ -201,6 +208,10 @@ def _definitions(snap: Snapshot, download: Download, step: Step) -> None:
             doc = _json(zf, entry, DEFINITIONS)
         if not isinstance(doc, dict) or not all(isinstance(v, dict) and "name" in v for v in doc.values()):
             raise net.FetchError(f"{DEFINITIONS}: {entry} isn't MTGO IDs and cards")
+        if not doc:
+            empties.report(step, "goatbots/cards", "empty card definitions")
+            return
+        empties.clear("goatbots/cards")
         fresh.replace(dest)
         snap.kept.append(DEFINITIONS)
         step.ok(_count(len(doc), "card"))
@@ -296,5 +307,5 @@ def snapshot(
             _definitions(snap, download, cards)
         except (net.FetchError, OSError) as e:
             cards.fail(str(e))
-    _years(snap.day or today or date.today(), snap, download, tracker)
+    _years(snap.day or today or times.today(), snap, download, tracker)
     return snap

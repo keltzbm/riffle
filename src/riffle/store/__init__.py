@@ -6,6 +6,7 @@ for all of its cards in one call, not one call per card.
 """
 
 from collections.abc import Collection
+from datetime import date
 from typing import Protocol
 
 from riffle.models import CardRules, Prices, Printing
@@ -19,6 +20,10 @@ class Catalog(Protocol):
 
     def prices(self, card_ids: Collection[str]) -> dict[str, Prices]:
         """Each card's cheapest paper and MTGO price across its printings; unknown IDs are left out."""
+
+    def prices_day(self) -> date | None:
+        """The day of Scryfall's prices the catalog holds: the UTC date Scryfall published the
+        bulk file it was loaded from. None before the first load."""
 
     def printings(self, scryfall_ids: Collection[str]) -> dict[str, Printing]:
         """The printings these Scryfall IDs name, by Scryfall ID; unknown IDs are left out."""

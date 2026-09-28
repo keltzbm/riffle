@@ -125,18 +125,34 @@ returned it under `~/.local/share/riffle/`:
 - `cardmarket/daily/<day>/<game>.json.gz` — Cardmarket's price guide for every
   game it sells, and its accessories, in euros: each product's low, average, and
   trend prices, and its averages over 1, 7, and 30 days, foils too. A guide under
-  20 hours old isn't asked for again, so a rerun costs nothing.
+  20 hours old isn't asked for again, so a rerun costs nothing. `<day>` is the
+  guide's own `createdAt` date.
 - `cardkingdom/daily/<day>/singles.json.gz` and `sealed.json.gz` — Card
   Kingdom's whole price list, as it stood that day: for every single, what it
   sells it for and how many it has in each condition (NM, EX, VG, G), foil and
   etched too, and what it pays and how many it wants; for every sealed product,
-  the same without conditions. `<day>` is the Mac's date; a list kept today
-  isn't asked for again.
+  the same without conditions. `<day>` is the date in the list's own
+  `created_at`, which names no zone; Riffle reads it as Pacific time, where Card
+  Kingdom is. A day's list is kept once, and not asked for while Card Kingdom's
+  today is kept.
 - `manapool/daily/<day>/singles.json.gz`, `variants.json.gz`, and
   `sealed.json.gz` — Mana Pool's price lists, the same way: each printing's
   market price (nonfoil and foil) and its cheapest, Near Mint, and Lightly
   Played or better prices in every finish; the lowest price and how many are
   listed for each language, condition, and finish; and every sealed product.
+  `<day>` is the UTC date in the list's own `as_of`.
+- `cardkingdom/aside/` and `manapool/aside/` — lists that aren't any day's: one
+  with no readable stamp, or a second copy of a day already kept. Nothing is
+  deleted.
+
+A day is always the source's own, never the Mac's. An answer with nothing in it
+(an empty list or guide, or a Cardmarket game with no guide) keeps nothing and
+is asked for again every run; `empty-answers.json` notes since when, and after
+seven runs in a row the sync warns.
+
+```bash
+riffle check                                # every kept file under its own day, made before it was fetched
+```
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
@@ -157,6 +173,9 @@ The scheduled job runs as the Mac wakes, so `riffle sync` first waits up to two
 minutes for the network, then syncs offline if it's still down. No step stops a
 sync: each failure is reported, the rest carries on, and the command exits 1
 naming what failed. `riffle schedule` shows the last exit; `sync.log` says why.
+The log's times are UTC; what Riffle prints to the terminal is the Mac's time,
+with the zone. The notes it writes are dated in UTC, and the price log by the
+Scryfall day of the prices it logs.
 
 ## Database (Postgres)
 
@@ -204,6 +223,16 @@ and data folders and an unreachable database URL, so none can touch real data.
 Every `uv run pytest` also measures line and branch coverage and lists the files
 with untested code. CI's Linux jobs, which run every test against Postgres, fail
 below 90%; `--no-cov` skips the measurement.
+
+Git hooks run the same checks before your commits and pushes. Turn them on once
+per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`pre-commit` runs ruff's lint and format checks; `pre-push` runs everything CI
+does, with the 90% floor, and needs Postgres up (`riffle db up`).
 
 ## GitHub Codespaces
 

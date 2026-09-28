@@ -184,6 +184,15 @@ def test_download_404_writes_nothing(server, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_download_can_name_other_statuses_that_mean_missing(server, tmp_path):
+    server["answers"] = [http_error(403)]
+    assert net.download("https://example.test", tmp_path / "f", missing=(403, 404)) is None
+    server["answers"] = [http_error(403)]
+    with pytest.raises(net.FetchError, match="HTTP 403"):
+        net.download("https://example.test", tmp_path / "f")  # 404 only, unless the caller says
+    assert list(tmp_path.iterdir()) == []
+
+
 class Answered(Resp):
     """A response that says where it came from, as urlopen's do after a redirect."""
 

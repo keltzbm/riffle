@@ -79,6 +79,8 @@ def test_an_offline_sync_writes_the_vault_from_the_catalog(tmp_path, monkeypatch
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (tmp_path / "2026-09-26.jsonl.gz", False))
     result = run("sync", "--offline")
     assert result.exit_code == 0, result.output
-    assert "1 decks · 2 notes updated" in result.output
+    assert (
+        "1 decks · 2 notes updated · 0 prices logged for 2026-09-21 · " in result.output
+    )  # the catalog's day
     assert (mtg / "_generated" / "burn-data.md").exists()
     assert opened == ["open", "close"]

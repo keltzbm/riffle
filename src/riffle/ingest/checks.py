@@ -1,0 +1,230 @@
+"""Checks that every price file Riffle keeps is dated as it should be: under the day its own
+stamp says, and made no later than it was fetched. Read-only and quick: each file's first
+bytes, and when it was fetched (the time in the gzip header of a file Riffle gzipped, the
+file's own time otherwise). `riffle check` runs them all.
+
+    Card Kingdom, Mana Pool   each list under the day of its created_at or as_of, made no later
+                              than its fetch. Card Kingdom's created_at names no zone: read as
+                              Pacific time, a list made after its fetch means Card Kingdom's
+                              clock isn't Pacific. The lists set aside are counted.
+    Cardmarket                each guide under the day of its createdAt, made before its fetch
+    MTGJSON                   each file named by the date in its meta, no later than its fetch
+    GoatBots                  each day's zip holds that day's price file, no later than its fetch
+    tcgcsv                    each day's last-updated.txt is that day's, from before its fetch
+    Scryfall                  no day's prices kept before that day began (UTC)
+"""
+
+import lzma
+import re
+import zipfile
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+
+from riffle import times
+from riffle.config import data_dir
+from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
+from riffle.progress import elapsed
+
+SLACK = pricelists.SLACK
+MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
+
+
+@dataclass
+class Report:
+    source: str
+    what: str  # what a file is: "list", "guide", "day"
+    files: int = 0
+    days: set[str] = field(default_factory=set)
+    problems: list[str] = field(default_factory=list)  # "<file>: what's wrong"
+    notes: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        count = f"{self.files:,} {self.what}{'s' * (self.files != 1)}"
+        if self.days and len(self.days) != self.files:
+            count += f" over {len(self.days):,} day{'s' * (len(self.days) != 1)}"
+        found = f"{len(self.problems)} wrong" if self.problems else "all right"
+        return f"{count}: {found}" if self.files else "nothing kept yet"
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(data_dir()).as_posix()
+
+
+def _day(name: str) -> date | None:
+    try:
+        return date.fromisoformat(name)
+    except ValueError:
+        return None
+
+
+def _file_time(path: Path) -> datetime:
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+
+
+def _made_late(rep: Report, path: Path, made: datetime, got: datetime | None) -> None:
+    """Note a file made after it was fetched, or with no fetch time to tell."""
+    if got is None:
+        rep.problems.append(f"{_rel(path)}: no time it was fetched")
+    elif made - got > SLACK:
+        rep.problems.append(
+            f"{_rel(path)}: made {times.shown(made)}, after it was fetched at {times.shown(got)}"
+        )
+
+
+def store(lists: tuple[pricelists.PriceList, ...]) -> Report:
+    """A store's kept lists: each under its own day, made before its fetch."""
+    first = lists[0]
+    rep = Report(first.label.rsplit(" ", 1)[0], "list")
+    root = data_dir() / first.store
+    named = {plist.name: plist for plist in lists}
+    ages = []
+    for path in sorted((root / "daily").glob("*/*.json.gz")):
+        plist = named.get(path.name.removesuffix(".json.gz"))
+        if plist is None:
+            continue
+        rep.files += 1
+        rep.days.add(path.parent.name)
+        made = pricelists.kept_made(path, plist)
+        if made is None:
+            rep.problems.append(f"{_rel(path)}: no readable {plist.stamp}")
+            continue
+        day = pricelists.day_of(made, plist)
+        if day.isoformat() != path.parent.name:
+            rep.problems.append(f"{_rel(path)}: made on {day}, kept under {path.parent.name}")
+        got = pricelists.fetched(path)
+        if got is None:
+            rep.problems.append(f"{_rel(path)}: no time it was fetched")
+        elif made - got > SLACK:
+            stamp = made.astimezone(plist.zone).strftime("%Y-%m-%d %H:%M:%S")
+            rep.problems.append(
+                f"{_rel(path)}: its {plist.stamp} {stamp}, read as {plist.zone_name}, is "
+                f"{times.shown(made)}, after it was fetched at {times.shown(got)}: "
+                f"{rep.source}'s clock isn't {plist.zone_name}"
+            )
+        else:
+            ages.append(got - made)
+    if ages:
+        span = elapsed(min(ages).total_seconds())
+        if len(ages) > 1:
+            span += f" to {elapsed(max(ages).total_seconds())}"
+        rep.notes.append(f"read as {first.zone_name}, each list was made {span} before it was fetched")
+    aside = sorted((root / "aside").glob("*.json.gz"))
+    if aside:
+        rep.notes.append(f"{len(aside)} set aside in {first.store}/aside, not as any day's")
+    return rep
+
+
+def cardmarket_guides() -> Report:
+    """Each guide under its createdAt day, made before its fetch."""
+    rep = Report("Cardmarket", "guide")
+    for path in sorted(cardmarket.daily_dir().glob("*/*.json.gz")):
+        rep.files += 1
+        rep.days.add(path.parent.name)
+        made = cardmarket.stamp(path)
+        if made is None:
+            rep.problems.append(f"{_rel(path)}: no readable createdAt")
+            continue
+        if made.date().isoformat() != path.parent.name:
+            rep.problems.append(f"{_rel(path)}: made on {made.date()}, kept under {path.parent.name}")
+        _made_late(rep, path, made, pricelists.fetched(path))
+    return rep
+
+
+def _mtgjson_day(path: Path) -> date | None:
+    try:
+        with lzma.open(path) as f:
+            found = MTGJSON_DATE.search(f.read(512))
+    except (OSError, EOFError, lzma.LZMAError):
+        return None
+    return _day(found.group(1).decode()) if found else None
+
+
+def mtgjson_files() -> Report:
+    """Each file named by its meta's date, from no later than its fetch."""
+    rep = Report("MTGJSON", "file")
+    for folder in (mtgjson.daily_dir(), mtgjson.history_dir()):
+        for path in sorted(folder.glob("*.json.xz")):
+            rep.files += 1
+            named, inside = path.name.removesuffix(".json.xz"), _mtgjson_day(path)
+            if inside is None:
+                rep.problems.append(f"{_rel(path)}: no readable meta date")
+            elif inside.isoformat() != named:
+                rep.problems.append(f"{_rel(path)}: its meta says {inside}")
+            elif inside > _file_time(path).date():
+                rep.problems.append(
+                    f"{_rel(path)}: dated after it was fetched, {times.shown(_file_time(path))}"
+                )
+    return rep
+
+
+def goatbots_days() -> Report:
+    """Each day's zip holds that day's price file, from no later than its fetch."""
+    rep = Report("GoatBots", "day")
+    for path in sorted(goatbots.daily_dir().glob("*.zip")):
+        rep.files += 1
+        named = path.name.removesuffix(".zip")
+        try:
+            with zipfile.ZipFile(path) as zf:
+                days = goatbots.price_days(zf)
+        except goatbots.DAMAGED:
+            rep.problems.append(f"{_rel(path)}: not a zip")
+            continue
+        newest = max(days) if days else None
+        if newest is None or newest.isoformat() != named:
+            rep.problems.append(f"{_rel(path)}: holds {newest or 'no price file'}")
+        elif newest > _file_time(path).date() + timedelta(days=1):  # GoatBots' day is Central European
+            rep.problems.append(f"{_rel(path)}: dated after it was fetched, {times.shown(_file_time(path))}")
+    return rep
+
+
+def tcgcsv_days() -> Report:
+    """Each day's last-updated.txt says that day, from before it was fetched."""
+    rep = Report("tcgcsv", "day")
+    root = tcgcsv.daily_dir()
+    for folder in sorted(root.iterdir() if root.is_dir() else []):
+        if not folder.is_dir() or _day(folder.name) is None:
+            continue
+        rep.files += 1
+        stamp = folder / "last-updated.txt"
+        try:
+            made = datetime.strptime(stamp.read_text().strip(), "%Y-%m-%dT%H:%M:%S%z")
+        except (OSError, ValueError):
+            rep.problems.append(f"{_rel(stamp)}: missing or unreadable")
+            continue
+        if made.astimezone(UTC).date().isoformat() != folder.name:
+            rep.problems.append(f"{_rel(stamp)}: says {made.astimezone(UTC).date()}")
+        _made_late(rep, stamp, made, _file_time(stamp))
+    return rep
+
+
+def scryfall_days() -> Report:
+    """No day's prices kept before that day began (UTC)."""
+    rep = Report("Scryfall", "day")
+    for path in sorted(scryfall.prices_dir().glob("*.jsonl.gz")):
+        rep.files += 1
+        day = _day(path.name.removesuffix(".jsonl.gz"))
+        got = pricelists.fetched(path)
+        if day is None:
+            rep.problems.append(f"{_rel(path)}: not named by a day")
+        elif got is None:
+            rep.problems.append(f"{_rel(path)}: no time it was kept")
+        elif got.date() < day:
+            rep.problems.append(f"{_rel(path)}: kept {times.shown(got)}, before its day began")
+    return rep
+
+
+CHECKS: tuple[Callable[[], Report], ...] = (
+    lambda: store(pricelists.CARD_KINGDOM),
+    lambda: store(pricelists.MANA_POOL),
+    cardmarket_guides,
+    mtgjson_files,
+    goatbots_days,
+    tcgcsv_days,
+    scryfall_days,
+)
+
+
+def run() -> list[Report]:
+    return [check() for check in CHECKS]

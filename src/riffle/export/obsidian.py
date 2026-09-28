@@ -12,9 +12,10 @@ generated names: Obsidian reads "aesi-lands.data" as a ".data" file.
 import hashlib
 import json
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
+from riffle import times
 from riffle.analysis.ownership import BUY, MARK, OWN, Row, summary
 from riffle.analysis.pricing import DeckPrice
 from riffle.config import data_dir
@@ -232,4 +233,5 @@ def write_summary(gen_dir: Path, text: str) -> bool:
 
 
 def today() -> str:
-    return date.today().isoformat()
+    """Today's date in UTC, as the notes are dated."""
+    return times.today().isoformat()

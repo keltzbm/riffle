@@ -2,15 +2,17 @@
 
 Ingest code reports through a Tracker and never draws anything itself: it
 opens a step, updates it with a count (or bytes) as work proceeds, and ends it
-with ok(note), fail(why), or drop() when there's nothing worth recording.
+with ok(note), warn(note) for something to look at that isn't a failure,
+fail(why), or drop() when there's nothing worth recording.
 
 The CLI picks the display with open_tracker(). On a terminal, Rich draws a line per
 running step: a spinner, a bar of braille dots and its percentage (see _bar()), the
 count or bytes and speed, and the time so far with how long is left, or how long it
-has been waiting. A finished step turns into a permanent line, a green ✔ (or a red
-✘) with its note and how long it took, printed in order with everything else the
-command says. Anywhere else, notably the scheduled job's sync.log, nothing animates:
-a dated line when the run starts, then a timestamped line as each step ends."""
+has been waiting. A finished step turns into a permanent line, a green ✔ (a yellow
+! for a warning, a red ✘ for a failure) with its note and how long it took, printed
+in order with everything else the command says. Anywhere else, notably the scheduled
+job's sync.log, nothing animates: a line with the date and time in UTC when the run
+starts, then a line with the UTC time as each step ends."""
 
 import functools
 import math
@@ -18,8 +20,10 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
+
+from riffle import times
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -36,6 +40,7 @@ STALL = 10.0  # seconds without progress before a running step says how long it'
 class Step(Protocol):
     def update(self, done: int, total: int | None = None) -> None: ...
     def ok(self, note: str = "") -> None: ...
+    def warn(self, note: str) -> None: ...
     def fail(self, why: str) -> None: ...
     def drop(self) -> None: ...
 
@@ -56,6 +61,9 @@ class _Silent:
     def ok(self, note: str = "") -> None:
         pass
 
+    def warn(self, note: str) -> None:
+        pass
+
     def fail(self, why: str) -> None:
         pass
 
@@ -68,7 +76,7 @@ SILENT: Tracker = _Silent()
 
 class Watched:
     """Passes every step on to another tracker and remembers which ones failed, so a
-    command can finish its work and still exit non-zero."""
+    command can finish its work and still exit non-zero. A warning isn't a failure."""
 
     def __init__(self, inner: Tracker) -> None:
         self.inner = inner
@@ -87,6 +95,9 @@ class _WatchedStep:
 
     def ok(self, note: str = "") -> None:
         self._inner.ok(note)
+
+    def warn(self, note: str) -> None:
+        self._inner.warn(note)
 
     def fail(self, why: str) -> None:
         self._watched.failed.append(self._label)
@@ -122,6 +133,10 @@ class _ScopedStep:
     def ok(self, note: str = "") -> None:
         self._ended()
         self._inner.ok(note)
+
+    def warn(self, note: str) -> None:
+        self._ended()
+        self._inner.warn(note)
 
     def fail(self, why: str) -> None:
         self._ended()
@@ -163,7 +178,7 @@ def elapsed(seconds: float) -> str:
 
 
 class LogTracker:
-    """A timestamped line per finished step. Streams are looked up when written,
+    """A line per finished step, with the UTC time. Streams are looked up when written,
     so output lands wherever sys.stdout and sys.stderr point at the time."""
 
     def __init__(
@@ -171,7 +186,7 @@ class LogTracker:
         out: TextIO | None = None,
         err: TextIO | None = None,
         clock: Callable[[], float] = time.monotonic,
-        now: Callable[[], datetime] = datetime.now,
+        now: Callable[[], datetime] = times.now,
     ) -> None:
         self._out, self._err, self.clock, self.now = out, err, clock, now
 
@@ -180,7 +195,7 @@ class LogTracker:
         print(line, file=stream, flush=True)
 
     def header(self, title: str) -> None:
-        self.write(f"{self.now():%Y-%m-%d %H:%M:%S}  {title}")
+        self.write(f"{times.utc(self.now(), '%Y-%m-%d %H:%M:%S')}  {title}")
 
     def step(self, label: str, total: int | None = None, unit: str = "") -> "_LogStep":
         return _LogStep(self, label)
@@ -190,16 +205,23 @@ class _LogStep:
     def __init__(self, tracker: LogTracker, label: str) -> None:
         self._tracker, self._label, self._start = tracker, label, tracker.clock()
 
+    def _at(self) -> str:
+        return self._tracker.now().astimezone(UTC).strftime("%H:%M:%S")
+
     def update(self, done: int, total: int | None = None) -> None:
         pass
 
     def ok(self, note: str = "") -> None:
         took = elapsed(self._tracker.clock() - self._start)
         what = f"{self._label}: {note}" if note else self._label
-        self._tracker.write(f"{self._tracker.now():%H:%M:%S}  {what} ({took})")
+        self._tracker.write(f"{self._at()}  {what} ({took})")
+
+    def warn(self, note: str) -> None:
+        took = elapsed(self._tracker.clock() - self._start)
+        self._tracker.write(f"{self._at()}  warning: {self._label}: {note} ({took})", error=True)
 
     def fail(self, why: str) -> None:
-        self._tracker.write(f"{self._tracker.now():%H:%M:%S}  ! {self._label}: {why}", error=True)
+        self._tracker.write(f"{self._at()}  ! {self._label}: {why}", error=True)
 
     def drop(self) -> None:
         pass
@@ -441,7 +463,7 @@ class LiveTracker:
         line.add_row(
             Text(mark, style=f"bold {style}"),
             Text(label, style="bold"),
-            Text(note, style=style if style == "red" else ""),
+            Text(note, style=style if style in ("red", "yellow") else ""),
             Text(took or "", style="dim"),
         )
         self.console.print(line)
@@ -472,6 +494,9 @@ class _LiveStep:
 
     def ok(self, note: str = "") -> None:
         self._tracker.record("✔", "green", self._label, note, self._end())
+
+    def warn(self, note: str) -> None:
+        self._tracker.record("!", "yellow", self._label, note, self._end())
 
     def fail(self, why: str) -> None:
         self._tracker.record("✘", "red", self._label, why, self._end())

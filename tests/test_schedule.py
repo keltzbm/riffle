@@ -237,3 +237,22 @@ def test_the_schedule_commands_show_and_manage_the_trickle_job(tmp_path, monkeyp
     assert run("schedule", "trickle", "--remove") == "removed com.keltzbm.riffle-mtgo\n"
     assert "no trickle job — start one with: riffle schedule trickle" in run("schedule")
     assert run("schedule", "trickle", "--remove") == "no trickle job to remove\n"
+
+
+def test_the_sync_job_shows_its_times_and_next_run_with_the_mac_s_zone(tmp_path, monkeypatch, denver):
+    from datetime import UTC
+
+    from typer.testing import CliRunner
+
+    from riffle import times
+    from riffle.cli import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake = FakeLaunchctl(print_out=PRINT)
+    sched.install([(7, 0), (16, 0)], exe=tmp_path / "riffle", run=fake)
+    status = sched.status
+    monkeypatch.setattr(sched, "status", lambda job=sched.SYNC: status(fake, job=job))
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 9, 41, tzinfo=UTC))  # 03:41 in Denver
+    shown = CliRunner().invoke(app, ["schedule", "show"]).output
+    assert "  times      07:00, 16:00  (24-hour, daily, the Mac's time: MDT)" in shown
+    assert "  next run   Mon 2026-09-28 07:00 MDT" in shown

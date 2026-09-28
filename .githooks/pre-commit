@@ -1,0 +1,4 @@
+#!/bin/sh
+# ruff's lint and format checks, as CI runs them. Turn the hooks on once per clone:
+#   git config core.hooksPath .githooks
+uv run ruff check src tests && uv run ruff format --check src tests

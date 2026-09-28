@@ -1,6 +1,6 @@
 """The card catalog every command reads, over Scryfall card objects loaded by the real loader."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import text
@@ -213,6 +213,11 @@ def test_names_mtgo_names_and_basics(cat):
     assert cat.mtgo_name(cid("o-lib")) == "Sylvan Library"
     assert cat.is_basic(cid("o-forest")) and not cat.is_basic(cid("o-lib"))
     assert cat.name("nope") == "nope" and cat.mtgo_name("nope") == "nope"
+
+
+def test_the_prices_day_is_the_bulk_file_s_utc_date(pg):
+    assert PostgresCatalog(pg).prices_day() is None  # nothing loaded yet
+    assert load(pg).prices_day() == date(2026, 9, 24)
 
 
 def test_prices_are_the_cheapest_printing(cat):

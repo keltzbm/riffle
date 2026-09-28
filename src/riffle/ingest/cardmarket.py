@@ -24,10 +24,14 @@ the same server), which the loader reads. Riffle keeps each guide as returned, g
 <game> is mtg, fab, or op for the games played and the name as a slug (pokemon) for the
 rest. Each game fetched is a step of its own; the games still fresh from an earlier run
 share one line. A guide under FRESH old isn't asked for again, since the next one comes a
-day after it, so a rerun costs no request. A game Cardmarket has no guide for (404) fails
-for the games played and is skipped for the rest, and if Cardmarket doesn't answer at all,
-the games after it fail at once instead of each waiting out its own retries. Headers,
-retries, and 429 handling: riffle.net.
+day after it, so a rerun costs no request. Every game's guide is kept, played or not.
+
+A game Cardmarket has no guide for (404, or the 403 its download server answers for a file
+it doesn't have) fails for the games played. For the rest it's noted and asked for again
+every run, and after seven runs in a row it's a warning (riffle.ingest.empties). A guide
+with no rows is kept nowhere and handled the same way, played or not. If Cardmarket doesn't
+answer at all, the games after it fail at once instead of each waiting out its own retries.
+Headers, retries, and 429 handling: riffle.net.
 """
 
 import gzip
@@ -42,6 +46,7 @@ from pathlib import Path
 
 from riffle import net
 from riffle.config import data_dir
+from riffle.ingest import empties
 from riffle.progress import SILENT, Step, Tracker
 
 BASE = "https://downloads.s3.cardmarket.com/productCatalog/priceGuide"
@@ -70,8 +75,9 @@ OTHERS: dict[str, int | str] = {
 }
 FRESH = timedelta(hours=20)  # a guide this young is the latest there is; the next comes ~24 hours after it
 CREATED = re.compile(rb'"createdAt"\s*:\s*"([^"]+)"')
+MISSING = (403, 404)  # what Cardmarket's download server answers for a guide it doesn't have
 
-Download = Callable[[str, Path, net.Progress | None], int | None]  # url, dest -> bytes, or None for 404
+Download = Callable[[str, Path, net.Progress | None], int | None]  # url, dest -> bytes, or None if missing
 
 
 @dataclass
@@ -79,11 +85,12 @@ class Snapshot:
     fetched: list[str] = field(default_factory=list)  # games kept this run
     skipped: list[str] = field(default_factory=list)  # games whose latest guide was kept already
     missing: list[str] = field(default_factory=list)  # games Cardmarket has no guide for
+    empty: list[str] = field(default_factory=list)  # games whose guide has no rows
     failed: list[tuple[str, str]] = field(default_factory=list)  # (game, why)
 
 
 def _download(url: str, dest: Path, progress: net.Progress | None = None) -> int | None:
-    return net.download(url, dest, accept="application/json", progress=progress)
+    return net.download(url, dest, accept="application/json", progress=progress, missing=MISSING)
 
 
 def daily_dir() -> Path:
@@ -127,7 +134,8 @@ def newest(game: str) -> tuple[date, datetime | None] | None:
 
 def _guide(game: str, gid: int | str, download: Download, step: Step) -> tuple[date, int, bool] | None:
     """Download a game's guide, check it, and keep it gzipped under its createdAt day. Returns
-    (day, products, whether it's new), or None when Cardmarket has no guide for the game."""
+    (day, products, whether it's new), or None when Cardmarket has no guide for the game. A
+    guide with no rows isn't kept."""
     name = f"price_guide_{gid}.json"
     fresh = daily_dir() / f"{name}.new"
     fresh.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +151,8 @@ def _guide(game: str, gid: int | str, download: Download, step: Step) -> tuple[d
         except (ValueError, KeyError, TypeError, RecursionError) as e:
             raise net.FetchError(f"{name}: not the expected JSON") from e
         dest = daily_dir() / day.isoformat() / f"{game}.json.gz"
+        if not rows:
+            return day, 0, False
         if dest.exists() and stamp(dest) is not None:
             return day, len(rows), False  # an unreadable one is replaced below
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -159,9 +169,12 @@ def _guide(game: str, gid: int | str, download: Download, step: Step) -> tuple[d
         fresh.unlink(missing_ok=True)
 
 
-def _fetch(game: str, gid: int | str, snap: Snapshot, download: Download, tracker: Tracker) -> bool:
+def _fetch(
+    game: str, gid: int | str, snap: Snapshot, download: Download, tracker: Tracker, now: datetime
+) -> bool:
     """One game's guide as its own step. False when Cardmarket didn't answer at all."""
     step = tracker.step(f"Cardmarket {game}", unit="bytes")
+    key = f"cardmarket/{game}"
     try:
         got = _guide(game, gid, download, step)
     except (net.FetchError, OSError) as e:
@@ -171,11 +184,18 @@ def _fetch(game: str, gid: int | str, snap: Snapshot, download: Download, tracke
     if got is None:
         snap.missing.append(game)
         if game in GAMES:
-            step.fail(f"Cardmarket has no price guide for game {gid}")
+            gone = empties.record(key, "no guide", now)
+            since = f" since {gone.first.date()} ({gone.runs} runs in a row)" if gone.runs > 1 else ""
+            step.fail(f"Cardmarket has no price guide for game {gid}{since}")
         else:
-            step.drop()
+            empties.report(step, key, "no guide", now)
         return True
     day, products, new = got
+    if not products:
+        snap.empty.append(game)
+        empties.report(step, key, "empty guide", now)
+        return True
+    empties.clear(key)
     if new:
         snap.fetched.append(game)
         step.ok(f"kept {day}, {_count(products, 'product')}")
@@ -199,7 +219,7 @@ def snapshot(
     def fetch(game: str, ref: int | str) -> None:
         nonlocal answering
         if answering:
-            answering = _fetch(game, ref, snap, download, tracker)
+            answering = _fetch(game, ref, snap, download, tracker, now)
         else:
             why = "not asked: Cardmarket gave no answer"
             snap.failed.append((game, why))

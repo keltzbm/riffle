@@ -4,7 +4,7 @@ import io
 import itertools
 import math
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from rich.console import Console
@@ -32,27 +32,41 @@ def test_silent_tracker_accepts_everything():
     step = progress.SILENT.step("anything", total=3, unit="groups")
     step.update(1)
     step.ok("done")
+    step.warn("look")
     step.fail("no")
     step.drop()
 
 
-def test_log_lines_are_timestamped_and_failures_go_to_stderr():
+def test_log_lines_are_in_utc_and_warnings_and_failures_go_to_stderr():
     out, err = io.StringIO(), io.StringIO()
     ticks = itertools.count(0.0, 8.25)
-    log = progress.LogTracker(out, err, clock=lambda: next(ticks), now=lambda: datetime(2026, 9, 25, 7, 0, 3))
+    at = datetime(2026, 9, 25, 7, 0, 3, tzinfo=timezone(timedelta(hours=-6)))  # 13:00:03 UTC
+    log = progress.LogTracker(out, err, clock=lambda: next(ticks), now=lambda: at)
     log.header("riffle sync")
     prices = log.step("Scryfall prices")
     prices.update(5, 10)
     prices.ok("kept 2026-09-24")
     log.step("card catalog").ok()
+    log.step("Cardmarket pokemon").warn("empty since 2026-09-21")
     log.step("tcgcsv fab").fail("HTTP 503")
     log.step("quiet").drop()
     assert out.getvalue() == (
-        "2026-09-25 07:00:03  riffle sync\n"
-        "07:00:03  Scryfall prices: kept 2026-09-24 (8.2s)\n"
-        "07:00:03  card catalog (8.2s)\n"
+        "2026-09-25 13:00:03 UTC  riffle sync\n"
+        "13:00:03  Scryfall prices: kept 2026-09-24 (8.2s)\n"
+        "13:00:03  card catalog (8.2s)\n"
     )
-    assert err.getvalue() == "07:00:03  ! tcgcsv fab: HTTP 503\n"
+    assert err.getvalue() == (
+        "13:00:03  warning: Cardmarket pokemon: empty since 2026-09-21 (8.2s)\n"
+        "13:00:03  ! tcgcsv fab: HTTP 503\n"
+    )
+
+
+def test_a_warning_isnt_a_failure(tracker):
+    watched = progress.Watched(tracker)
+    watched.step("Cardmarket pokemon").warn("empty since 2026-09-21")
+    watched.step("tcgcsv fab").fail("HTTP 503")
+    assert watched.failed == ["tcgcsv fab"]
+    assert tracker.outcomes()["Cardmarket pokemon"] == ("warn", "empty since 2026-09-21")
 
 
 def _task(total, done, unit):
@@ -228,11 +242,13 @@ def test_live_display_turns_finished_steps_into_lines():
         bulk.update(5_000_000, 10_000_000)
         bulk.ok("148.2 MB, Scryfall 2026-09-24")
         live.step("tcgcsv fab", unit="groups").fail("HTTP 503")
+        live.step("Cardmarket pokemon").warn("empty since 2026-09-21")
         live.step("Scryfall prices").drop()
         assert live.progress.tasks == []  # nothing left running
     text = buf.getvalue()
     assert "✔ Scryfall bulk data" in text and "148.2 MB, Scryfall 2026-09-24" in text
     assert "✘ tcgcsv fab" in text and "HTTP 503" in text
+    assert "! Cardmarket pokemon" in text and "empty since 2026-09-21" in text
 
 
 def test_a_finished_step_leaves_no_bar_for_later_lines_to_bring_back():
@@ -283,7 +299,9 @@ def test_open_tracker_writes_plain_lines_otherwise(capsys):
         assert isinstance(tracker, progress.LogTracker)
         tracker.step("card catalog").ok("118,389 printings")
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].endswith("  riffle sync") and len(lines[0]) == len("2026-09-25 07:00:03  riffle sync")
+    assert lines[0].endswith(" UTC  riffle sync") and len(lines[0]) == len(
+        "2026-09-25 07:00:03 UTC  riffle sync"
+    )
     assert "  card catalog: 118,389 printings (" in lines[1]
 
 
@@ -308,7 +326,13 @@ def test_work_that_ends_well_adds_no_step(tracker):
     with progress.contained(tracker, "tcgcsv prices", str) as scope:
         scope.step("tcgcsv mtg").fail("HTTP 503")
         scope.step("tcgcsv fab").drop()
-    assert tracker.outcomes() == {"tcgcsv mtg": ("fail", "HTTP 503"), "tcgcsv fab": ("drop",)}
+        scope.step("tcgcsv op").warn("empty")
+        assert scope.running == []
+    assert tracker.outcomes() == {
+        "tcgcsv mtg": ("fail", "HTTP 503"),
+        "tcgcsv fab": ("drop",),
+        "tcgcsv op": ("warn", "empty"),
+    }
 
 
 def test_ctrl_c_still_stops_everything(tracker):

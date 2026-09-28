@@ -5,7 +5,8 @@ Every request sends a descriptive User-Agent, as the first three ask.
 Scryfall also says a 429 must never be ignored or powered through, so
 rate-limit answers wait — for Retry-After when the server sends one — before
 the next try. A 404 is an answer, not a failure: callers get None and decide
-what "missing" means.
+what "missing" means. A download can name other statuses that mean missing
+(Cardmarket's server answers 403 for a file it doesn't have).
 
 Downloads stream to <dest>.part and are renamed into place only when
 complete, so an interrupted run never leaves a truncated file. An answer cut
@@ -23,7 +24,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,15 +62,15 @@ def _retry_after(e: urllib.error.HTTPError) -> float | None:
     return seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
 
 
-def _open(url: str, accept: str, timeout: float, retries: int):
-    """An open response, or None for 404. Retries stalls, rate limits, and 5xx."""
+def _open(url: str, accept: str, timeout: float, retries: int, missing: Collection[int] = (404,)):
+    """An open response, or None for a status in missing. Retries stalls, rate limits, and 5xx."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
     for attempt in range(retries + 1):
         backoff = 2.0 * (attempt + 1)
         try:
             return urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as e:  # before URLError: HTTPError is a subclass
-            if e.code == 404:
+            if e.code in missing:
                 return None
             if e.code not in RETRY_STATUS or attempt == retries:
                 raise FetchError(f"HTTP {e.code}") from e
@@ -148,9 +149,11 @@ def download(
     timeout: float = 60,
     retries: int = 2,
     progress: Progress | None = None,
+    missing: Collection[int] = (404,),
 ) -> int | None:
-    """Stream to dest, reporting progress per chunk. Bytes written, or None for 404."""
-    r = _open(url, accept, timeout, retries)
+    """Stream to dest, reporting progress per chunk. Bytes written, or None for a status in
+    missing, 404 unless the caller says otherwise."""
+    r = _open(url, accept, timeout, retries, missing)
     if r is None:
         return None
     dest.parent.mkdir(parents=True, exist_ok=True)
