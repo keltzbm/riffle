@@ -235,6 +235,37 @@ def test_live_display_turns_finished_steps_into_lines():
     assert "✘ tcgcsv fab" in text and "HTTP 503" in text
 
 
+def test_a_finished_step_leaves_no_bar_for_later_lines_to_bring_back():
+    """A line printed right after a step ended redrew the display as it last was, the finished
+    step's bar included, and the next line printed around the display landed on that bar."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=100, color_system=None)
+    with progress.LiveTracker(console) as live:
+        step = live.step("mtgo modern", total=16, unit="events")
+        step.update(15)
+        live.progress.refresh()  # drawn at 15 of 16
+        step.fail("5 new, 2 not published yet, 9 empty")
+        console.print("5 new events · 76 already stored")
+    after = buf.getvalue().split("✘ mtgo modern", 1)[1]
+    assert "15/16" not in after
+
+
+def test_lines_the_cli_prints_during_the_steps_go_above_them(capsys):
+    """typer.echo finds the terminal under Rich's stand-in for stdout, so a line it printed
+    went around the display, onto its last line. The CLI's _echo goes through the stand-in."""
+    from riffle.cli import _echo
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=100, color_system=None)
+    with progress.LiveTracker(console) as live:
+        live.step("mtgo modern", total=16, unit="events").update(3)
+        _echo("5 new events · 76 already stored")
+        _echo("  ! modern-league-2026-09-2410983: HTTP 503", err=True)
+    out = buf.getvalue()
+    assert "5 new events · 76 already stored" in out and "! modern-league-2026-09-2410983: HTTP 503" in out
+    assert capsys.readouterr() == ("", "")  # nothing went around the display
+
+
 class _Terminal(io.StringIO):
     def isatty(self) -> bool:
         return True

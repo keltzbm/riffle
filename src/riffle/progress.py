@@ -324,8 +324,9 @@ def _times(task: "Task") -> "Text":
 class LiveTracker:
     """Running steps redrawn in place; finished steps printed as permanent lines.
 
-    Everything else printed while it's open (typer.echo included) appears above
-    the running steps, because Rich redirects stdout and stderr meanwhile.
+    Everything else printed while it's open through sys.stdout or sys.stderr appears
+    above the running steps, because Rich redirects both meanwhile. typer.echo doesn't
+    on its own: it finds the terminal underneath, so the CLI hands it sys.stdout.
     """
 
     def __init__(self, console: "Console") -> None:
@@ -408,8 +409,14 @@ class _LiveStep:
             progress.update(self._task, completed=done, total=total, moved=progress.get_time())
 
     def _end(self) -> str:
-        self._tracker.progress.remove_task(self._task)
+        self._gone()
         return elapsed(time.monotonic() - self._start)
+
+    def _gone(self) -> None:
+        """Take the step off the display, and redraw it at once: until the next redraw, anything
+        printed would bring back the display as it last was, this step's bar included."""
+        self._tracker.progress.remove_task(self._task)
+        self._tracker.progress.refresh()
 
     def ok(self, note: str = "") -> None:
         self._tracker.record("✔", "green", self._label, note, self._end())
@@ -418,7 +425,7 @@ class _LiveStep:
         self._tracker.record("✘", "red", self._label, why, self._end())
 
     def drop(self) -> None:
-        self._tracker.progress.remove_task(self._task)
+        self._gone()
 
 
 # ---- choosing -----------------------------------------------------------------------------
