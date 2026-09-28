@@ -181,3 +181,30 @@ def test_download_404_writes_nothing(server, tmp_path):
     server["answers"] = [http_error(404)]
     assert net.download("https://example.test", tmp_path / "f") is None
     assert list(tmp_path.iterdir()) == []
+
+
+class Answered(Resp):
+    """A response that says where it came from, as urlopen's do after a redirect."""
+
+    def __init__(self, body: bytes, url: str, status: int = 200):
+        super().__init__(body)
+        self.status, self.url = status, url
+
+    def geturl(self) -> str:
+        return self.url
+
+
+def test_get_once_is_one_request_and_any_status_is_an_answer(server):
+    server["answers"] = [Answered(b"page", "https://example.test/moved"), http_error(503), http_error(404)]
+    first = net.get_once("https://example.test/asked", accept="text/html")
+    assert (first.status, first.url, first.body) == (200, "https://example.test/moved", b"page")
+    assert net.get_once("https://example.test/asked").status == 503
+    assert net.get_once("https://example.test/asked").status == 404
+    assert len(server["requests"]) == 3 and server["sleeps"] == []  # no retries, no waits
+    assert server["requests"][0].get_header("Accept") == "text/html"
+
+
+def test_get_once_with_no_answer_is_a_fetch_error(server):
+    server["answers"] = [TimeoutError("timed out")]
+    with pytest.raises(net.FetchError, match="timed out"):
+        net.get_once("https://example.test")

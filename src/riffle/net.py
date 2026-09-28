@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from riffle import __version__
@@ -102,6 +103,26 @@ def get(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) ->
             return r.read()  # a short Content-Length body raises IncompleteRead here
         except (OSError, http.client.HTTPException) as e:
             raise FetchError(f"answer broke off while reading ({_why(e)})") from e
+
+
+@dataclass
+class Answer:
+    status: int
+    url: str  # where the answer came from: not the URL asked for after a redirect
+    body: bytes
+
+
+def get_once(url: str, accept: str = "*/*", timeout: float = 60) -> Answer:
+    """One request and no retries, so each attempt is one request its caller can log.
+    Any HTTP status is an answer; only no answer at all is a FetchError."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return Answer(r.status, r.geturl(), r.read())
+    except urllib.error.HTTPError as e:  # before URLError: HTTPError is a subclass
+        return Answer(e.code, e.geturl() or url, b"")
+    except (OSError, http.client.HTTPException) as e:
+        raise FetchError(_why(e)) from e
 
 
 def get_text(url: str, accept: str = "text/html", timeout: float = 60, retries: int = 2) -> str:

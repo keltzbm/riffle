@@ -1,8 +1,9 @@
-"""The daily launchd job that runs `riffle sync` (macOS).
+"""The launchd jobs (macOS): `riffle sync` at set times each day, and the MTGO
+trickle every 10 minutes.
 
-One job, one label: setting times again replaces the old job, it never adds a
-second one. Times are 24-hour HH:MM. Everything that touches launchd goes
-through `run` so the logic is testable without it.
+One label per job: installing a job again replaces it, it never adds a second
+one. Times are 24-hour HH:MM. Everything that touches launchd goes through `run`
+so the logic is testable without it.
 """
 
 import os
@@ -17,7 +18,18 @@ from pathlib import Path
 
 from riffle.config import data_dir
 
-LABEL = "com.keltzbm.riffle-sync"
+
+@dataclass(frozen=True)
+class Job:
+    label: str
+    args: tuple[str, ...]  # riffle's arguments
+    log: str  # its output, in the data folder
+    interval: int | None = None  # seconds between runs; None: at set times of day
+
+
+SYNC = Job("com.keltzbm.riffle-sync", ("sync",), "sync.log")
+TRICKLE = Job("com.keltzbm.riffle-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interval=600)
+LABEL = SYNC.label
 _TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
@@ -27,12 +39,12 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True)
 
 
-def plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def plist_path(job: Job = SYNC) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{job.label}.plist"
 
 
-def log_path() -> Path:
-    return data_dir() / "sync.log"
+def log_path(job: Job = SYNC) -> Path:
+    return data_dir() / job.log
 
 
 def _domain() -> str:
@@ -76,12 +88,17 @@ def next_run(times: list[tuple[int, int]], now: datetime) -> datetime | None:
 # ---- the plist -----------------------------------------------------------------
 
 
-def build(times: list[tuple[int, int]], exe: Path, log: Path) -> dict:
+def build(times: list[tuple[int, int]], exe: Path, log: Path, job: Job = SYNC) -> dict:
     """launchd needs absolute paths: no ~, no PATH lookup."""
+    when: dict = (
+        {"StartInterval": job.interval}
+        if job.interval
+        else {"StartCalendarInterval": [{"Hour": h, "Minute": m} for h, m in times]}
+    )
     return {
-        "Label": LABEL,
-        "ProgramArguments": [str(exe), "sync"],
-        "StartCalendarInterval": [{"Hour": h, "Minute": m} for h, m in times],
+        "Label": job.label,
+        "ProgramArguments": [str(exe), *job.args],
+        **when,
         "StandardOutPath": str(log),
         "StandardErrorPath": str(log),
     }
@@ -122,9 +139,9 @@ class Status:
     program: str | None = None
 
 
-def status(run: Runner = _run, path: Path | None = None) -> Status:
-    path = path or plist_path()
-    result = run(["launchctl", "print", f"{_domain()}/{LABEL}"])
+def status(run: Runner = _run, path: Path | None = None, job: Job = SYNC) -> Status:
+    path = path or plist_path(job)
+    result = run(["launchctl", "print", f"{_domain()}/{job.label}"])
     info = parse_print(result.stdout) if result.returncode == 0 else {}
     return Status(
         installed=path.exists(),
@@ -142,25 +159,27 @@ def install(
     exe: Path | None = None,
     run: Runner = _run,
     path: Path | None = None,
+    job: Job = SYNC,
 ) -> Path:
-    """Write the plist and (re)load it. Replaces any existing job."""
-    path = path or plist_path()
+    """Write the plist and (re)load it. Replaces any existing job. An interval job
+    takes no times."""
+    path = path or plist_path(job)
     exe = exe or Path(sys.argv[0]).resolve()
-    log = log_path()
+    log = log_path(job)
     log.parent.mkdir(parents=True, exist_ok=True)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(plistlib.dumps(build(times, exe, log)))
-    run(["launchctl", "bootout", f"{_domain()}/{LABEL}"])  # fails harmlessly if not loaded
+    path.write_bytes(plistlib.dumps(build(times, exe, log, job)))
+    run(["launchctl", "bootout", f"{_domain()}/{job.label}"])  # fails harmlessly if not loaded
     result = run(["launchctl", "bootstrap", _domain(), str(path)])
     if result.returncode != 0:
         raise RuntimeError(f"wrote {path} but launchctl bootstrap failed: {result.stderr.strip()}")
     return path
 
 
-def remove(run: Runner = _run, path: Path | None = None) -> bool:
+def remove(run: Runner = _run, path: Path | None = None, job: Job = SYNC) -> bool:
     """Unload and delete. True if there was anything to remove."""
-    path = path or plist_path()
-    was_loaded = run(["launchctl", "bootout", f"{_domain()}/{LABEL}"]).returncode == 0
+    path = path or plist_path(job)
+    was_loaded = run(["launchctl", "bootout", f"{_domain()}/{job.label}"]).returncode == 0
     existed = path.exists()
     path.unlink(missing_ok=True)
     return was_loaded or existed

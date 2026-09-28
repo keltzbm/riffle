@@ -8,25 +8,31 @@ parsing HTML. The monthly index (/decklists/YYYY/MM) links every event as
     modern-challenge-32-2026-04-1812839681   -> 2026-04-18, event 12839681
 
 Each event is fetched once and stored, normalized, as
-<data_dir>/mtgo/<slug>.json. Published lists don't change, so a re-run only
-fetches what's new. Requests are spaced out (`delay`) to be polite.
+<data_dir>/mtgo/<slug>.json, with the page's whole data object gzipped beside it.
+Published lists don't change, so nothing stored is fetched again.
 
-Throttled, mtgo.com doesn't refuse: it answers with stripped pages. How a run tells
-those apart from missing data, and backs off, is described under fetching below.
+Fetching is a trickle: a job asks for a few pages every 10 minutes, all day, and
+keeps a list of every event an index listed that isn't stored yet. Throttled,
+mtgo.com doesn't refuse: it answers with stripped pages. How a run tells those
+apart from missing data is described under the trickle below.
 """
 
+import fcntl
+import gzip
 import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 
-from riffle import net
+from riffle import net, trickle
 from riffle.config import data_dir
-from riffle.progress import SILENT, Tracker, elapsed
+from riffle.progress import SILENT, Tracker
 
 BASE = "https://www.mtgo.com"
 KINDS = ("league", "challenge", "showcase", "qualifier", "preliminary", "other")
@@ -223,119 +229,22 @@ def load(
     return sorted(events, key=lambda e: (e.date, e.event_id), reverse=True)
 
 
-# ---- fetching ------------------------------------------------------------------
-# A throttled answer is a 200 with a stripped page: an index with no event links, or
-# an event page with no lists. Those look like an empty month or lists not published
-# yet, so they're judged by age, and a run backs off when bad answers come in a row.
-
-PENDING_DAYS = 3  # an empty page for an event younger than this is waiting for its lists
-NEW_MONTH_DAYS = 2  # only a month this new may list no events
-GIVE_UP_AFTER = 3  # clean empty answers, one a run, before an old event is skipped
-INDEX_TIMEOUT = 20.0  # seconds; mtgo.com occasionally stalls instead of answering
-EVENT_TIMEOUT = 60.0  # league pages run past 250 KB and come back slowly
-BACKOFF_AFTER = 3  # bad answers in a row before a pause
-BACKOFF = (30.0, 60.0, 120.0)  # seconds; a bad streak after the last pause stops the run
-OUTCOMES = ("new", "not published yet", "empty", "given up", "failed")
+def raw_path(slug: str) -> Path:
+    """The page's whole data object, kept beside the parsed event. In a folder of its
+    own: load() reads every .json in the store."""
+    return store_dir() / "raw" / f"{slug}.json.gz"
 
 
-def _today() -> date:
-    """The date event ages count from; a function so tests can fix it."""
-    return date.today()
-
-
-def _get(url: str) -> str:
-    """A page. Event pages get longer to answer than the monthly index."""
-    timeout = EVENT_TIMEOUT if "/decklist/" in url else INDEX_TIMEOUT
-    return net.get_text(url, accept="text/html", timeout=timeout)
-
-
-def _months(start: date, end: date) -> list[tuple[int, int]]:
-    out, y, m = [], start.year, start.month
-    while (y, m) <= (end.year, end.month):
-        out.append((y, m))
-        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-    return out
-
-
-def misses_path() -> Path:
-    """Old events that came back empty right after good answers, and on how many runs.
-    It sits beside the event store, not in it: load() reads every .json in there."""
-    return data_dir() / "mtgo-misses.json"
-
-
-def _load_misses() -> dict[str, int]:
-    try:
-        misses = json.loads(misses_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return misses if isinstance(misses, dict) else {}
-
-
-def _save_misses(misses: dict[str, int]) -> None:
-    path = misses_path()
-    if misses:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(sorted(misses.items())), indent=1) + "\n", encoding="utf-8")
-    else:
-        path.unlink(missing_ok=True)
-
-
-class Stopped(Exception):
-    """mtgo.com kept answering badly after the longest pause."""
-
-
-class _Pacer:
-    """Spaces requests `delay` apart, and pauses when mtgo.com stops answering properly.
-
-    Errors, indexes listing no events, and empty pages for old events are bad answers; a
-    good one resets the count. After BACKOFF_AFTER bad answers in a row, the next request
-    waits out the next pause in BACKOFF instead of the delay. Pausing before a request,
-    not after the bad answer, means a run never waits with nothing left to fetch. A bad
-    streak after the longest pause stops the run.
-    """
-
-    def __init__(self, delay: float, tracker: Tracker) -> None:
-        self.delay, self.tracker = delay, tracker
-        self.requests = 0
-        self.streak = 0  # bad answers in a row
-        self.pauses = 0  # pauses since the last good answer
-        self.last_good = False  # whether the latest answer was good
-
-    def wait(self) -> None:
-        """Before each request. Raises Stopped once the longest pause didn't help."""
-        if self.streak >= BACKOFF_AFTER:
-            if self.pauses == len(BACKOFF):
-                raise Stopped(f"mtgo.com still answering badly after a {elapsed(BACKOFF[-1])} pause")
-            step = self.tracker.step("mtgo.com pause")
-            time.sleep(BACKOFF[self.pauses])
-            step.ok(f"after {self.streak} bad answers in a row")
-            self.pauses += 1
-            self.streak = 0
-        elif self.requests:
-            time.sleep(self.delay)
-        self.requests += 1
-
-    def answered(self, good: bool | None) -> None:
-        """A good answer, a bad one, or neither (None): an empty page for an event too
-        young to have lists, or an empty index for a month just begun."""
-        self.last_good = good is True
-        if good:
-            self.streak = self.pauses = 0
-        elif good is False:
-            self.streak += 1
-
-
-@dataclass
-class IngestResult:
-    fetched: list[Event] = field(default_factory=list)
-    skipped: int = 0  # already stored
-    pending: list[str] = field(default_factory=list)  # young; lists not published yet
-    empty: list[str] = field(default_factory=list)  # old but empty, likely throttled; retried next run
-    given_up: list[str] = field(default_factory=list)  # empty on GIVE_UP_AFTER runs; skipped from now on
-    missed: int = 0  # skipped: given up on an earlier run
-    left: int = 0  # found but not fetched: over max_events, or the run stopped
-    stopped: str | None = None  # why the run stopped early
-    failed: list[tuple[str, str]] = field(default_factory=list)
+def save_raw(slug: str, data: dict, url: str, fetched: datetime, size: int) -> Path:
+    """Standings, records, player IDs and per-printing rows, as mtgo.com gave them."""
+    path = raw_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    payload = {"url": url, "fetched": trickle.stamp(fetched), "bytes": size, "data": data}
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(payload, f)
+    tmp.replace(path)
+    return path
 
 
 def is_stored(slug: str) -> bool:
@@ -350,188 +259,403 @@ def is_stored(slug: str) -> bool:
         return False
 
 
-def _note(counts: dict[str, int]) -> str:
-    return ", ".join(f"{k} {what}" for what, k in counts.items() if k)
+# ---- the trickle ---------------------------------------------------------------
+# mtgo.com throttles by request rate, and throttled it doesn't refuse: it answers 200
+# with stripped pages, an index with no event links or an event page with no lists.
+# So a job asks for a few pages every 10 minutes, all day (riffle.trickle sets the
+# pace), and an empty answer is only believed after a stored event (the canary) comes
+# back whole. Stripped too means throttled, and nothing counts against the event.
+
+SOURCE = "mtgo"
+PENDING_DAYS = 3  # an empty page for an event younger than this is waiting for its lists
+NEW_MONTH_DAYS = 2  # only a month this new may list no events
+REREAD = timedelta(hours=1)  # how often the current month's index is read again
+RECENT_MONTH = timedelta(days=7)  # a month that ended this recently is read as often
+SWEEP_END = 3  # months in a row listing no events end the sweep back through the indexes
+GAP = 5.0  # seconds between requests in a run
+INDEX_TIMEOUT = 20.0  # seconds; mtgo.com occasionally stalls instead of answering
+EVENT_TIMEOUT = 60.0  # league pages run past 250 KB and come back slowly
+
+
+def _get(url: str) -> net.Answer:
+    """One request. Event pages get longer to answer than the monthly index."""
+    timeout = EVENT_TIMEOUT if "/decklist/" in url else INDEX_TIMEOUT
+    return net.get_once(url, accept="text/html", timeout=timeout)
+
+
+def misses_path() -> Path:
+    """Where builds before the trickle kept old events they had given up on. The first
+    trickle run carries its counts into the owed list and deletes it."""
+    return data_dir() / "mtgo-misses.json"
+
+
+def months_path() -> Path:
+    """Each month's index: when it was last read and how many events it listed."""
+    return data_dir() / "mtgo-months.json"
+
+
+def _key(y: int, m: int) -> str:
+    return f"{y}-{m:02d}"
+
+
+def _prev(y: int, m: int) -> tuple[int, int]:
+    return (y - 1, 12) if m == 1 else (y, m - 1)
+
+
+def next_index(months: dict[str, dict], at: datetime) -> tuple[int, int] | None:
+    """The one index page a run reads, if any: the current month, or one that ended
+    within RECENT_MONTH, when last read REREAD ago or more; else the sweep's next month,
+    the newest never read, going back until SWEEP_END months in a row list nothing."""
+    current = (at.year, at.month)
+    previous = _prev(*current)
+    ended = datetime(at.year, at.month, 1, tzinfo=UTC)
+    for ym in (current, previous):
+        if ym == previous and at - ended > RECENT_MONTH:
+            continue
+        seen = months.get(_key(*ym))
+        if seen is None or at - datetime.fromisoformat(seen["read"]) >= REREAD:
+            return ym
+    return sweep_next(months, at)
+
+
+def sweep_next(months: dict[str, dict], at: datetime) -> tuple[int, int] | None:
+    """The newest month never read, going back from last month; None once SWEEP_END
+    months in a row have listed no events."""
+    empty, ym = 0, _prev(at.year, at.month)
+    while (seen := months.get(_key(*ym))) is not None:
+        empty = 0 if seen.get("events") else empty + 1
+        if empty >= SWEEP_END:
+            return None
+        ym = _prev(*ym)
+    return ym
+
+
+def _decklists(body: bytes) -> dict | None:
+    """The page's data object when it holds lists; None for a page without them."""
+    try:
+        data = extract_data(body.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) and data.get("decklists") else None
+
+
+def _moved(asked: str, answered: str) -> bool:
+    return answered.rstrip("/").lower() != asked.rstrip("/").lower()
+
+
+def _event_id(slug: str) -> int:
+    parsed = parse_slug(slug)
+    return int(parsed[2]) if parsed else 0
+
+
+def due(owed: dict[str, trickle.Owed], at: datetime) -> list[str]:
+    """Owed events due a try, newest first."""
+    return sorted(
+        (s for s, o in owed.items() if o.due(at)), key=lambda s: (owed[s].day, _event_id(s)), reverse=True
+    )
+
+
+def _canary(exclude: str | None) -> str | None:
+    """The newest stored event: the page asked for again to tell a throttled site from
+    an empty page."""
+    stored = []
+    for path in store_dir().glob("*.json") if store_dir().exists() else ():
+        parsed = parse_slug(path.stem)
+        if parsed and path.stem != exclude:
+            stored.append((parsed[1], int(parsed[2]), path.stem))
+    return max(stored)[2] if stored else None
+
+
+@contextmanager
+def _lock() -> Iterator[bool]:
+    """Whether this run holds the trickle: the job and a run by hand never overlap."""
+    path = data_dir() / "mtgo-trickle.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 @dataclass
-class _Run:
-    """One ingest: what it looks for, and the state its steps share."""
+class TrickleResult:
+    busy: bool = False  # another run held the trickle
+    paused_until: datetime | None = None  # paused by an earlier throttle: nothing asked
+    level: int = 0  # pages a run, after this one
+    budget: int = 0  # pages this run could fetch
+    index: str | None = None  # the month whose index it read
+    listed: int = 0  # events that index listed
+    newly_owed: int = 0
+    fetched: list[Event] = field(default_factory=list)
+    pending: list[str] = field(default_factory=list)  # young; lists not published yet
+    missed: list[tuple[str, str]] = field(default_factory=list)  # (slug, outcome): still owed
+    throttled: str | None = None  # what showed the site throttling
+    resume: datetime | None = None  # when the pause that throttle started ends
+    stopped: str | None = None  # why the run ended early otherwise
+    broken: list[tuple[str, str]] = field(default_factory=list)  # lists that wouldn't parse
+    carried: int = 0  # events the old misses file handed to the owed list
+    raised: bool = False  # the pace rose a level
+    owed: int = 0
+    due: int = 0
 
-    fmts: set[str] | None
-    kinds: set[str]
-    since: date
-    until: date
-    today: date
-    get: Callable[[str], str]
-    tracker: Tracker
-    pacer: _Pacer
-    misses: dict[str, int]
-    res: IngestResult = field(default_factory=IngestResult)
 
-    def index(self) -> list[tuple[str, str, date]]:
-        """Read every month's index, newest month first. Returns (slug, format, day) for
-        each event to fetch, newest first. Stored events count as skipped and given-up
-        ones as missed; the step fails when a month's index couldn't be read."""
-        months = _months(self.since, self.until)[::-1]
-        step = self.tracker.step("mtgo.com index", total=len(months), unit="months")
-        found: dict[str, tuple[str, date, int]] = {}
-        seen: set[str] = set()  # an event linked from two months is fetched once
-        unreadable = 0
-        for i, (y, m) in enumerate(months, 1):
-            try:
-                self.pacer.wait()
-            except Stopped as e:
-                self.res.left += len(found)
-                step.fail(f"stopped after {i - 1} of {len(months)} months: {e}")
-                raise
-            if not self.month(y, m, found, seen):
-                unreadable += 1
-            step.update(i)
-        note = f"{len(found)} to fetch, {self.res.skipped} already stored"
-        if self.res.missed:
-            note += f", {self.res.missed} given up earlier"
-        if unreadable:
-            step.fail(f"{note}, {unreadable} unreadable")
-        else:
-            step.ok(note)
-        newest_first = sorted(found.items(), key=lambda item: item[1][1:], reverse=True)
-        return [(slug, fmt, day) for slug, (fmt, day, _) in newest_first]
+class _Stop(Exception):
+    """Ends a run early: throttled, no answer, or no room left to check an empty answer."""
 
-    def month(self, y: int, m: int, found: dict[str, tuple[str, date, int]], seen: set[str]) -> bool:
-        """One month's index into found. False when it couldn't be read: an error, or no
-        events listed in a month old enough to have some."""
-        url = f"{BASE}/decklists/{y}/{m:02d}"
+
+@dataclass
+class _Trickle:
+    get: Callable[[str], net.Answer]
+    clock: Callable[[], datetime]
+    sleep: Callable[[float], None]
+    log: trickle.RequestLog
+    pace: trickle.Pace
+    owed: dict[str, trickle.Owed]
+    months: dict[str, dict]
+    res: TrickleResult
+    asked: int = 0
+
+    def record(self, url: str, answer: net.Answer | None, ms: int, verdict: str, note: str = "") -> None:
+        status, size = (answer.status, len(answer.body)) if answer else (None, 0)
+        self.log.add(trickle.Request(trickle.stamp(self.clock()), url, status, size, ms, verdict, note))
+
+    def fetch(self, url: str) -> tuple[net.Answer, int]:
+        """One request, GAP after the last. A 429 is a throttle; no answer or a 5xx ends
+        the run, and the next one tries again."""
+        if self.asked:
+            self.sleep(GAP)
+        self.asked += 1
+        start = time.monotonic()
         try:
-            slugs = event_slugs(self.get(url))
-        except Exception as e:  # report and move on to the next month
-            self.res.failed.append((url, str(e)))
-            self.pacer.answered(False)
-            return False
+            answer = self.get(url)
+        except net.FetchError as e:
+            self.record(url, None, int((time.monotonic() - start) * 1000), "error", str(e))
+            raise _Stop(f"no answer from {url}: {e}") from e
+        ms = int((time.monotonic() - start) * 1000)
+        if answer.status == 429:
+            self.record(url, answer, ms, "throttled")
+            self.throttle(f"{url} answered 429")
+        if answer.status not in (200, 404):
+            self.record(url, answer, ms, "error", f"HTTP {answer.status}")
+            raise _Stop(f"{url} answered HTTP {answer.status}")
+        return answer, ms
+
+    def throttle(self, why: str) -> NoReturn:
+        self.res.throttled, self.res.resume = why, self.pace.throttled(self.clock())
+        raise _Stop(why)
+
+    def canary_whole(self, suspect: str | None) -> bool:
+        """Whether the site is answering whole: the newest stored event, asked for again."""
+        slug = _canary(suspect)
+        if slug is None:
+            raise _Stop("nothing stored yet to check an empty answer against")
+        if self.log.count(self.clock() - trickle.WINDOW) >= trickle.CEILING:
+            raise _Stop("no room left under the ceiling to check an empty answer")
+        url = f"{BASE}/decklist/{slug}"
+        answer, ms = self.fetch(url)
+        whole = answer.status == 200 and _decklists(answer.body) is not None
+        self.record(url, answer, ms, "canary whole" if whole else "canary stripped")
+        if whole:
+            self.res.raised |= self.pace.whole()
+        return whole
+
+    def index(self, y: int, m: int) -> None:
+        """A month's index. Every event it lists that isn't stored joins the owed list."""
+        key, url = _key(y, m), f"{BASE}/decklists/{y}/{m:02d}"
+        self.res.index = key
+        answer, ms = self.fetch(url)
+        slugs = event_slugs(answer.body.decode("utf-8", errors="replace")) if answer.status == 200 else []
         if not slugs:
-            if (self.today - date(y, m, 1)).days < NEW_MONTH_DAYS:
-                self.pacer.answered(None)
-                return True
-            self.res.failed.append((url, "no events listed, likely throttled"))
-            self.pacer.answered(False)
-            return False
-        self.pacer.answered(True)
+            self.record(url, answer, ms, "missing" if answer.status == 404 else "empty")
+            young = (self.clock().date() - date(y, m, 1)).days < NEW_MONTH_DAYS
+            if answer.status == 200 and not young and not self.canary_whole(None):
+                self.throttle(f"the {key} index listed no events, and a stored event came back stripped")
+            self.months[key] = {"read": trickle.stamp(self.clock()), "events": 0}
+            return
+        self.record(url, answer, ms, "whole", f"{len(slugs)} events")
+        self.res.raised |= self.pace.whole()
+        at = self.clock()
+        self.months[key] = {"read": trickle.stamp(at), "events": len(slugs)}
+        self.res.listed = len(slugs)
         for slug in slugs:
             parsed = parse_slug(slug)
-            if parsed is None or slug in seen:
-                continue
-            seen.add(slug)
-            name, day, event_id = parsed
-            fmt = event_format(name)
-            if (self.fmts and fmt not in self.fmts) or classify(name) not in self.kinds:
-                continue
-            if not self.since.isoformat() <= day <= self.until.isoformat():
-                continue
-            if is_stored(slug):
-                self.res.skipped += 1
-            elif self.misses.get(slug, 0) >= GIVE_UP_AFTER:
-                self.res.missed += 1
+            if parsed and slug not in self.owed and not is_stored(slug):
+                self.owed[slug] = trickle.Owed(day=parsed[1], found=trickle.stamp(at))
+                self.res.newly_owed += 1
+
+    def event(self, slug: str) -> None:
+        """One owed event: stored and paid off, or tried and still owed."""
+        owed, url = self.owed[slug], f"{BASE}/decklist/{slug}"
+        answer, ms = self.fetch(url)
+        if answer.status == 404 or _moved(url, answer.url):
+            outcome = "missing" if answer.status == 404 else "redirect"
+            self.record(url, answer, ms, outcome, "" if outcome == "missing" else answer.url)
+            owed.tried(self.clock(), outcome, miss=True)
+            self.res.missed.append((slug, outcome))
+            return
+        data = _decklists(answer.body)
+        if data is not None:
+            try:
+                event = parse_event(slug, data)
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                self.record(url, answer, ms, "unparseable", str(e))
+                owed.tried(self.clock(), "unparseable", miss=False)
+                self.res.broken.append((slug, str(e) or type(e).__name__))
+                return
+            self.record(url, answer, ms, "whole", f"{len(event.decks)} decks")
+            save(event)
+            save_raw(slug, data, url, self.clock(), len(answer.body))
+            del self.owed[slug]
+            self.res.fetched.append(event)
+            self.res.raised |= self.pace.whole()
+            return
+        self.record(url, answer, ms, "empty")
+        if (self.clock().date() - date.fromisoformat(owed.day)).days < PENDING_DAYS:
+            owed.tried(self.clock(), "not published yet", miss=False)
+            self.res.pending.append(slug)
+            return
+        if not self.canary_whole(slug):
+            self.throttle(f"{slug} came back empty, and so did a stored event")
+        owed.tried(self.clock(), "empty", miss=True)
+        self.res.missed.append((slug, "empty"))
+
+
+def _carry_misses(owed: dict[str, trickle.Owed], at: datetime) -> int:
+    """The old misses file's events, into the owed list with their counts as tries."""
+    path = misses_path()
+    if not path.exists():
+        return 0
+    try:
+        misses = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        misses = {}
+    carried = 0
+    for slug, count in misses.items() if isinstance(misses, dict) else ():
+        parsed = parse_slug(slug)
+        if parsed is None or is_stored(slug):
+            continue
+        entry = owed.setdefault(slug, trickle.Owed(day=parsed[1], found=trickle.stamp(at)))
+        entry.tries = max(entry.tries, count if isinstance(count, int) else 0)
+        entry.last = entry.last or "empty"
+        carried += 1
+    trickle.save_owed(SOURCE, owed)
+    path.unlink()
+    return carried
+
+
+def _read_months() -> dict[str, dict]:
+    try:
+        months = json.loads(months_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return months if isinstance(months, dict) else {}
+
+
+def _save_months(months: dict[str, dict]) -> None:
+    path = months_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(json.dumps(dict(sorted(months.items())), indent=1) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def run_trickle(
+    get: Callable[[str], net.Answer] = _get,
+    clock: Callable[[], datetime] = trickle.now,
+    sleep: Callable[[float], None] = time.sleep,
+    tracker: Tracker = SILENT,
+) -> TrickleResult:
+    """One run: what the job does every 10 minutes. Paused after a throttle, it asks for
+    nothing; otherwise at most one index page, then owed events that are due, newest
+    first, as many as the pace allows."""
+    with _lock() as held:
+        if not held:
+            return TrickleResult(busy=True)
+        at = clock()
+        owed = trickle.load_owed(SOURCE)
+        res = TrickleResult(carried=_carry_misses(owed, at))
+        pace, months = trickle.load_pace(SOURCE), _read_months()
+        run = _Trickle(get, clock, sleep, trickle.RequestLog(SOURCE), pace, owed, months, res)
+        try:
+            res.paused_until = pace.paused(at)
+            if res.paused_until is None:
+                res.budget = pace.budget(run.log, at)
+                _pages(run, tracker)
+        finally:
+            trickle.save_owed(SOURCE, owed)
+            trickle.save_pace(SOURCE, pace)
+            _save_months(months)
+            res.level, res.owed, res.due = pace.level, len(owed), len(due(owed, clock()))
+        return res
+
+
+def _pages(run: _Trickle, tracker: Tracker) -> None:
+    """The run's requests, as progress steps. A throttle or a missing answer defers the
+    rest to the next run; only lists that won't parse fail a step."""
+    res, left = run.res, run.res.budget
+    step = None
+    try:
+        if left and (ym := next_index(run.months, run.clock())) is not None:
+            step = tracker.step(f"mtgo.com index {_key(*ym)}")
+            run.index(*ym)
+            step.ok(f"{res.listed} events, {res.newly_owed} newly owed" if res.listed else "no events")
+            left -= 1
+        todo = due(run.owed, run.clock())[:left]
+        if todo:
+            step = tracker.step("mtgo events", total=len(todo), unit="events")
+            for n, slug in enumerate(todo, 1):
+                run.event(slug)
+                step.update(n)
+            outcome = (
+                f"{len(res.fetched)} new, {len(res.pending)} not published yet, {len(res.missed)} missed"
+            )
+            if res.broken:
+                step.fail(f"{outcome}, {len(res.broken)} unreadable")
             else:
-                found[slug] = (fmt, date.fromisoformat(day), int(event_id))
+                step.ok(outcome)
+    except _Stop as e:
+        if res.throttled is None:
+            res.stopped = str(e)
+        if step is not None:
+            step.ok(f"deferred: {e}")
+
+
+def forget(slug: str) -> bool:
+    """Drop one event from the owed list by hand. False when it wasn't owed."""
+    with _lock() as held:
+        if not held:
+            raise RuntimeError("a trickle run is in progress; try again in a minute")
+        owed = trickle.load_owed(SOURCE)
+        if owed.pop(slug, None) is None:
+            return False
+        trickle.save_owed(SOURCE, owed)
         return True
 
-    def fetch(self, todo: list[tuple[str, str, date]]) -> None:
-        """Each format's events as a step with its total, newest first."""
-        by_format: dict[str, list[tuple[str, date]]] = {}
-        for slug, fmt, day in todo:
-            by_format.setdefault(fmt, []).append((slug, day))
-        left = len(todo)
-        for fmt, events in by_format.items():
-            step = self.tracker.step(f"mtgo {fmt}", total=len(events), unit="events")
-            counts = dict.fromkeys(OUTCOMES, 0)
-            for n, (slug, day) in enumerate(events, 1):
-                try:
-                    self.pacer.wait()
-                except Stopped as e:
-                    self.res.left += left
-                    step.fail(f"{_note(counts) or 'nothing fetched'}; stopped: {e}")
-                    raise
-                counts[self.event(slug, day)] += 1
-                left -= 1
-                step.update(n)
-            if counts["empty"] or counts["failed"]:
-                step.fail(_note(counts))
-            else:
-                step.ok(_note(counts))
 
-    def event(self, slug: str, day: date) -> str:
-        """Fetch one event and store it. Returns its outcome, one of OUTCOMES."""
-        clean = self.pacer.last_good  # the site was answering properly just before
-        try:
-            page = self.get(f"{BASE}/decklist/{slug}")
-        except Exception as e:  # one broken page shouldn't stop the run
-            self.res.failed.append((slug, str(e)))
-            self.pacer.answered(False)
-            return "failed"
-        try:
-            event: Event | None = parse_event(slug, extract_data(page))
-        except ValueError:
-            event = None  # the page is up but its data isn't
-        if event is not None and event.decks:
-            save(event)
-            self.misses.pop(slug, None)
-            self.res.fetched.append(event)
-            self.pacer.answered(True)
-            return "new"
-        if (self.today - day).days < PENDING_DAYS:
-            self.res.pending.append(slug)
-            self.pacer.answered(None)
-            return "not published yet"
-        self.pacer.answered(False)
-        if clean:  # only an empty answer while the site answers properly counts toward giving up
-            self.misses[slug] = self.misses.get(slug, 0) + 1
-            if self.misses[slug] >= GIVE_UP_AFTER:
-                self.res.given_up.append(slug)
-                return "given up"
-        self.res.empty.append(slug)
-        return "empty"
+@dataclass
+class TrickleStatus:
+    pace: trickle.Pace
+    paused_until: datetime | None
+    window: list[trickle.Request]  # the last trickle.WINDOW
+    day: list[trickle.Request]  # the last 24 hours
+    owed: dict[str, trickle.Owed]
+    due: int
+    months: dict[str, dict]
+    sweep_done: bool
 
 
-def ingest(
-    formats: Iterable[str] | None,
-    since: date,
-    until: date | None = None,
-    kinds: Iterable[str] | None = None,
-    delay: float = 1.0,
-    max_events: int | None = None,
-    get: Callable[[str], str] = _get,
-    tracker: Tracker = SILENT,
-) -> IngestResult:
-    """Fetch new events, newest first. formats=None means every format.
-
-    Every month's index is read first, so each format's events are a step with a known
-    total on the tracker. max_events caps the event pages fetched: the newest go first,
-    and later runs skip what's stored and reach further back.
-    """
-    today = _today()
-    if isinstance(formats, str):
-        formats = [formats]
-    run = _Run(
-        fmts={f.lower() for f in formats} if formats else None,
-        kinds=set(kinds or KINDS),
-        since=since,
-        until=until or today,
-        today=today,
-        get=get,
-        tracker=tracker,
-        pacer=_Pacer(delay, tracker),
-        misses=_load_misses(),
+def status(clock: Callable[[], datetime] = trickle.now) -> TrickleStatus:
+    at = clock()
+    pace, log, owed, months = (
+        trickle.load_pace(SOURCE),
+        trickle.RequestLog(SOURCE),
+        trickle.load_owed(SOURCE),
+        _read_months(),
     )
-    misses = dict(run.misses)
-    try:
-        todo = run.index()
-        if max_events is not None and len(todo) > max_events:
-            run.res.left = len(todo) - max_events
-            todo = todo[:max_events]
-        run.fetch(todo)
-    except Stopped as e:
-        run.res.stopped = str(e)
-    finally:
-        if run.misses != misses:
-            _save_misses(run.misses)
-    return run.res
+    day = log.since(at - timedelta(days=1))
+    window = [r for r in day if r.at >= trickle.stamp(at - trickle.WINDOW)]
+    done = bool(months) and sweep_next(months, at) is None
+    return TrickleStatus(pace, pace.paused(at), window, day, owed, len(due(owed, at)), months, done)
