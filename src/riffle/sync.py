@@ -58,6 +58,7 @@ class SyncResult:
     prices_logged: int = 0
     removed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)  # (step, why), for the CLI to report
 
 
 def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = None) -> SyncResult:
@@ -66,7 +67,15 @@ def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = Non
     res = SyncResult()
     pins = formats.owned_printings(inv.holdings)
     keep = {"collection-summary.md"}
-    for deck in vault.decks(mtg_dir):
+    unreadable: vault.Unreadable = []
+    try:
+        state = obsidian.load_state()
+    except obsidian.Unreadable as e:
+        bad = obsidian.set_aside_state()
+        why = f"{e}; set aside as {bad.name}, so each deck's log starts again from a baseline"
+        res.failed.append(("version logs", why))
+        state = {}
+    for deck in vault.decks(mtg_dir, unreadable):
         rep = analyse(deck, inv, catalog)
         res.decks.append(deck.slug)
         imports = {
@@ -77,16 +86,17 @@ def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = Non
         text = obsidian.deck_data(deck, rep.rows, rep.price, rep.unresolved, today, imports)
         res.changed_notes += obsidian.write_deck(gen, deck, text)
         keep.add(f"{deck.slug}-data.md")
-        if obsidian.append_version(log, deck, catalog, today):
+        if obsidian.append_version(log, deck, catalog, today, state):
             res.versions.append(deck.slug)
         if rep.unresolved:
             res.warnings.append(f"{deck.slug}: unmatched {', '.join(rep.unresolved)}")
     res.changed_notes += obsidian.write_summary(
         gen, obsidian.collection_summary(inv.holdings, catalog, today)
     )
+    keep.update(f"{p.stem}-data.md" for p, _ in unreadable)  # kept as it was until the note reads again
     res.removed = obsidian.prune(gen, keep)
     wanted = []
-    for name in vault.buy_cards(mtg_dir.parent):
+    for name in vault.buy_cards(mtg_dir.parent, unreadable):
         card_id = catalog.resolve(name)
         if card_id is None:
             res.warnings.append(f"buy list: unmatched {name}")
@@ -98,6 +108,10 @@ def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = Non
         p = prices.get(card_id, Prices())
         buys.append((catalog.name(card_id), p.usd, p.tix))
     res.prices_logged = obsidian.append_prices(log / "prices.md", buys, today)
+    if unreadable:
+        whys = {p.relative_to(mtg_dir.parent).as_posix(): why for p, why in unreadable}
+        notes = ", ".join(f"{name} ({why})" for name, why in whys.items())
+        res.failed.append(("vault notes", f"skipped, can't read {notes}"))
     if inv.unresolved:
         res.warnings.append(f"collection: {len(inv.unresolved)} rows unmatched, e.g. {inv.unresolved[:3]}")
     return res

@@ -105,6 +105,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- CI's coverage floor goes from 75% to 90%, held by the Linux jobs, which run every test against Postgres; the
+  suite is at 94%. The macOS jobs skip the database tests, so they run without a floor.
 - MTGO decklists come in as a trickle: a launchd job (`riffle schedule trickle`, beside the daily sync job) runs
   `riffle mtgo trickle` every 10 minutes, all day. Each run asks for 1 to 3 pages, 5 seconds apart, and never more
   than 5 in any 15 minutes; about 430 pages a day at full pace. It reads this month's index hourly and sweeps back
@@ -174,6 +176,24 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- Two runs no longer overlap. `riffle sync`, `riffle ingest prices`, `riffle ingest scryfall`, and the resyncs of
+  `riffle watch` and `riffle ingest manabox` take turns: a second run waits for the first, saying which run it's
+  waiting for and since when. They shared download names, the price log and `sync-state.json`, so one run could
+  delete the other's download or leave a price list mixed from two. The ManaBox copy and `sync-state.json` are now
+  written whole or not at all.
+- One bad note no longer stops the vault half of every sync. A note that isn't UTF-8 is skipped and named on a
+  failed step, and its deck's generated note is left as it was; an unreadable `sync-state.json` is set aside and
+  each deck's version log starts again from a baseline; `riffle watch` keeps watching after any error, not only a
+  failed step. A vault path with no `tcg/mtg` folder fails the sync saying where to set it, instead of building an
+  empty vault there and reporting success.
+- One price source's trouble no longer ends the sync or sends it offline. The network wait goes on as soon as any
+  source answers, so Scryfall alone being unreachable fails only Scryfall's steps. An error no source expects
+  fails only that source's steps, with the traceback in `~/.local/share/riffle/errors.log`, and the rest still run.
+  These used to end the sync: a tcgcsv group list without whole-number IDs or a tcgcsv file that isn't UTF-8 (the
+  game's step fails), a negative or non-numeric Retry-After (the usual backoff is used), a `database_url` that
+  can't be used (the catalog step fails naming the config file, and the prices are still kept), a Scryfall bulk
+  file cut short (set aside, and downloaded again by the next online sync), and an unreadable `bulk-meta.json`
+  (counted as missing, so the bulk file is downloaded again).
 - Lines a command prints while its steps run, such as `riffle ingest mtgo`'s report, the tcgcsv request count,
   and `riffle sync`'s summary and warnings, print above the progress display instead of onto its last line.
   typer.echo wrote to the terminal underneath the display rather than through it, and the line printed for a

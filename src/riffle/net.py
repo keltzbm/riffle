@@ -18,6 +18,7 @@ files can stop there instead of waiting out each one.
 """
 
 import http.client
+import math
 import socket
 import time
 import urllib.error
@@ -49,11 +50,15 @@ def _why(e: BaseException) -> str:
 
 
 def _retry_after(e: urllib.error.HTTPError) -> float | None:
+    """Retry-After in seconds, or None for the default backoff: when there's none, when it's an
+    HTTP date (the backoff is close enough), and when it's negative or not a number, which
+    time.sleep would raise on."""
     value = e.headers.get("Retry-After") if e.headers else None
     try:
-        return float(value) if value is not None else None
+        seconds = float(value) if value is not None else None
     except ValueError:
-        return None  # an HTTP date; the default backoff is close enough
+        return None
+    return seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
 
 
 def _open(url: str, accept: str, timeout: float, retries: int):
@@ -79,18 +84,21 @@ def _open(url: str, accept: str, timeout: float, retries: int):
     raise AssertionError("unreachable")
 
 
-def wait_online(host: str, timeout: float = 120.0, pause: float = 5.0, port: int = 443) -> float | None:
-    """Seconds until host accepted a connection, or None if it didn't within timeout. A job
-    launchd runs as the Mac wakes starts before the network is back."""
+def wait_online(*hosts: str, timeout: float = 120.0, pause: float = 5.0, port: int = 443) -> float | None:
+    """Seconds until any of hosts accepted a connection, tried in order, or None if none did
+    within timeout. A job launchd runs as the Mac wakes starts before the network is back.
+    One host that's down, or whose name won't resolve, doesn't make the network look down."""
     start = time.monotonic()
     while True:
-        try:
-            with socket.create_connection((host, port), timeout=pause):
-                return time.monotonic() - start
-        except OSError:
-            if time.monotonic() - start + pause > timeout:
-                return None
-            time.sleep(pause)
+        for host in hosts:
+            try:
+                with socket.create_connection((host, port), timeout=pause):
+                    return time.monotonic() - start
+            except OSError:
+                pass
+        if time.monotonic() - start + pause > timeout:
+            return None
+        time.sleep(pause)
 
 
 def get(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) -> bytes | None:

@@ -71,3 +71,21 @@ def test_db_commands_say_how_to_start_an_unreachable_server(tmp_path, monkeypatc
     assert result.exit_code == 1
     assert "can't reach Postgres at postgresql+psycopg://tcg@127.0.0.1:1/tcg" in result.output
     assert "riffle db up" in result.output
+
+
+def test_a_database_url_that_cant_be_used_names_the_config_not_the_value(tmp_path, monkeypatch, tracker):
+    from riffle.ingest import scryfall_catalog
+    from riffle.store import postgres
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = config.write_default()
+    path.write_text('database_url = "tcg:secret@localhost"\n')
+    with pytest.raises(db.BadURL, match=f"database_url in {path} can't be used") as e:
+        db.engine()
+    assert "secret" not in str(e.value)
+    assert scryfall_catalog.update(tracker=tracker) is None  # reported on its step, not raised
+    assert tracker.outcomes()["card catalog"] == ("fail", str(e.value))
+    with pytest.raises(postgres.Unavailable, match="can't be used"), postgres.open_catalog():
+        pass
+    result = CliRunner().invoke(app, ["db", "status"])
+    assert result.exit_code == 1 and "can't be used" in result.output

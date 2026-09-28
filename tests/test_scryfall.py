@@ -250,3 +250,77 @@ def test_the_bulk_file_s_publication_time(tmp_path, monkeypatch):
     assert scryfall.bulk_updated_at(bulk) == datetime(2026, 9, 24, 9, 5, 40, 725000, tzinfo=UTC)
     write_bulk(tmp_path / "riffle", updated_at="2026-09-24T09:05:40")
     assert scryfall.bulk_updated_at(bulk) == datetime(2026, 9, 24, 9, 5, 40, tzinfo=UTC)
+
+
+def test_a_bulk_file_cut_short_is_set_aside_and_fetched_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    bulk = write_bulk(tmp_path / "riffle")
+    bulk.write_bytes(bulk.read_bytes()[:-12])  # the gzip trailer and some data gone
+    with pytest.raises(scryfall.CorruptBulk, match="cut short or corrupt.*set aside"):
+        scryfall.snapshot_prices()
+    assert scryfall.bulk_file() is None  # so the next online refresh downloads it again
+    assert (tmp_path / "riffle" / "default-cards.jsonl.gz.bad").exists()
+    assert not scryfall.is_current(INFO)
+    assert not list((tmp_path / "riffle" / "scryfall" / "daily").glob("*"))
+
+
+@pytest.mark.parametrize("meta", ["{not json", "[]", '"2026-09-24"', "\xff"])
+def test_an_unreadable_bulk_meta_counts_as_missing(tmp_path, monkeypatch, meta):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    bulk = write_bulk(tmp_path / "riffle")
+    scryfall.meta_path().write_text(meta, encoding="latin-1")
+    assert not scryfall.is_current(INFO)  # the next online refresh downloads the bulk file again
+    stamp = datetime(2026, 9, 24, 12, tzinfo=UTC).timestamp()
+    os.utime(bulk, (stamp, stamp))
+    assert scryfall.bulk_day(bulk) == date(2026, 9, 24)
+
+
+def test_a_new_download_removes_a_set_aside_file(tmp_path, monkeypatch):
+    (tmp_path / "default-cards.jsonl.gz.bad").write_bytes(b"cut short")
+
+    def download(url, dest, progress=None, **kwargs):
+        dest.write_bytes(gzip.compress(b"{}\n"))
+        return dest.stat().st_size
+
+    monkeypatch.setattr(net, "download", download)
+    path, _ = scryfall.download(dest_dir=tmp_path, info={"jsonl_download_uri": "https://x/default.jsonl.gz"})
+    assert [p.name for p in tmp_path.iterdir()] == [path.name] == ["default-cards.jsonl.gz"]
+
+
+def test_a_download_that_isnt_gzip_or_is_missing_keeps_the_last_good_file(tmp_path, monkeypatch):
+    info = {"jsonl_download_uri": "https://x/default.jsonl.gz"}
+    kept = tmp_path / "default-cards.jsonl.gz"
+    kept.write_bytes(gzip.compress(b"{}\n"))
+
+    def html(url, dest, progress=None, **kwargs):
+        dest.write_bytes(b"<html>maintenance</html>")
+        return 24
+
+    monkeypatch.setattr(net, "download", html)
+    with pytest.raises(RuntimeError, match="isn't gzip"):
+        scryfall.download(dest_dir=tmp_path, info=info)
+    monkeypatch.setattr(net, "download", lambda url, dest, progress=None: None)
+    with pytest.raises(RuntimeError, match="bulk file is missing"):
+        scryfall.download(dest_dir=tmp_path, info=info)
+    assert [p.name for p in tmp_path.iterdir()] == [kept.name]
+
+
+def test_the_bulk_index_must_list_the_file(monkeypatch):
+    monkeypatch.setattr(net, "get", lambda url, accept: b'{"data": [{"type": "oracle_cards"}]}')
+    with pytest.raises(RuntimeError, match="no bulk file of type default_cards"):
+        scryfall.remote_info()
+    assert scryfall.remote_info("oracle_cards") == {"type": "oracle_cards"}
+    monkeypatch.setattr(net, "get", lambda url, accept: None)
+    with pytest.raises(RuntimeError, match="bulk index is missing"):
+        scryfall.remote_info()
+
+
+def test_an_error_while_keeping_prices_leaves_no_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    bulk = write_bulk(tmp_path / "riffle")
+    with gzip.open(bulk, "wt", encoding="utf-8") as f:
+        f.write('{"name": "no id"}\n')
+    with pytest.raises(KeyError):
+        scryfall.snapshot_prices()
+    assert not list((tmp_path / "riffle" / "scryfall" / "daily").glob("*"))
+    assert scryfall.bulk_file() == bulk  # a file that reads whole isn't set aside

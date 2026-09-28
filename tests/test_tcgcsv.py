@@ -320,3 +320,24 @@ def test_games_past_the_daily_request_budget_wait_a_day(data_dir, sleeps, monkey
     snap = tcgcsv.snapshot(fetch=fake_fetch(every_game_answers())[0])
     assert snap.failed == [("yugioh", tcgcsv.OVER_BUDGET)] and "warhammer-box-sets" in snap.fetched
     assert snap.requests == 14
+
+
+def test_a_last_updated_that_isnt_utf8_is_a_fetch_error():
+    fetch, _ = fake_fetch({f"{B}/last-updated.txt": "2026-09-24T20:05:50+0000".encode("utf-16")})
+    with pytest.raises(net.FetchError, match="last-updated"):
+        tcgcsv.last_updated(fetch)
+
+
+def test_a_group_without_a_whole_number_group_id_fails_its_game_not_the_run(data_dir, sleeps):
+    bad = json.dumps({"success": True, "errors": [], "results": [{"groupId": "x1", "name": "g"}]}).encode()
+    fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/groups": bad}))
+    snap = tcgcsv.snapshot(FAB, fetch=fetch)
+    assert snap.failed == [("fab", "groups: a group without a whole-number groupId")]
+
+
+def test_a_price_file_that_isnt_utf8_fails_its_game_not_the_run(data_dir, sleeps):
+    utf16 = prices(1, 2).decode().encode("utf-16")  # json.loads reads it; the file must be UTF-8
+    fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": utf16}))
+    snap = tcgcsv.snapshot(FAB, fetch=fetch)
+    assert snap.failed == [("fab", "group 100: not UTF-8")]
+    assert not list(tcgcsv.daily_dir().rglob("*.part"))

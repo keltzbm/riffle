@@ -55,7 +55,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run pytest --cov-fail-under=75
+      - run: uv run pytest --cov-fail-under=90
 
   test-macos:
     runs-on: macos-latest
@@ -69,7 +69,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run pytest --cov-fail-under=75
+      # No Postgres here, so the database tests skip and leave the code only they reach
+      # unmeasured. The coverage floor is held by test-linux, which runs every test.
+      - run: uv run pytest
 
   # The one check main requires. It runs even when a job above failed (a job
   # skipped because its needs failed would count as passing), and succeeds only

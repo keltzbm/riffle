@@ -4,7 +4,8 @@ import shutil
 import sys
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
@@ -13,7 +14,7 @@ import typer
 from riffle import config, net, vault
 from riffle import sync as syncmod
 from riffle.export import formats
-from riffle.progress import Tracker, Watched, elapsed, open_tracker
+from riffle.progress import Tracker, Watched, contained, elapsed, open_tracker
 from riffle.store import Catalog
 
 app = typer.Typer(help="Collection, decks, prices, and the Obsidian vault.", no_args_is_help=True)
@@ -126,6 +127,75 @@ def _tracked(title: str) -> Iterator[Tracker]:
         raise typer.Exit(1)
 
 
+def _lock_path() -> Path:
+    return config.data_dir() / "sync.lock"
+
+
+def _holder(path: Path) -> str:
+    """Who holds the run lock, from what they wrote in it, for the waiting message."""
+    import json
+
+    try:
+        held = json.loads(path.read_text(encoding="utf-8"))
+        since = datetime.fromisoformat(held["since"]).astimezone()
+        return f"{held['command']} (pid {held['pid']}), running since {since:%H:%M %Z}"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "another riffle run"
+
+
+@contextmanager
+def _one_at_a_time(tracker: Tracker, command: str) -> Iterator[None]:
+    """One run at a time writes prices, the card catalog and the vault. Runs share download
+    names (.part, .new), the price log and sync-state.json, so a second run waits for the
+    first to finish, saying whose turn it is. The trickle has its own lock."""
+    import fcntl
+    import json
+    import os
+    import time
+
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _echo(f"waiting for {_holder(path)} to finish")
+            step, start = tracker.step("waiting for its turn"), time.monotonic()
+            fcntl.flock(f, fcntl.LOCK_EX)
+            step.ok(f"after {elapsed(time.monotonic() - start)}")
+        f.seek(0)
+        f.truncate()
+        f.write(json.dumps({"command": command, "pid": os.getpid(), "since": datetime.now(UTC).isoformat()}))
+        f.flush()
+        yield
+
+
+@contextmanager
+def _run(title: str) -> Iterator[Tracker]:
+    """_tracked, holding the run lock (see _one_at_a_time) for the whole command."""
+    with _tracked(title) as tracker, _one_at_a_time(tracker, title):
+        yield tracker
+
+
+def _failure(e: Exception) -> str:
+    """What a failed step says. A source's own trouble (no answer, a bad answer, a full disk)
+    says what happened. Anything else is a bug: the step names the error, and the traceback
+    goes to errors.log instead of across the screen."""
+    import traceback
+
+    if isinstance(e, (OSError, net.FetchError)):
+        return str(e) or type(e).__name__
+    what = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+    log = config.data_dir() / "errors.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}\n{''.join(traceback.format_exception(e))}\n")
+    except OSError:
+        return f"{what} (unexpected)"
+    return f"{what} (unexpected; details in {log})"
+
+
 @contextmanager
 def _setup() -> Iterator[tuple[config.Config, Catalog, syncmod.Inventory]]:
     cfg = config.load()
@@ -160,7 +230,7 @@ def ingest_scryfall(
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
 ) -> None:
     """Download Scryfall's bulk card data and set list, and load them."""
-    with _tracked("riffle ingest scryfall") as tracker:
+    with _run("riffle ingest scryfall") as tracker:
         _refresh(tracker, force=force)
         if no_sync:
             _snapshot_prices(tracker, online=False)
@@ -169,9 +239,13 @@ def ingest_scryfall(
 
 
 def _copy_manabox(src: Path) -> Path:
+    """Whole or not at all, keeping the export's own time: a sync reading the collection
+    meanwhile sees the old file or the new one."""
     dest = config.load().collection_csv
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src.expanduser(), dest)
+    tmp = dest.with_name(dest.name + ".part")
+    shutil.copy2(src.expanduser(), tmp)
+    tmp.replace(dest)
     return dest
 
 
@@ -241,7 +315,7 @@ def ingest_prices(
     delay: float = typer.Option(0.1, help="Seconds between tcgcsv requests"),
 ) -> None:
     """Keep today's prices: tcgcsv, Cardmarket, Scryfall, MTGJSON, GoatBots, Card Kingdom, Mana Pool."""
-    with _tracked("riffle ingest prices") as tracker:
+    with _run("riffle ingest prices") as tracker:
         _snapshot_prices(tracker, online=True, delay=delay)
 
 
@@ -254,8 +328,10 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         path, written = scryfall.snapshot_prices()
     except FileNotFoundError:
         step.fail("no bulk file yet — run: riffle ingest scryfall")
-    except (OSError, ValueError, KeyError) as e:
+    except (ValueError, KeyError) as e:
         step.fail(str(e))
+    except Exception as e:
+        step.fail(_failure(e))
     else:
         day = path.name.split(".")[0]
         if written:
@@ -266,32 +342,20 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
             step.drop()  # offline resyncs (watch, ingest manabox) shouldn't repeat "already have"
     if not online:
         return
-    try:
-        mtgjson.snapshot(tracker=tracker)
-    except OSError as e:
-        tracker.step("MTGJSON prices").fail(str(e))
-    try:
-        goatbots.snapshot(tracker=tracker)
-    except OSError as e:
-        tracker.step("GoatBots prices").fail(str(e))
-    try:
-        cardmarket.snapshot(tracker=tracker)
-    except OSError as e:
-        tracker.step("Cardmarket prices").fail(str(e))
-    try:
-        pricelists.snapshot(pricelists.CARD_KINGDOM, tracker=tracker)
-    except OSError as e:
-        tracker.step("Card Kingdom prices").fail(str(e))
-    try:
-        pricelists.snapshot(pricelists.MANA_POOL, tracker=tracker)
-    except OSError as e:
-        tracker.step("Mana Pool prices").fail(str(e))
-    try:
-        snap = tcgcsv.snapshot(delay=delay, tracker=tracker)
-    except (OSError, net.FetchError) as e:
-        tracker.step("tcgcsv prices").fail(str(e))
-        return
-    _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
+    # Each source in turn; whatever one raises fails only its own steps (see _failure).
+    sources: list[tuple[str, Callable[..., object]]] = [
+        ("MTGJSON prices", mtgjson.snapshot),
+        ("GoatBots prices", goatbots.snapshot),
+        ("Cardmarket prices", cardmarket.snapshot),
+        ("Card Kingdom prices", partial(pricelists.snapshot, pricelists.CARD_KINGDOM)),
+        ("Mana Pool prices", partial(pricelists.snapshot, pricelists.MANA_POOL)),
+    ]
+    for label, snapshot in sources:
+        with contained(tracker, label, _failure) as scope:
+            snapshot(tracker=scope)
+    with contained(tracker, "tcgcsv prices", _failure) as scope:
+        snap = tcgcsv.snapshot(delay=delay, tracker=scope)
+        _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
 
 
 def _events(fmt: list[str], days: int, kind: list[str] | None):
@@ -661,8 +725,13 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
             err=True,
         )
+    if not cfg0.mtg_dir.is_dir():  # a missing or mistyped vault: nothing is written there
+        tracker.step("vault").fail(f"no deck folder at {cfg0.mtg_dir}; set vault in {config.config_path()}")
+        return
     with _setup() as (cfg, cat, inv):
         res = syncmod.run(cfg.mtg_dir, inv, cat)
+    for label, why in res.failed:
+        tracker.step(label).fail(why)
     _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
         f"{res.prices_logged} prices logged · versions changed: {', '.join(res.versions) or 'none'}"
@@ -676,15 +745,24 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
 NETWORK_WAIT = 120.0  # seconds a sync waits for the network before carrying on offline
 
 
-def _online(tracker: Tracker) -> bool:
-    """Whether Scryfall can be reached, after waiting up to NETWORK_WAIT for it: the scheduled
-    job runs as the Mac wakes, before the network is back. Without it the sync goes offline."""
+def _hosts() -> list[str]:
+    """Every host an online sync asks, Scryfall's first."""
     from urllib.parse import urlparse
 
-    from riffle.ingest import scryfall
+    from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 
+    urls = [scryfall.BULK_INDEX, mtgjson.BASE, goatbots.BASES[0], cardmarket.BASE, tcgcsv.BASE]
+    urls += [plist.url for plist in pricelists.CARD_KINGDOM + pricelists.MANA_POOL]
+    return list(dict.fromkeys(host for url in urls if (host := urlparse(url).hostname)))
+
+
+def _online(tracker: Tracker) -> bool:
+    """Whether any source can be reached, after waiting up to NETWORK_WAIT for one: the
+    scheduled job runs as the Mac wakes, before the network is back. Without any the sync goes
+    offline. One source that's down (Scryfall's name not resolving, say) fails its own steps
+    and costs the others nothing."""
     step = tracker.step("network")
-    waited = net.wait_online(urlparse(scryfall.BULK_INDEX).hostname or "", timeout=NETWORK_WAIT)
+    waited = net.wait_online(*_hosts(), timeout=NETWORK_WAIT)
     if waited is None:
         step.fail(f"no connection after {elapsed(NETWORK_WAIT)}; syncing offline")
         return False
@@ -697,7 +775,7 @@ def _online(tracker: Tracker) -> bool:
 
 def _resync() -> None:
     """An offline sync, for commands that change local data."""
-    with _tracked("riffle sync") as tracker:
+    with _run("riffle sync") as tracker:
         _run_sync(tracker, offline=True)
 
 
@@ -706,7 +784,7 @@ def sync_cmd(
     offline: bool = typer.Option(False, help="Skip the Scryfall refresh and price downloads"),
 ) -> None:
     """Refresh card data, keep today's prices, pick up a ManaBox export, rewrite _generated/, append _log/."""
-    with _tracked("riffle sync") as tracker:
+    with _run("riffle sync") as tracker:
         _run_sync(tracker, offline=offline)
 
 
@@ -728,6 +806,8 @@ def _resync_and_keep_watching() -> None:
         _resync()
     except typer.Exit:
         typer.echo("resync failed; still watching", err=True)
+    except Exception as e:
+        typer.echo(f"resync failed: {_failure(e)}; still watching", err=True)
 
 
 @app.command()
@@ -869,7 +949,11 @@ app.add_typer(db_app, name="db")
 def _db_engine():
     from riffle import db
 
-    return db.engine()
+    try:
+        return db.engine()
+    except db.BadURL as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
 
 
 def _unreachable(url: str, e: Exception) -> typer.Exit:

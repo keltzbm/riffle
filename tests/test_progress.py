@@ -285,3 +285,33 @@ def test_open_tracker_writes_plain_lines_otherwise(capsys):
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].endswith("  riffle sync") and len(lines[0]) == len("2026-09-25 07:00:03  riffle sync")
     assert "  card catalog: 118,389 printings (" in lines[1]
+
+
+# ---- contained ------------------------------------------------------------------------------
+
+
+def test_an_error_fails_the_steps_still_running_and_goes_no_further(tracker):
+    with progress.contained(tracker, "MTGJSON prices", lambda e: f"broke: {e}") as scope:
+        scope.step("MTGJSON today").ok("kept")
+        scope.step("MTGJSON 90 days", unit="bytes").update(10, 100)
+        raise ZeroDivisionError("x")
+    assert tracker.outcomes() == {"MTGJSON today": ("ok", "kept"), "MTGJSON 90 days": ("fail", "broke: x")}
+
+
+def test_an_error_before_any_step_fails_one_named_by_the_label(tracker):
+    with progress.contained(tracker, "GoatBots prices", str):
+        raise OSError("disk full")
+    assert tracker.outcomes() == {"GoatBots prices": ("fail", "disk full")}
+
+
+def test_work_that_ends_well_adds_no_step(tracker):
+    with progress.contained(tracker, "tcgcsv prices", str) as scope:
+        scope.step("tcgcsv mtg").fail("HTTP 503")
+        scope.step("tcgcsv fab").drop()
+    assert tracker.outcomes() == {"tcgcsv mtg": ("fail", "HTTP 503"), "tcgcsv fab": ("drop",)}
+
+
+def test_ctrl_c_still_stops_everything(tracker):
+    with pytest.raises(KeyboardInterrupt), progress.contained(tracker, "x", str):
+        raise KeyboardInterrupt
+    assert tracker.outcomes() == {}

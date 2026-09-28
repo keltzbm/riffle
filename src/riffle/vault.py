@@ -12,6 +12,8 @@ from riffle.ingest.decklist import LINE, parse_text
 from riffle.models import Deck
 
 SKIP_DIRS = {"_generated", "_log", "archetypes", "matchups"}
+
+Unreadable = list[tuple[Path, str]]  # a note that couldn't be read, and why
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 BUY_LINE = re.compile(r"^\s*- \[ \] .*?\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\].*#mtg/buy\b", re.M)
 
@@ -84,8 +86,25 @@ def deck_notes(mtg_dir: Path) -> list[Path]:
     )
 
 
-def decks(mtg_dir: Path) -> list[Deck]:
-    return [d for p in deck_notes(mtg_dir) if (d := read_deck(p))]
+def _why(e: OSError | UnicodeDecodeError) -> str:
+    return "not UTF-8" if isinstance(e, UnicodeDecodeError) else e.strerror or str(e)
+
+
+def decks(mtg_dir: Path, unreadable: Unreadable | None = None) -> list[Deck]:
+    """Every deck note's deck. A note that can't be read (not UTF-8, say) raises, unless
+    unreadable is given: then it's skipped and listed there, so one note can't stop a sync."""
+    found = []
+    for p in deck_notes(mtg_dir):
+        try:
+            deck = read_deck(p)
+        except (OSError, UnicodeDecodeError) as e:
+            if unreadable is None:
+                raise
+            unreadable.append((p, _why(e)))
+            continue
+        if deck:
+            found.append(deck)
+    return found
 
 
 def find(mtg_dir: Path, ref: str) -> Deck:
@@ -106,12 +125,20 @@ def find(mtg_dir: Path, ref: str) -> Deck:
     raise LookupError(f"no deck note named {ref!r} under {mtg_dir}")
 
 
-def buy_cards(tcg_dir: Path) -> list[str]:
-    """Card names on every unticked #mtg/buy line in the vault, deduplicated."""
+def buy_cards(tcg_dir: Path, unreadable: Unreadable | None = None) -> list[str]:
+    """Card names on every unticked #mtg/buy line in the vault, deduplicated. A note that
+    can't be read raises, or is skipped and listed in unreadable, as in decks()."""
     seen: dict[str, None] = {}
     for p in tcg_dir.rglob("*.md"):
         if "_generated" in p.parts or "_log" in p.parts:
             continue
-        for m in BUY_LINE.finditer(p.read_text(encoding="utf-8")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            if unreadable is None:
+                raise
+            unreadable.append((p, _why(e)))
+            continue
+        for m in BUY_LINE.finditer(text):
             seen.setdefault(m.group(1).strip(), None)
     return list(seen)
