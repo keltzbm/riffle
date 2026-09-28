@@ -75,35 +75,63 @@ def test_snapshot_needs_a_bulk_file(tmp_path, monkeypatch):
 
 # ---- refresh --------------------------------------------------------------------
 
+INFO = {"type": "default_cards", "updated_at": "2026-09-24T21:05:23.456+00:00"}
+
 
 def test_refresh_reports_the_download_and_the_set_list(tmp_path, monkeypatch, tracker):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     bulk = tmp_path / "riffle" / "default-cards.jsonl.gz"  # download() writes into the data folder
     bulk.parent.mkdir()
     bulk.write_bytes(b"x" * 2_500_000)
+    asked = []
 
-    def download(progress):
+    def download(progress, info):
+        asked.append(info)
         progress(2_500_000, 2_500_000)
-        return bulk, {"updated_at": "2026-09-24T21:05:23.456+00:00"}
+        return bulk, info
 
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
     monkeypatch.setattr(scryfall, "download", download)
     monkeypatch.setattr(net, "get", lambda url, accept: b'{"data": [{"code": "lea"}, {"code": "leb"}]}')
-    scryfall.refresh(force=True, tracker=tracker)
+    scryfall.refresh(tracker=tracker)
     assert tracker.outcomes() == {
         "Scryfall bulk data": ("ok", "2.5 MB, Scryfall 2026-09-24"),
         "Scryfall set list": ("ok", "2 sets"),
     }
+    assert asked == [INFO]  # the index is asked once, and the download reuses its answer
     assert tracker.steps[0].unit == "bytes" and tracker.steps[0].updates == [(2_500_000, 2_500_000)]
     meta = json.loads(scryfall.meta_path().read_text())
     assert meta["updated_at"] == "2026-09-24T21:05:23.456+00:00"
-    assert not scryfall.is_stale() and scryfall.is_stale(max_age_hours=0)
+    assert scryfall.is_current(INFO)
 
 
-def test_a_missing_or_unstamped_download_is_stale(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("kept", "published", "current"),
+    [
+        ("2026-09-24T09:05:40.725+00:00", "2026-09-24T21:05:23.456+00:00", True),
+        ("2026-09-24T21:05:23.456+00:00", "2026-09-25T09:02:11.001+00:00", False),
+        ("2026-09-24T21:05:23.456+00:00", "2026-09-25T20:59:59.000+00:00", False),
+        ("2026-09-25T09:02:11.001+00:00", "2026-09-24T21:05:23.456+00:00", True),
+    ],
+    ids=["same day, later file", "next day, earlier hour", "next day, same hour", "older on Scryfall"],
+)
+def test_a_new_day_is_downloaded_whatever_the_hour(tmp_path, monkeypatch, kept, published, current):
+    """A job run at 07:00 each day starts a few seconds short of 24 hours after the last
+    download finished; going by the download's age skipped every other day."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    assert scryfall.is_stale()
-    write_bulk(tmp_path / "riffle")  # a meta file without downloaded_at, as DuckDB-era loads wrote
-    assert scryfall.is_stale()
+    write_bulk(tmp_path / "riffle", updated_at=kept)
+    assert scryfall.is_current({"updated_at": published}) is current
+
+
+def test_a_missing_or_unstamped_download_is_never_current(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert not scryfall.is_current(INFO)
+    write_bulk(tmp_path / "riffle", updated_at=None)
+    assert not scryfall.is_current(INFO)
+    scryfall.meta_path().write_text(json.dumps({"updated_at": "not a time"}))
+    assert not scryfall.is_current(INFO)
+    write_bulk(tmp_path / "riffle")
+    assert not scryfall.is_current({"updated_at": None})
 
 
 @pytest.mark.parametrize("error", [net.FetchError("HTTP 503"), KeyError()], ids=["with a message", "without"])
@@ -111,44 +139,76 @@ def test_a_failed_download_is_reported_never_raised(tmp_path, monkeypatch, track
     """A sync carries on with the last download."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
 
-    def download(progress):
+    def download(progress, info):
         raise error
 
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
     monkeypatch.setattr(scryfall, "download", download)
-    scryfall.refresh(force=True, tracker=tracker)
+    scryfall.refresh(tracker=tracker)
     assert tracker.outcomes() == {"Scryfall bulk data": ("fail", str(error) or "KeyError")}
     assert not scryfall.meta_path().exists()
 
 
-def test_refresh_skips_a_recent_load(monkeypatch, tracker):
+def test_an_unreadable_bulk_index_is_reported_and_keeps_the_last_download(tmp_path, monkeypatch, tracker):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    bulk = write_bulk(tmp_path / "riffle")
+
+    def remote_info():
+        raise net.NoAnswer("no answer after 3 tries (timed out)")
+
+    monkeypatch.setattr(scryfall, "remote_info", remote_info)
+    scryfall.refresh(tracker=tracker)
+    assert tracker.outcomes() == {"Scryfall bulk data": ("fail", "no answer after 3 tries (timed out)")}
+    assert scryfall.bulk_file() == bulk
+
+
+def test_refresh_skips_the_day_already_kept(tmp_path, monkeypatch, tracker):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    write_bulk(tmp_path / "riffle")
     scryfall.sets_path().parent.mkdir(parents=True)
     scryfall.sets_path().write_text('{"data": []}')
-    monkeypatch.setattr(scryfall, "is_stale", lambda max_age_hours: False)
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
+    monkeypatch.setattr(scryfall, "download", lambda **kw: pytest.fail("downloaded the day kept"))
     scryfall.refresh(tracker=tracker)
-    assert tracker.outcomes() == {"Scryfall bulk data": ("ok", "current")}
+    assert tracker.outcomes() == {"Scryfall bulk data": ("ok", "current, Scryfall 2026-09-24")}
 
 
-def test_a_recent_load_without_a_set_list_fetches_one(monkeypatch, tracker):
-    monkeypatch.setattr(scryfall, "is_stale", lambda max_age_hours: False)
+def test_force_downloads_the_day_already_kept(tmp_path, monkeypatch, tracker):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    bulk = write_bulk(tmp_path / "riffle")
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
+    monkeypatch.setattr(scryfall, "download", lambda progress, info: (bulk, info))
+    monkeypatch.setattr(net, "get", lambda url, accept: b'{"data": []}')
+    scryfall.refresh(force=True, tracker=tracker)
+    assert tracker.outcomes()["Scryfall bulk data"][0] == "ok"
+    assert tracker.outcomes()["Scryfall bulk data"][1].endswith("Scryfall 2026-09-24")
+
+
+def test_a_current_download_without_a_set_list_fetches_one(tmp_path, monkeypatch, tracker):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    write_bulk(tmp_path / "riffle")
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
     monkeypatch.setattr(net, "get", lambda url, accept: b'{"data": [{"code": "lea"}]}')
     scryfall.refresh(tracker=tracker)
     assert tracker.outcomes() == {
-        "Scryfall bulk data": ("ok", "current"),
+        "Scryfall bulk data": ("ok", "current, Scryfall 2026-09-24"),
         "Scryfall set list": ("ok", "1 sets"),
     }
 
 
-def test_a_failed_set_list_fetch_is_reported_never_raised(monkeypatch, tracker):
+def test_a_failed_set_list_fetch_is_reported_never_raised(tmp_path, monkeypatch, tracker):
     """Only the Postgres catalog needs the set list: it mustn't stop a sync."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    write_bulk(tmp_path / "riffle")
 
     def get(url, accept):
         raise net.FetchError("HTTP 503")
 
-    monkeypatch.setattr(scryfall, "is_stale", lambda max_age_hours: False)
+    monkeypatch.setattr(scryfall, "remote_info", lambda: INFO)
     monkeypatch.setattr(net, "get", get)
     scryfall.refresh(tracker=tracker)
     assert tracker.outcomes() == {
-        "Scryfall bulk data": ("ok", "current"),
+        "Scryfall bulk data": ("ok", "current, Scryfall 2026-09-24"),
         "Scryfall set list": ("fail", "HTTP 503"),
     }
 

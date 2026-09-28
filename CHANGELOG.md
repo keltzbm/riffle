@@ -158,6 +158,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- `riffle sync` and `riffle ingest scryfall` download Scryfall's bulk file whenever Scryfall has published one for
+  a newer day than the one kept. They used to skip a download under 24 hours old, and a job run at the same time
+  each day starts a few seconds short of that, so every other day's file was skipped, and with it that day's
+  Scryfall prices, which can't be fetched again, and that day's catalog load. Each run now asks Scryfall's bulk
+  index, one request, what it last published.
 - A category tcgcsv lists but has no set list for (its groups answer 404, as My Little Pony's does) is skipped
   and noted on its step instead of failing every sync; Magic, Flesh and Blood, and One Piece still fail. The live
   progress display also clears itself when a command ends, so a step that failed last can't leave its spinner line
