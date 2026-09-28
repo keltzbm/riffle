@@ -190,6 +190,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- The MTGO trickle waits up to 60 seconds for a month's index, as it does for an event page, not 20. An old
+  month's index runs to about 300 KB and took up to 15 seconds to come back; 16 of the first 58 reads ran past
+  20, and each one ended its run with nothing else asked.
 - An MTGO event that keeps missing no longer holds up the trickle. Owed events went newest first, and one under
   30 days old was asked again on every run, so a new event that redirected took one of each run's two pages; with
   the index sweep taking the other, the trickle stored nothing. Events never asked for now come first, newest
