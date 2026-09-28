@@ -426,6 +426,14 @@ def test_a_retry_waits_and_goes_after_every_event_never_asked_for(no_index):
     assert owed[YOUNG].retry_at() == clock.at + timedelta(hours=2)
 
 
+def test_every_page_gets_a_minute_to_answer(monkeypatch):
+    asked = []
+    monkeypatch.setattr(net, "get_once", lambda url, accept, timeout: asked.append((url, timeout)))
+    mtgo._get(SEP)
+    mtgo._get(_url(YOUNG))
+    assert asked == [(SEP, 60.0), (_url(YOUNG), 60.0)]
+
+
 def test_a_429_throttles_without_asking_for_a_stored_event(no_index):
     _owe(OLD)
     site = Site({_url(OLD): 429})

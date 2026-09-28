@@ -273,14 +273,12 @@ REREAD = timedelta(hours=1)  # how often the current month's index is read again
 RECENT_MONTH = timedelta(days=7)  # a month that ended this recently is read as often
 SWEEP_END = 3  # months in a row listing no events end the sweep back through the indexes
 GAP = 5.0  # seconds between requests in a run
-INDEX_TIMEOUT = 20.0  # seconds; mtgo.com occasionally stalls instead of answering
-EVENT_TIMEOUT = 60.0  # league pages run past 250 KB and come back slowly
+TIMEOUT = 60.0  # seconds, any page: an old month's index, like a league, runs to 300 KB and comes slowly
 
 
 def _get(url: str) -> net.Answer:
-    """One request. Event pages get longer to answer than the monthly index."""
-    timeout = EVENT_TIMEOUT if "/decklist/" in url else INDEX_TIMEOUT
-    return net.get_once(url, accept="text/html", timeout=timeout)
+    """One request."""
+    return net.get_once(url, accept="text/html", timeout=TIMEOUT)
 
 
 def misses_path() -> Path:
