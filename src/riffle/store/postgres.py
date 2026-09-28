@@ -277,7 +277,10 @@ def check(conn: Connection) -> None:
 @contextmanager
 def open_catalog(engine: Engine | None = None) -> Iterator[PostgresCatalog]:
     """The catalog, read in one read-only, repeatable-read transaction that ends with the block."""
-    eng = engine or db.engine()
+    try:
+        eng = engine or db.engine()
+    except db.BadURL as e:
+        raise Unavailable(str(e)) from e
     try:
         conn = eng.connect()
     except OperationalError as e:

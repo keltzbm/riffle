@@ -202,7 +202,7 @@ run; without a reachable server they skip. Every test runs with its own config
 and data folders and an unreachable database URL, so none can touch real data.
 
 Every `uv run pytest` also measures line and branch coverage and lists the files
-with untested code. CI fails a run below 75%; `--no-cov` skips the measurement.
+with untested code. CI fails a run below 90%; `--no-cov` skips the measurement.
 
 ## GitHub Codespaces
 

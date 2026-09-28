@@ -1,3 +1,5 @@
+import pytest
+
 from riffle import sync
 
 NOTE = """---
@@ -107,3 +109,50 @@ def test_rename_happens_even_when_the_list_is_unchanged(tmp_path, cat, monkeypat
     new.rename(mtg / "_log" / "aesi-lands.versions.md")
     sync.run(mtg, sync.Inventory([]), cat, today="2026-09-21")
     assert new.exists()
+
+
+def test_a_note_that_isnt_utf8_is_skipped_and_named_and_the_rest_carries_on(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    sync.run(mtg, sync.Inventory([]), cat, today="2026-09-21")
+    (mtg / "commander" / "aesi-copy.md").write_bytes(NOTE.encode("utf-16"))
+    (mtg / "commander" / "aesi-lands.md").write_bytes(NOTE.encode() + b"caf\xe9\n")  # saved as Latin-1
+    (mtg.parent / "shopping.md").write_bytes(b"- [ ] **[[Sol Ring]]** #mtg/buy caf\xe9\n")
+    res = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-22")
+    assert res.decks == [] and res.removed == []  # aesi-lands' last generated note stays
+    assert (mtg / "_generated" / "aesi-lands-data.md").exists()
+    assert res.failed == [
+        (
+            "vault notes",
+            "skipped, can't read mtg/commander/aesi-copy.md (not UTF-8), "
+            "mtg/commander/aesi-lands.md (not UTF-8), shopping.md (not UTF-8)",
+        )
+    ]
+    assert res.prices_logged == 0  # no buy list could be read; a later run today can still log it
+    assert "2026-09-22" not in (mtg / "_log" / "prices.md").read_text()
+
+
+def test_a_buy_list_in_a_readable_note_is_still_logged_when_another_isnt(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    (mtg.parent / "notes.md").write_bytes(b"caf\xe9\n")
+    res = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-21")
+    assert res.decks == ["aesi-lands"] and res.prices_logged == 1
+    assert res.failed == [("vault notes", "skipped, can't read notes.md (not UTF-8)")]
+
+
+@pytest.mark.parametrize("state", ['{"aesi-lands": {"hash"', "[]"])
+def test_an_unreadable_sync_state_is_set_aside_and_the_logs_start_again(tmp_path, cat, monkeypatch, state):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    sync.run(mtg, sync.Inventory([]), cat, today="2026-09-21")
+    path = tmp_path / "data" / "riffle" / "sync-state.json"
+    path.write_text(state)
+    res = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-22")
+    [(label, why)] = res.failed
+    assert label == "version logs" and f"{path} " in why and "set aside as sync-state." in why
+    [bad] = path.parent.glob("sync-state.*.bad.json")
+    assert bad.read_text() == state
+    assert res.versions == ["aesi-lands"]
+    assert (mtg / "_log" / "aesi-lands-versions.md").read_text().count("Baseline: 3 cards.") == 2
+    assert sync.run(mtg, sync.Inventory([]), cat, today="2026-09-22").failed == []  # once only

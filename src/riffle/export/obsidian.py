@@ -12,7 +12,7 @@ generated names: Obsidian reads "aesi-lands.data" as a ".data" file.
 import hashlib
 import json
 from collections import Counter
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from riffle.analysis.ownership import BUY, MARK, OWN, Row, summary
@@ -142,8 +142,45 @@ def _state_path() -> Path:
     return data_dir() / "sync-state.json"
 
 
-def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str) -> bool:
-    """Append a +/- diff when a deck's list changed since the last sync."""
+class Unreadable(ValueError):
+    """sync-state.json is there but can't be read."""
+
+
+def load_state() -> dict:
+    """Each deck's list at the last sync that logged it, by slug: what version logs diff
+    against. Empty before the first sync; Unreadable if the file can't be read."""
+    path = _state_path()
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise Unreadable(f"{path} can't be read ({e})") from e
+    if not isinstance(state, dict):
+        raise Unreadable(f"{path} isn't a JSON object")
+    return state
+
+
+def set_aside_state() -> Path:
+    """Move an unreadable sync-state.json aside, named by the UTC time, and say where."""
+    path = _state_path()
+    bad = path.with_name(f"sync-state.{datetime.now(UTC):%Y%m%dT%H%M%SZ}.bad.json")
+    path.replace(bad)
+    return bad
+
+
+def _save_state(state: dict) -> None:
+    """Whole or not at all: a run cut off mid-write leaves the last state."""
+    path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str, state: dict) -> bool:
+    """Append a +/- diff when a deck's list changed since the last sync, and record the new
+    list in state (see load_state), saved at once so the log and the state move together."""
     legacy = log_dir / f"{deck.slug}.versions.md"
     if legacy.exists() and not (log_dir / f"{deck.slug}-versions.md").exists():
         legacy.rename(log_dir / f"{deck.slug}-versions.md")
@@ -151,7 +188,6 @@ def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str) -> b
     for e in deck.entries:
         cards[catalog.name(e.card_id) if e.card_id else e.name] += e.quantity
     digest = hashlib.sha256(json.dumps(sorted(cards.items())).encode()).hexdigest()[:16]
-    state = json.loads(_state_path().read_text()) if _state_path().exists() else {}
     prev = state.get(deck.slug)
     if prev and prev["hash"] == digest:
         return False
@@ -173,8 +209,7 @@ def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str) -> b
             f.writelines(f"- \\+ {n} [[{c}]]\n" for c, n in sorted(added.items()))
             f.writelines(f"- \\- {n} [[{c}]]\n" for c, n in sorted(removed.items()))
     state[deck.slug] = {"hash": digest, "cards": dict(cards)}
-    _state_path().parent.mkdir(parents=True, exist_ok=True)
-    _state_path().write_text(json.dumps(state, indent=1))
+    _save_state(state)
     return True
 
 

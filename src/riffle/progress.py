@@ -96,6 +96,58 @@ class _WatchedStep:
         self._inner.drop()
 
 
+class _Scope:
+    """Passes every step on to another tracker and remembers which are still running."""
+
+    def __init__(self, inner: Tracker) -> None:
+        self.inner = inner
+        self.running: list[_ScopedStep] = []
+
+    def step(self, label: str, total: int | None = None, unit: str = "") -> "_ScopedStep":
+        step = _ScopedStep(self, self.inner.step(label, total, unit))
+        self.running.append(step)
+        return step
+
+
+class _ScopedStep:
+    def __init__(self, scope: _Scope, inner: Step) -> None:
+        self._scope, self._inner = scope, inner
+
+    def _ended(self) -> None:
+        self._scope.running.remove(self)
+
+    def update(self, done: int, total: int | None = None) -> None:
+        self._inner.update(done, total)
+
+    def ok(self, note: str = "") -> None:
+        self._ended()
+        self._inner.ok(note)
+
+    def fail(self, why: str) -> None:
+        self._ended()
+        self._inner.fail(why)
+
+    def drop(self) -> None:
+        self._ended()
+        self._inner.drop()
+
+
+@contextmanager
+def contained(tracker: Tracker, label: str, why: Callable[[Exception], str]) -> Iterator[Tracker]:
+    """A tracker for work that mustn't stop what comes after it. An error it raises ends
+    there: each of its steps still running fails with why(error), or, if none is, a step
+    named label does. Ctrl-C still stops everything."""
+    scope = _Scope(tracker)
+    try:
+        yield scope
+    except Exception as e:
+        note, running = why(e), list(scope.running)
+        for step in running:
+            step.fail(note)
+        if not running:
+            tracker.step(label).fail(note)
+
+
 def elapsed(seconds: float) -> str:
     """8.2s, 1m 54s, 2h 05m."""
     if seconds < 59.95:  # would round to 60.0s

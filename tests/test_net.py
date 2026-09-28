@@ -2,6 +2,7 @@
 
 import http.client
 import io
+import socket
 import urllib.error
 
 import pytest
@@ -208,3 +209,24 @@ def test_get_once_with_no_answer_is_a_fetch_error(server):
     server["answers"] = [TimeoutError("timed out")]
     with pytest.raises(net.FetchError, match="timed out"):
         net.get_once("https://example.test")
+
+
+@pytest.mark.parametrize("value", ["-5", "nan", "inf", "Wed, 21 Oct 2026 07:28:00 GMT"])
+def test_a_retry_after_that_isnt_a_wait_in_seconds_gets_the_backoff(server, value):
+    server["answers"] = [http_error(503, retry_after=value), Resp(b"ok")]
+    assert net.get("https://example.test") == b"ok"  # time.sleep would raise on -5 or nan
+    assert server["sleeps"] == [2.0]
+
+
+def test_the_network_is_up_when_any_host_answers(monkeypatch):
+    tried = []
+
+    def create_connection(address, timeout):
+        tried.append(address[0])
+        if address[0] == "api.scryfall.com":
+            raise socket.gaierror(8, "nodename nor servname provided, or not known")
+        return socket.socket()
+
+    monkeypatch.setattr(net.socket, "create_connection", create_connection)
+    assert net.wait_online("api.scryfall.com", "mtgjson.com", "tcgcsv.com") is not None
+    assert tried == ["api.scryfall.com", "mtgjson.com"]

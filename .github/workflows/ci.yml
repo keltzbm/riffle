@@ -55,7 +55,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run pytest --cov-fail-under=75
+      - run: uv run pytest --cov-fail-under=90
 
   test-macos:
     runs-on: macos-latest
@@ -69,7 +69,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run pytest --cov-fail-under=75
+      - run: uv run pytest --cov-fail-under=90
 
   # The one check main requires. It runs even when a job above failed (a job
   # skipped because its needs failed would count as passing), and succeeds only

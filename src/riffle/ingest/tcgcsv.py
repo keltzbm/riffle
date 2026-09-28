@@ -97,7 +97,7 @@ def last_updated(fetch: Fetch = _get) -> datetime:
     body = fetch(f"{BASE}/last-updated.txt")
     if body is None:
         raise net.FetchError("HTTP 404")
-    text = body.decode().strip()
+    text = body.decode(errors="replace").strip()
     try:
         return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z")
     except ValueError as e:
@@ -121,8 +121,11 @@ def _results(body: bytes, what: str) -> list[dict]:
 
 def _one_line(body: bytes, what: str) -> str:
     """The response verbatim if it's one line, else compacted: the file is one JSON object per line."""
-    doc = _parse(body, what)
-    text = body.decode("utf-8").strip()
+    doc = _parse(body, what)  # json.loads also reads UTF-16 and UTF-32; the file is UTF-8
+    try:
+        text = body.decode("utf-8").strip()
+    except UnicodeDecodeError as e:
+        raise net.FetchError(f"{what}: not UTF-8") from e
     return text if "\n" not in text and "\r" not in text else json.dumps(doc, separators=(",", ":"))
 
 
@@ -183,7 +186,10 @@ def _groups(category: int, game_dir: Path, fetch: Fetch, snap: Snapshot) -> list
     snap.requests += 1
     if body is None:
         return None
-    group_ids = sorted(int(g["groupId"]) for g in _results(body, "groups"))
+    try:
+        group_ids = sorted(int(g["groupId"]) for g in _results(body, "groups"))
+    except (KeyError, TypeError, ValueError) as e:
+        raise net.FetchError("groups: a group without a whole-number groupId") from e
     _write(game_dir / "groups.json", body)
     return group_ids
 

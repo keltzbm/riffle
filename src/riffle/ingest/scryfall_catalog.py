@@ -253,7 +253,11 @@ def update(tracker: Tracker = SILENT, force: bool = False, engine: Engine | None
     """The card catalog step of a Scryfall refresh. A failure is reported on the step, never
     raised: the catalog keeps its last load, which a sync can still use."""
     step = tracker.step(STEP, unit="printings")
-    eng = engine or db.engine()
+    try:
+        eng = engine or db.engine()
+    except db.BadURL as e:
+        step.fail(str(e))
+        return None
     try:
         conn = eng.connect()
     except OperationalError as e:

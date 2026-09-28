@@ -134,3 +134,16 @@ def test_buy_cards_skip_machine_zones_and_dedupe(tmp_path):
             "- [ ] [[Sol Ring]] #mtg/buy\n- [ ] [[Cyclonic Rift]] #mtg/buy\n"
         )
     assert sorted(vault.buy_cards(tmp_path)) == ["Cyclonic Rift", "Sol Ring"]
+
+
+def test_an_unreadable_note_raises_unless_the_caller_collects_it(tmp_path):
+    mtg = tmp_path / "tcg" / "mtg"
+    mtg.mkdir(parents=True)
+    (mtg / "bad.md").write_bytes(b"---\ngame: mtg\n---\ncaf\xe9\n")
+    with pytest.raises(UnicodeDecodeError):
+        vault.decks(mtg)
+    with pytest.raises(UnicodeDecodeError):
+        vault.buy_cards(mtg.parent)
+    unreadable: vault.Unreadable = []
+    assert vault.decks(mtg, unreadable) == [] and vault.buy_cards(mtg.parent, unreadable) == []
+    assert unreadable == [(mtg / "bad.md", "not UTF-8")] * 2

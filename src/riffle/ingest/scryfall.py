@@ -18,11 +18,16 @@ Prices: the bulk file is replaced every day, so its prices would be lost.
 snapshot_prices() keeps them: <data_dir>/scryfall/daily/<day>.jsonl.gz holds
 one line per printing, {"id": ..., "prices": {...}} exactly as Scryfall gave
 them (strings, in USD, EUR, and MTGO tix), where <day> is the bulk file's date.
+
+bulk-meta.json records when Scryfall published the kept file. If it can't be read, the
+kept file's day is unknown, so the next online refresh downloads the bulk file again. A
+kept file cut short or corrupt is set aside as <name>.bad, for the same reason.
 """
 
 import gzip
 import json
 import time
+import zlib
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -36,8 +41,25 @@ SETS = "https://api.scryfall.com/sets"
 API_PAUSE = 0.1  # seconds between api.scryfall.com requests, as Scryfall asks: between set list pages
 
 
+BAD = ".bad"  # a bulk file set aside as unreadable; removed by the next download
+
+
+class CorruptBulk(ValueError):
+    """The kept bulk file is cut short or corrupt."""
+
+
 def meta_path() -> Path:
     return data_dir() / "bulk-meta.json"
+
+
+def _kept_published() -> datetime | None:
+    """When Scryfall published the kept bulk file, from bulk-meta.json, or None when that's
+    missing or can't be read."""
+    try:
+        meta = json.loads(meta_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return _published(meta.get("updated_at")) if isinstance(meta, dict) else None
 
 
 def sets_path() -> Path:
@@ -100,12 +122,9 @@ def is_current(info: dict) -> bool:
     same day would add nothing to it. Going by the download's age instead skipped every other
     day for a job run at the same time each day, which starts a few seconds short of 24 hours
     after the last download finished."""
-    if bulk_file() is None or not meta_path().exists():
+    if bulk_file() is None:
         return False
-    try:
-        kept = _published(json.loads(meta_path().read_text()).get("updated_at"))
-    except (OSError, ValueError, AttributeError):
-        return False
+    kept = _kept_published()
     remote = _published(info.get("updated_at"))
     return kept is not None and remote is not None and kept.date() >= remote.date()
 
@@ -137,7 +156,7 @@ def download(
         raise RuntimeError("downloaded bulk file isn't gzip — Scryfall's format may have changed again")
     fresh.replace(dest)
     for old in dest_dir.glob("default-cards.*"):
-        if old != dest and not old.name.endswith((".part", ".new")):
+        if old != dest and not old.name.endswith((".part", ".new")):  # a set-aside .bad goes too
             old.unlink()
     return dest, info
 
@@ -160,7 +179,9 @@ def refresh(force: bool = False, tracker: Tracker = SILENT) -> None:
         step.fail(str(e) or type(e).__name__)
         return
     meta = {"updated_at": info.get("updated_at"), "downloaded_at": datetime.now(UTC).isoformat()}
-    meta_path().write_text(json.dumps(meta))
+    tmp = meta_path().with_name(meta_path().name + ".part")
+    tmp.write_text(json.dumps(meta))
+    tmp.replace(meta_path())
     updated = str(info.get("updated_at") or "?")
     step.ok(f"{path.stat().st_size / 1e6:,.1f} MB, Scryfall {updated[:10]}")
     refresh_sets(tracker)
@@ -185,7 +206,7 @@ def prices_dir() -> Path:
 def bulk_file(dest_dir: Path | None = None) -> Path | None:
     """The downloaded bulk file, if any."""
     dest_dir = dest_dir or data_dir()
-    files = [p for p in dest_dir.glob("default-cards.*") if not p.name.endswith((".part", ".new"))]
+    files = [p for p in dest_dir.glob("default-cards.*") if not p.name.endswith((".part", ".new", BAD))]
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
@@ -204,11 +225,7 @@ def cards(bulk: Path) -> Iterator[dict]:
 
 def bulk_updated_at(bulk: Path) -> datetime:
     """When Scryfall published the bulk file: its updated_at, else the file's own time."""
-    if meta_path().exists():
-        published = _published(json.loads(meta_path().read_text()).get("updated_at"))
-        if published:
-            return published
-    return datetime.fromtimestamp(bulk.stat().st_mtime, UTC)
+    return _kept_published() or datetime.fromtimestamp(bulk.stat().st_mtime, UTC)
 
 
 def bulk_day(bulk: Path) -> date:
@@ -217,7 +234,9 @@ def bulk_day(bulk: Path) -> date:
 
 
 def snapshot_prices(bulk: Path | None = None) -> tuple[Path, bool]:
-    """Keep the bulk file's prices for its day. Returns (file, whether it was written now)."""
+    """Keep the bulk file's prices for its day. Returns (file, whether it was written now).
+    A bulk file cut short or corrupt is set aside, so the next online refresh downloads it
+    again, and CorruptBulk says so."""
     bulk = bulk or bulk_file()
     if bulk is None:
         raise FileNotFoundError("no Scryfall bulk file yet")
@@ -231,6 +250,13 @@ def snapshot_prices(bulk: Path | None = None) -> tuple[Path, bool]:
             for card in cards(bulk):
                 line = json.dumps({"id": card["id"], "prices": card.get("prices")}, separators=(",", ":"))
                 out.write(line + "\n")
+    except (EOFError, zlib.error, gzip.BadGzipFile) as e:
+        tmp.unlink(missing_ok=True)
+        bulk.replace(bulk.with_name(bulk.name + BAD))
+        raise CorruptBulk(
+            f"{bulk.name} is cut short or corrupt ({e or type(e).__name__}); set aside, "
+            "and downloaded again by the next online sync"
+        ) from e
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
