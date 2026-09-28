@@ -374,8 +374,9 @@ def _events(fmt: list[str], days: int, kind: list[str] | None):
 
 @mtgo_app.command("trickle")
 def mtgo_trickle() -> None:
-    """One run of the trickle: at most one index page, then owed events, newest first, as
-    many as the pace allows. The job (riffle schedule trickle) runs this every 10 minutes."""
+    """One run of the trickle: at most one index page, then owed events (never asked for
+    first, then retries, each newest first), as many as the pace allows. The job (riffle
+    schedule trickle) runs this every 10 minutes."""
     from riffle.ingest import mtgo
 
     with _tracked("riffle mtgo trickle") as tracker:  # report inside: a failed step exits 1 on leaving
@@ -421,12 +422,26 @@ def mtgo_status() -> None:
     typer.echo(f"requests   {len(st.window)} in the last 15 minutes (at most {trickle.CEILING})")
     verdicts = ", ".join(f"{n} {v}" for v, n in Counter(r.verdict for r in st.day).most_common())
     typer.echo(f"           {len(st.day)} in the last 24 hours{': ' + verdicts if verdicts else ''}")
-    typer.echo(f"owed       {len(st.owed)} events, {st.due} due now")
+    retries = sorted(
+        (s for s, o in st.owed.items() if o.last_try is not None),
+        key=lambda s: (st.owed[s].day, s),
+        reverse=True,
+    )
+    never = len(st.owed) - len(retries)
+    typer.echo(f"owed       {len(st.owed)} events: {never} never asked, {len(retries)} to retry")
     months = sorted(Counter(o.day[:7] for o in st.owed.values()).items(), reverse=True)
     for month, n in months[:12]:
         typer.echo(f"           {month}  {n}")
     if len(months) > 12:
         typer.echo(f"           older    {sum(n for _, n in months[12:])}")
+    width = max((len(s) for s in retries[:10]), default=0)
+    for n, slug in enumerate(retries[:10]):
+        o, at = st.owed[slug], st.owed[slug].retry_at()
+        asked = "once" if o.asks == 1 else f"{o.asks} times"
+        when = f"next try {times.shown(at)}" if at and at > st.at else "due now"
+        typer.echo(f"{'retries' if n == 0 else '':<11}{slug:<{width}}  {o.last}, asked {asked}, {when}")
+    if len(retries) > 10:
+        typer.echo(f"           and {len(retries) - 10} more")
     read = sorted(st.months)
     if read:
         sweep = "the sweep is done" if st.sweep_done else "still going back"

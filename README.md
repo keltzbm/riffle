@@ -78,7 +78,9 @@ errors, so Riffle never asks it for much at once. The trickle job runs
 `riffle mtgo trickle` every 10 minutes: 1 to 3 pages a run, never more than 5
 in any 15 minutes. It reads this month's index hourly and sweeps back through
 every earlier month, and keeps every event an index lists on an owed list until
-it's stored. An empty page is checked against a stored event first; if that
+it's stored. Events never asked for come first, newest first; one that missed is
+retried with the pages left over, an hour later, then after waits that double
+up to a day, and weekly once it's a month old. An empty page is checked against a stored event first; if that
 comes back stripped too, the job pauses for hours and comes back slower, then
 speeds up again while pages come back whole. Nothing is given up;
 `riffle mtgo forget <slug>` drops an event by hand.

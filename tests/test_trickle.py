@@ -75,15 +75,31 @@ def test_the_pace_survives_a_save_and_a_bad_file():
     assert trickle.load_pace("test") == trickle.Pace()
 
 
-def test_owed_items_are_due_every_run_while_fresh_then_weekly():
+def test_a_fresh_retry_waits_an_hour_doubling_to_a_day_and_an_old_one_a_week():
     fresh = trickle.Owed(day="2026-09-01", found="x")
-    assert fresh.due(NOW)
-    fresh.tried(NOW, "empty", miss=True)
-    assert fresh.due(NOW + timedelta(minutes=10)) and fresh.tries == 1
+    assert fresh.due(NOW) and fresh.retry_at() is None  # never asked for: due now
+    waits = []
+    at = NOW
+    for _ in range(7):
+        fresh.tried(at, "redirect", miss=True)
+        waits.append(fresh.retry_at() - at)
+        assert not fresh.due(at + waits[-1] - timedelta(minutes=1)) and fresh.due(at + waits[-1])
+        at += waits[-1]
+    assert [w / timedelta(hours=1) for w in waits] == [1, 2, 4, 8, 16, 24, 24]
+    assert (fresh.tries, fresh.asks) == (7, 7)
     old = trickle.Owed(day="2026-08-01", found="x")
     old.tried(NOW, "not published yet", miss=False)
-    assert (old.tries, old.last) == (0, "not published yet")
+    assert (old.tries, old.asks, old.last) == (0, 1, "not published yet")  # asked, not a miss
     assert not old.due(NOW + timedelta(days=6)) and old.due(NOW + timedelta(days=7))
+
+
+def test_an_owed_list_saved_before_asks_were_counted_counts_each_miss_as_an_ask():
+    tried = trickle.Owed(day="2026-09-20", found="x", tries=17, last_try=trickle.stamp(NOW))
+    assert tried.asks == 17 and tried.retry_at() == NOW + timedelta(days=1)
+    pending = trickle.Owed(day="2026-09-20", found="x", last_try=trickle.stamp(NOW))
+    assert pending.asks == 1 and pending.retry_at() == NOW + timedelta(hours=1)
+    carried = trickle.Owed(day="2026-09-20", found="x", tries=2)  # the old misses file: never asked here
+    assert carried.asks == 0 and carried.due(NOW)
 
 
 def test_the_owed_list_survives_a_save_and_skips_bad_entries():

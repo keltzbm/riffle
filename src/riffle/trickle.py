@@ -8,7 +8,8 @@ Three parts, each kept in the data folder under the source's name:
   the source for hours and drops a level; SPEED_UP_AFTER whole answers in a row raise
   one. Whatever the level, no WINDOW holds more than CEILING requests;
 - the owed list (<source>-owed.json): everything the source listed that isn't stored
-  yet. Nothing leaves it except by being fetched or forgotten by hand.
+  yet. Nothing leaves it except by being fetched or forgotten by hand. What was never
+  asked for is due at once; a retry waits, longer after each try.
 
 MTGO is the first source (riffle.ingest.mtgo); a later event source reuses these with
 its own name. Every time here is UTC.
@@ -27,7 +28,9 @@ WINDOW = timedelta(minutes=15)
 PAUSES = (timedelta(hours=3), timedelta(hours=6), timedelta(hours=12))
 RECENT_THROTTLE = timedelta(hours=24)  # a throttle this soon after the last pauses longer
 SPEED_UP_AFTER = 144  # whole answers in a row before the pace rises a level
-FRESH_DAYS = 30  # an owed item this young (by its own date) is due on every run
+FRESH_DAYS = 30  # an owed item this young (by its own date) is retried within a day
+RETRY_FIRST = timedelta(hours=1)  # its first retry waits this, doubling with each try
+RETRY_FRESH = timedelta(days=1)  # up to this
 RETRY_OLD = timedelta(days=7)  # an older one, weekly
 
 
@@ -182,18 +185,31 @@ class Owed:
     tries: int = 0  # misses: answers that were really empty, 404s, redirects
     last_try: str | None = None
     last: str = ""  # what the last try came to
+    asks: int = 0  # every try, whatever it came to: how long the next one waits
+
+    def __post_init__(self) -> None:
+        if self.last_try is not None:  # a list saved before asks were counted
+            self.asks = max(self.asks, self.tries, 1)
+
+    def retry_at(self) -> datetime | None:
+        """When it's due again: RETRY_FIRST after the last try, doubling with each try up
+        to RETRY_FRESH while FRESH_DAYS young at that try, else RETRY_OLD. None when it was
+        never asked for, and so is due now."""
+        if self.last_try is None:
+            return None
+        last = datetime.fromisoformat(self.last_try)
+        if (last.date() - date.fromisoformat(self.day)).days > FRESH_DAYS:
+            return last + RETRY_OLD
+        return last + min(RETRY_FIRST * 2 ** min(self.asks - 1, 10), RETRY_FRESH)
 
     def due(self, at: datetime) -> bool:
-        """Due on every run while FRESH_DAYS young, then weekly."""
-        if self.last_try is None:
-            return True
-        if (at.date() - date.fromisoformat(self.day)).days <= FRESH_DAYS:
-            return True
-        return at - datetime.fromisoformat(self.last_try) >= RETRY_OLD
+        retry = self.retry_at()
+        return retry is None or at >= retry
 
     def tried(self, at: datetime, outcome: str, miss: bool) -> None:
         self.last_try, self.last = stamp(at), outcome
         self.tries += miss
+        self.asks += 1
 
 
 def owed_path(source: str) -> Path:
