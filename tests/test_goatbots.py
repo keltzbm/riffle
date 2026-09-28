@@ -127,6 +127,32 @@ def test_a_new_day_brings_new_card_definitions(data_dir):
         assert len(json.loads(zf.read("card-definitions.txt"))) == 2
 
 
+def test_an_empty_price_file_keeps_nothing_and_is_asked_again(data_dir, tracker):
+    run(Source(answers(**{f"{NEW}/{goatbots.LATEST}": latest(prices={})})), tracker)
+    assert tracker.outcomes()["GoatBots prices"] == (
+        "ok",
+        "empty price file, nothing kept; asked again next run",
+    )
+    assert not (data_dir / "daily" / "2026-09-27.zip").exists()
+    snap = run(Source(answers()))
+    assert "daily/2026-09-27.zip" in snap.kept
+    assert json.loads((data_dir.parent / "empty-answers.json").read_text()) == {}
+
+
+def test_empty_card_definitions_dont_replace_the_kept_ones(data_dir, tracker):
+    run(Source(answers()))
+    nxt = date(2026, 9, 28)
+    run(Source(answers(nxt, **{f"{NEW}/{goatbots.DEFINITIONS}": definitions({})})), tracker)
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "ok",
+        "empty card definitions, nothing kept; asked again next run",
+    )
+    with zipfile.ZipFile(data_dir / "card-definitions.zip") as zf:
+        assert json.loads(zf.read("card-definitions.txt")) == DEFS  # the kept ones stay
+    snap = run(Source(answers(nxt)))  # still behind the newest day: asked again
+    assert snap.kept == ["card-definitions.zip"]
+
+
 def test_once_a_year_is_over_its_whole_archive_replaces_the_partial_one(data_dir):
     run(Source(answers()))
     january = date(2027, 1, 2)

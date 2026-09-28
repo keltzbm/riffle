@@ -527,6 +527,11 @@ def test_the_trickle_command_says_why_it_asked_little(monkeypatch, res, line):
     assert result.exit_code == 0 and line in result.output
 
 
+def test_a_pause_is_shown_in_the_mac_s_time_on_a_terminal(monkeypatch, on_a_terminal):
+    monkeypatch.setattr(mtgo, "run_trickle", lambda tracker: mtgo.TrickleResult(paused_until=NOW))
+    assert "paused until 2026-09-21 06:00 MDT, after a throttle" in _cli("mtgo", "trickle").output
+
+
 def test_the_status_command():
     _owe(OLD, YOUNG)
     trickle.save_pace(mtgo.SOURCE, trickle.Pace(level=2, whole_streak=4))

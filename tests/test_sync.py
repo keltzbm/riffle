@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from riffle import sync
@@ -44,16 +46,50 @@ def test_sync_writes_only_machine_zones(tmp_path, cat, monkeypatch):
     assert "3 cards" in data and "[[Cyclonic Rift]]" in data
 
 
-def test_price_log_is_append_only_once_per_day(tmp_path, cat, monkeypatch):
+def test_price_log_is_append_only_once_per_scryfall_day(tmp_path, cat, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     mtg = _vault(tmp_path)
     inv = sync.Inventory([])
-    assert sync.run(mtg, inv, cat, today="2026-09-21").prices_logged == 1
+    res = sync.run(mtg, inv, cat, today="2026-09-21")
+    assert (res.prices_logged, res.prices_day) == (1, date(2026, 9, 21))
     assert sync.run(mtg, inv, cat, today="2026-09-21").prices_logged == 0
+    cat.day = date(2026, 9, 22)
     assert sync.run(mtg, inv, cat, today="2026-09-22").prices_logged == 1
     log = (mtg / "_log" / "prices.md").read_text()
     assert "2026-09-21 | Cyclonic Rift | $30.00 | 2.00" in log
     assert "2026-09-22 | Cyclonic Rift" in log
+
+
+def test_a_run_after_midnight_with_yesterday_s_catalog_logs_nothing(tmp_path, cat, monkeypatch):
+    """C10: the log was dated by the Mac's day, so an offline run after midnight logged the old
+    catalog under the new day, and that day's real sync then logged nothing."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    inv = sync.Inventory([])
+    sync.run(mtg, inv, cat, today="2026-09-21")
+    assert sync.run(mtg, inv, cat, today="2026-09-22").prices_logged == 0  # still the 21st's prices
+    cat.day = date(2026, 9, 22)
+    assert sync.run(mtg, inv, cat, today="2026-09-22").prices_logged == 1  # the 22nd's, once loaded
+    log = (mtg / "_log" / "prices.md").read_text()
+    assert log.count("| Cyclonic Rift |") == 2
+
+
+def test_a_catalog_with_no_prices_logs_nothing_and_says_so(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    cat.day = None
+    res = sync.run(_vault(tmp_path), sync.Inventory([]), cat, today="2026-09-21")
+    assert (res.prices_logged, res.prices_day) == (0, None)
+    assert "price log: the catalog holds no Scryfall prices yet, so nothing was logged" in res.warnings
+
+
+def test_notes_are_dated_today_in_utc(monkeypatch):
+    from datetime import UTC, datetime
+
+    from riffle import times
+    from riffle.export import obsidian
+
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 29, 0, 30, tzinfo=UTC))  # 18:30 in Denver
+    assert obsidian.today() == "2026-09-29"
 
 
 def test_versions_log_records_changes_only(tmp_path, cat, monkeypatch):

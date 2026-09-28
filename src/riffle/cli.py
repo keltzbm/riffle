@@ -11,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from riffle import config, net, vault
+from riffle import config, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
 from riffle.progress import Tracker, Watched, contained, elapsed, open_tracker
@@ -386,7 +386,7 @@ def mtgo_trickle() -> None:
         if res.carried:
             _echo(f"{res.carried} events from {mtgo.misses_path().name} moved to the owed list")
         if res.paused_until:
-            _echo(f"paused until {res.paused_until:%Y-%m-%d %H:%M} UTC, after a throttle; nothing asked")
+            _echo(f"paused until {times.shown(res.paused_until)}, after a throttle; nothing asked")
         elif not res.budget:
             _echo("the last 15 minutes hold as many requests as allowed; nothing asked")
         _echo(f"{len(res.fetched)} new events · {res.owed} owed, {res.due} due · {res.level} pages a run")
@@ -395,7 +395,7 @@ def mtgo_trickle() -> None:
         for slug, outcome in res.missed:
             _echo(f"  {slug}: {outcome}, still owed")
         if res.throttled and res.resume:
-            _echo(f"throttled: {res.throttled}; paused until {res.resume:%Y-%m-%d %H:%M} UTC")
+            _echo(f"throttled: {res.throttled}; paused until {times.shown(res.resume)}")
         if res.raised:
             _echo(f"answers came back whole: up to {res.level} pages a run")
         if res.stopped:
@@ -417,9 +417,7 @@ def mtgo_status() -> None:
     if st.pace.level < trickle.LEVELS[-1]:
         pace += f", up a level after {trickle.SPEED_UP_AFTER - st.pace.whole_streak} more whole answers"
     typer.echo(pace)
-    typer.echo(
-        f"paused     until {st.paused_until:%Y-%m-%d %H:%M} UTC" if st.paused_until else "paused     no"
-    )
+    typer.echo(f"paused     until {times.shown(st.paused_until)}" if st.paused_until else "paused     no")
     typer.echo(f"requests   {len(st.window)} in the last 15 minutes (at most {trickle.CEILING})")
     verdicts = ", ".join(f"{n} {v}" for v, n in Counter(r.verdict for r in st.day).most_common())
     typer.echo(f"           {len(st.day)} in the last 24 hours{': ' + verdicts if verdicts else ''}")
@@ -734,7 +732,8 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         tracker.step(label).fail(why)
     _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
-        f"{res.prices_logged} prices logged · versions changed: {', '.join(res.versions) or 'none'}"
+        f"{res.prices_logged} prices logged{f' for {res.prices_day}' if res.prices_day else ''} · "
+        f"versions changed: {', '.join(res.versions) or 'none'}"
     )
     if res.removed:
         _echo(f"removed stale generated notes: {', '.join(res.removed)}")
@@ -810,11 +809,29 @@ def _resync_and_keep_watching() -> None:
         typer.echo(f"resync failed: {_failure(e)}; still watching", err=True)
 
 
+@app.command("check")
+def check_cmd() -> None:
+    """Check every kept price file: filed under the day its own stamp says, and made before it
+    was fetched. Reads only; exits 1 if any file isn't."""
+    from riffle.ingest import checks
+
+    wrong = 0
+    for rep in checks.run():
+        typer.echo(f"{rep.source:<14}{rep.summary()}")
+        for note in rep.notes:
+            typer.echo(f"{'':<14}{note}")
+        for problem in rep.problems:
+            typer.echo(f"  ! {problem}", err=True)
+        wrong += len(rep.problems)
+    if wrong:
+        typer.echo(f"{wrong} price file{'s' * (wrong != 1)} dated wrong", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def watch(interval: float = typer.Option(5.0, help="Seconds between checks")) -> None:
     """Resync whenever a deck note is saved or a new ManaBox export lands. Ctrl-C to stop."""
     import time
-    from datetime import datetime
 
     cfg = config.load()
     typer.echo(f"watching {cfg.mtg_dir} and ~/Downloads — Ctrl-C to stop")
@@ -828,7 +845,7 @@ def watch(interval: float = typer.Option(5.0, help="Seconds between checks")) ->
                 changed = sorted(
                     Path(p).name for p in set(now) ^ set(seen) | {p for p in now if seen.get(p) != now[p]}
                 )
-                typer.echo(f"\n{datetime.now():%H:%M:%S} changed: {', '.join(changed)}")
+                typer.echo(f"\n{times.local(times.now(), '%H:%M:%S')} changed: {', '.join(changed)}")
                 _resync_and_keep_watching()
                 seen = _watched(cfg)
     except KeyboardInterrupt:
@@ -865,19 +882,20 @@ def _show_trickle() -> None:
 
 
 def _show_sync() -> None:
-    from datetime import datetime
-
     from riffle import schedule as sched
 
     st = sched.status()
     if not st.installed and not st.loaded:
         typer.echo("no schedule — set one with: riffle schedule set 07:00")
         return
-    times = ", ".join(sched.fmt(t) for t in st.times) or "(none in plist)"
-    nxt = sched.next_run(st.times, datetime.now())
+    now = times.now().astimezone()  # launchd runs the job by the Mac's clock
+    at = ", ".join(sched.fmt(t) for t in st.times) or "(none in plist)"
+    nxt = sched.next_run(st.times, now.replace(tzinfo=None))
     typer.echo(f"{sched.LABEL}")
-    typer.echo(f"  times      {times}  (24-hour, daily)")
-    typer.echo(f"  next run   {nxt:%a %Y-%m-%d %H:%M}" if nxt else "  next run   —")
+    typer.echo(f"  times      {at}  (24-hour, daily, the Mac's time: {now.tzname()})")
+    typer.echo(
+        f"  next run   {times.local(nxt.astimezone(), '%a %Y-%m-%d %H:%M')}" if nxt else "  next run   —"
+    )
     reload = "riffle schedule set " + " ".join(sched.fmt(t) for t in st.times)
     typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + reload}")
     if st.loaded:

@@ -7,6 +7,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- `riffle check` checks every price file Riffle keeps: that it's filed under the day its own stamp says, and that
+  it wasn't made after it was fetched (the time in its gzip header, or the file's own). It reads only, prints a line
+  per source, names each file that's wrong, and exits 1 if any is. For Card Kingdom and Mana Pool it also says how
+  long before its fetch each list was made, which is how Card Kingdom's time zone gets checked.
+- Git hooks in `.githooks/`, turned on with `git config core.hooksPath .githooks`: `pre-commit` runs ruff's lint
+  and format checks, `pre-push` everything CI runs with the 90% coverage floor, the database tests required.
 - `riffle ingest mtgo --max-events N` fetches at most N event pages, newest first; later runs skip what's stored
   and reach further back, so a long backfill spreads over several runs.
 - An old MTGO event that comes back empty on three runs, each time right after a good answer, is skipped from then
@@ -105,6 +111,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- Riffle writes UTC and prints local time. The job logs (`sync.log`, `mtgo-trickle.log`) give each run's date and
+  time in UTC, and their step times are UTC; they were the Mac's time. On a terminal, `riffle mtgo trickle` and
+  `riffle mtgo status` show a pause in the Mac's time with its zone, `riffle schedule` says the zone its times are
+  in, and `riffle watch` shows the zone. The generated notes and version logs are dated by the UTC date.
+- A step can end in a warning: a yellow `!` on the terminal, a `warning:` line in the log. It doesn't make the
+  command exit 1.
+- A Cardmarket game not played that has no guide is noted on its step and asked for again every run, instead of
+  being skipped without a word; after seven runs in a row it's a warning. Every game's guide is kept, played or not.
 - CI's coverage floor goes from 75% to 90%, held by the Linux jobs, which run every test against Postgres; the
   suite is at 94%. The macOS jobs skip the database tests, so they run without a floor.
 - MTGO decklists come in as a trickle: a launchd job (`riffle schedule trickle`, beside the daily sync job) runs
@@ -176,6 +190,21 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- Card Kingdom's and Mana Pool's lists are dated by their own stamps, Card Kingdom's `created_at` (read as Pacific
+  time) and Mana Pool's `as_of` (UTC), not by the Mac's date. A run after midnight kept the day before's list under
+  the new day, and the new day's own list was never asked for. A list for a day already kept isn't kept again, and
+  one Riffle filed under the wrong day before is moved to its own day, or set aside in `<store>/aside/` when that
+  day has its list. A list with no readable stamp is set aside there too, never under a day, and its step fails.
+  Each list's step says when the store made it.
+- The price log is dated by the day of the Scryfall prices the catalog holds, not the Mac's date. An offline
+  `riffle watch`, `ingest manabox` or `sync --offline` after midnight logged the old prices under the new day, and
+  that day's real sync then logged nothing. The sync's summary says the day.
+- An empty answer is no longer kept as a day: a Card Kingdom or Mana Pool list with no rows, a Cardmarket guide
+  with none, a GoatBots price file of `{}`. Empty GoatBots card definitions no longer replace the kept ones. Each is
+  noted in `empty-answers.json` and asked for again every run; after seven empty runs in a row the sync warns,
+  "empty since <day>", without failing.
+- Cardmarket's download server answers 403, not 404, for a guide it doesn't have; that now counts as no guide, so
+  a game Cardmarket stops publishing no longer fails every sync.
 - Two runs no longer overlap. `riffle sync`, `riffle ingest prices`, `riffle ingest scryfall`, and the resyncs of
   `riffle watch` and `riffle ingest manabox` take turns: a second run waits for the first, saying which run it's
   waiting for and since when. They shared download names, the price log and `sync-state.json`, so one run could

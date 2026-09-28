@@ -16,6 +16,7 @@ not deleted, and stays out of every answer here.
 
 from collections.abc import Collection, Iterator
 from contextlib import contextmanager
+from datetime import UTC, date
 from functools import cached_property
 from typing import NamedTuple
 
@@ -212,6 +213,12 @@ class PostgresCatalog:
             for card_id, usd, tix in self.conn.execute(PRICES, {"ids": wanted}):
                 self._prices[card_id] = Prices(usd=usd, tix=tix)
         return {c: p for c in card_ids if (p := self._prices.get(c)) is not None}
+
+    def prices_day(self) -> date | None:
+        from riffle.db.catalog import loaded_through
+
+        published = loaded_through(self.conn, GAME)
+        return published.astimezone(UTC).date() if published else None
 
     def mtgo_name(self, card_id: str) -> str:
         card = self._cards.get(card_id)

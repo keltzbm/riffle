@@ -1,0 +1,9 @@
+#!/bin/sh
+# The five checks CI runs, with its 90% coverage floor. Every test runs, the database ones
+# included, so Postgres must be up (riffle db up): without it the push stops saying so,
+# instead of on coverage that fell short because those tests skipped.
+uv sync --locked \
+  && RIFFLE_REQUIRE_POSTGRES=1 uv run pytest --cov-fail-under=90 \
+  && uv run ruff check src tests \
+  && uv run ruff format --check src tests \
+  && uv run mypy src

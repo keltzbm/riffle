@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 from functools import cached_property
 from pathlib import Path
 
@@ -56,12 +57,16 @@ class SyncResult:
     changed_notes: int = 0
     versions: list[str] = field(default_factory=list)
     prices_logged: int = 0
+    prices_day: date | None = None  # the Scryfall day the price log's lines are for
     removed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (step, why), for the CLI to report
 
 
 def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = None) -> SyncResult:
+    """Rewrite the generated notes and append the logs. Notes and version logs are dated
+    today in UTC; the price log by the day of the Scryfall prices the catalog holds, so an
+    offline run after midnight doesn't log yesterday's prices under today."""
     today = today or obsidian.today()
     gen, log = mtg_dir / "_generated", mtg_dir / "_log"
     res = SyncResult()
@@ -107,7 +112,11 @@ def run(mtg_dir: Path, inv: Inventory, catalog: Catalog, today: str | None = Non
     for card_id in wanted:
         p = prices.get(card_id, Prices())
         buys.append((catalog.name(card_id), p.usd, p.tix))
-    res.prices_logged = obsidian.append_prices(log / "prices.md", buys, today)
+    res.prices_day = catalog.prices_day()
+    if res.prices_day is None:
+        res.warnings.append("price log: the catalog holds no Scryfall prices yet, so nothing was logged")
+    else:
+        res.prices_logged = obsidian.append_prices(log / "prices.md", buys, res.prices_day.isoformat())
     if unreadable:
         whys = {p.relative_to(mtg_dir.parent).as_posix(): why for p, why in unreadable}
         notes = ", ".join(f"{name} ({why})" for name, why in whys.items())

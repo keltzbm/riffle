@@ -351,3 +351,25 @@ def test_a_manabox_export_is_copied_whole_then_the_vault_resynced(vault, tmp_pat
     assert stored.read_bytes() == export.read_bytes() and stored.stat().st_mtime == export.stat().st_mtime
     assert not stored.with_name(stored.name + ".part").exists()
     assert "1 decks · " in result.output
+
+
+def test_watch_says_when_something_changed_in_the_mac_s_time(monkeypatch, denver):
+    from datetime import UTC, datetime
+
+    from riffle import times
+
+    seen = iter([{"a.md": 1.0}, {"a.md": 1.0}, {"a.md": 2.0}, {"a.md": 2.0}])  # unchanged, then changed
+    naps = iter([None, None, KeyboardInterrupt])
+
+    def nap(seconds):
+        if (e := next(naps)) is not None:
+            raise e
+
+    resyncs = []
+    monkeypatch.setattr(cli, "_watched", lambda cfg: next(seen))
+    monkeypatch.setattr(cli, "_resync_and_keep_watching", lambda: resyncs.append(1))
+    monkeypatch.setattr("time.sleep", nap)
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 9, 41, 7, tzinfo=UTC))
+    output = CliRunner().invoke(app, ["watch"]).output
+    assert "\n03:41:07 MDT changed: a.md\n" in output and output.rstrip().endswith("stopped")
+    assert len(resyncs) == 2  # once at the start, once for the change

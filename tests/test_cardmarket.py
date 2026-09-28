@@ -126,11 +126,51 @@ def test_the_day_is_cardmarkets_own(data_dir, few):
     assert (data_dir / "daily" / "2026-09-27" / "mtg.json.gz").exists()  # the 26th in UTC
 
 
-def test_a_missing_guide_fails_a_played_game_and_skips_the_others(data_dir, few, tracker):
+def test_a_missing_guide_fails_a_played_game_and_is_noted_for_the_others(data_dir, few, tracker):
     snap = run(Source(every(**{url(16): None, url(3): None})), tracker)
     assert snap.missing == ["fab", "yugioh"] and snap.fetched == ["mtg", "pokemon"]
     assert tracker.outcomes()["Cardmarket fab"] == ("fail", "Cardmarket has no price guide for game 16")
-    assert tracker.outcomes()["Cardmarket yugioh"] == ("drop",)
+    assert tracker.outcomes()["Cardmarket yugioh"] == ("ok", "no guide, nothing kept; asked again next run")
+
+
+def test_a_game_with_no_guide_is_asked_every_run_and_warns_after_a_week_of_runs(data_dir, few, tracker):
+    for n in range(6):
+        run(Source(every(**{url(16): None, url(3): None})), now=NOW + timedelta(days=n))
+    source = Source(every(**{url(16): None, url(3): None}))
+    run(source, tracker, now=NOW + timedelta(days=6))
+    assert url(3) in source.asked and url(16) in source.asked
+    assert tracker.outcomes()["Cardmarket yugioh"] == (
+        "warn",
+        "no guide since 2026-09-27 (7 runs in a row); asked again every run",
+    )
+    assert tracker.outcomes()["Cardmarket fab"] == (
+        "fail",
+        "Cardmarket has no price guide for game 16 since 2026-09-27 (7 runs in a row)",
+    )
+    run(Source(every()), now=NOW + timedelta(days=7))
+    assert json.loads((data_dir.parent / "empty-answers.json").read_text()) == {}  # back: forgotten
+
+
+def test_a_guide_with_no_rows_is_kept_nowhere_played_or_not(data_dir, few, tracker):
+    snap = run(Source(every(**{url(1): guide(products=0), url(6): guide(products=0)})), tracker)
+    assert snap.empty == ["mtg", "pokemon"] and snap.fetched == ["fab", "yugioh"] and not snap.failed
+    assert tracker.outcomes()["Cardmarket mtg"] == ("ok", "empty guide, nothing kept; asked again next run")
+    assert cardmarket.newest("mtg") is None and cardmarket.newest("pokemon") is None
+    source = Source(every())
+    run(source, now=NOW + timedelta(hours=1))
+    assert source.asked == [url(1), url(6)]  # asked again; the rest are fresh
+
+
+def test_a_403_means_cardmarket_has_no_guide(monkeypatch, tmp_path):
+    asked = {}
+
+    def download(url, dest, **kw):
+        asked.update(kw)
+        return None
+
+    monkeypatch.setattr(cardmarket.net, "download", download)
+    assert cardmarket._download(url(99), tmp_path / "x") is None
+    assert asked["missing"] == (403, 404)
 
 
 def test_a_game_that_fails_keeps_nothing_and_the_rest_carry_on(data_dir, few, tracker):
