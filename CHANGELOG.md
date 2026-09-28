@@ -158,6 +158,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- Lines a command prints while its steps run, such as `riffle ingest mtgo`'s report, the tcgcsv request count,
+  and `riffle sync`'s summary and warnings, print above the progress display instead of onto its last line.
+  typer.echo wrote to the terminal underneath the display rather than through it, and the line printed for a
+  finished step brought back that step's last bar, so a stale progress line was left behind with the next line
+  joined to it. Clearing the display when a command ends (below) wasn't the cause.
 - `riffle sync` and `riffle ingest scryfall` download Scryfall's bulk file whenever Scryfall has published one for
   a newer day than the one kept. They used to skip a download under 24 hours old, and a job run at the same time
   each day starts a few seconds short of that, so every other day's file was skipped, and with it that day's

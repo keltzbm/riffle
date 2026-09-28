@@ -1,6 +1,7 @@
 """The only user-facing surface. Everything here is a thin wrapper."""
 
 import shutil
+import sys
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from datetime import date, timedelta
@@ -86,6 +87,15 @@ DecksRef = Annotated[
 ]
 
 
+def _echo(message: str = "", err: bool = False) -> None:
+    """typer.echo through whatever sys.stdout or sys.stderr is at the moment. While a command's
+    steps are showing, those are Rich's stand-ins, which print a line above the running steps;
+    typer.echo on its own finds the terminal underneath them and writes onto the display's last
+    line, leaving a stale progress line behind. So anything printed inside _tracked goes
+    through here."""
+    typer.echo(message, file=sys.stderr if err else sys.stdout)
+
+
 @contextmanager
 def _catalog() -> Iterator[Catalog]:
     """The card catalog for the rest of the block, or exit 1 saying what to run."""
@@ -95,7 +105,7 @@ def _catalog() -> Iterator[Catalog]:
         try:
             cat = stack.enter_context(postgres.open_catalog())
         except postgres.Unavailable as e:
-            typer.echo(str(e), err=True)
+            _echo(str(e), err=True)
             raise typer.Exit(1) from e
         yield cat
 
@@ -103,7 +113,8 @@ def _catalog() -> Iterator[Catalog]:
 @contextmanager
 def _tracked(title: str) -> Iterator[Tracker]:
     """A command's steps. A failed step doesn't stop the command: it finishes its work, then
-    names what failed and exits 1, so the scheduled job's last exit shows it."""
+    names what failed and exits 1, so the scheduled job's last exit shows it. Inside the block,
+    print with _echo, not typer.echo."""
     with open_tracker(title) as tracker:
         watched = Watched(tracker)
         yield watched
@@ -242,24 +253,24 @@ def ingest_mtgo(
     since, fmts, kinds = date.today() - timedelta(days=days), _formats(fmt), _kinds(kind)
     with _tracked("riffle ingest mtgo") as tracker:  # report inside: a failed step exits 1 on leaving
         res = mtgo.ingest(fmts, since, kinds=kinds, delay=delay, max_events=max_events, tracker=tracker)
-        typer.echo(f"{len(res.fetched)} new events · {res.skipped} already stored · {mtgo.store_dir()}")
+        _echo(f"{len(res.fetched)} new events · {res.skipped} already stored · {mtgo.store_dir()}")
         for slugs, what in (
             (res.pending, "not published yet — retried next run"),
             (res.empty, "empty though old enough to have lists, likely throttled — retried next run"),
             (res.given_up, f"empty on {mtgo.GIVE_UP_AFTER} runs — skipped from now on"),
         ):
             if slugs:
-                typer.echo(f"{len(slugs)} {what}: {', '.join(slugs)}")
+                _echo(f"{len(slugs)} {what}: {', '.join(slugs)}")
         if res.missed:
-            typer.echo(f"{res.missed} skipped, given up on earlier runs")
+            _echo(f"{res.missed} skipped, given up on earlier runs")
         if res.given_up or res.missed:
-            typer.echo(f"  to retry them, delete {mtgo.misses_path()}")
+            _echo(f"  to retry them, delete {mtgo.misses_path()}")
         if res.left:
-            typer.echo(f"{res.left} left for the next run")
+            _echo(f"{res.left} left for the next run")
         if res.stopped:
-            typer.echo(f"stopped early: {res.stopped}", err=True)
+            _echo(f"stopped early: {res.stopped}", err=True)
         for slug, err in res.failed:
-            typer.echo(f"  ! {slug}: {err}", err=True)
+            _echo(f"  ! {slug}: {err}", err=True)
 
 
 @ingest_app.command("prices")
@@ -317,7 +328,7 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
     except (OSError, net.FetchError) as e:
         tracker.step("tcgcsv prices").fail(str(e))
         return
-    typer.echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
+    _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
 
 
 def _events(fmt: list[str], days: int, kind: list[str] | None):
@@ -597,22 +608,22 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     stored = cfg0.collection_csv
     if newest and (not stored.exists() or newest.stat().st_mtime > stored.stat().st_mtime):
         _copy_manabox(newest)
-        typer.echo(f"picked up {newest.name} from Downloads")
+        _echo(f"picked up {newest.name} from Downloads")
     if not cfg0.collection_csv.exists():
-        typer.echo(
+        _echo(
             "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
             err=True,
         )
     with _setup() as (cfg, cat, inv):
         res = syncmod.run(cfg.mtg_dir, inv, cat)
-    typer.echo(
+    _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
         f"{res.prices_logged} prices logged · versions changed: {', '.join(res.versions) or 'none'}"
     )
     if res.removed:
-        typer.echo(f"removed stale generated notes: {', '.join(res.removed)}")
+        _echo(f"removed stale generated notes: {', '.join(res.removed)}")
     for w in res.warnings:
-        typer.echo(f"  ! {w}", err=True)
+        _echo(f"  ! {w}", err=True)
 
 
 NETWORK_WAIT = 120.0  # seconds a sync waits for the network before carrying on offline
