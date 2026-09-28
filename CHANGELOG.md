@@ -105,7 +105,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
-- CI's coverage floor goes from 75% to 90%; the suite is at 93%.
+- CI's coverage floor goes from 75% to 90%, held by the Linux jobs, which run every test against Postgres; the
+  suite is at 94%. The macOS jobs skip the database tests, so they run without a floor.
 - MTGO decklists come in as a trickle: a launchd job (`riffle schedule trickle`, beside the daily sync job) runs
   `riffle mtgo trickle` every 10 minutes, all day. Each run asks for 1 to 3 pages, 5 seconds apart, and never more
   than 5 in any 15 minutes; about 430 pages a day at full pace. It reads this month's index hourly and sweeps back
