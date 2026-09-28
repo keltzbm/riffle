@@ -188,3 +188,52 @@ def test_remove(tmp_path, monkeypatch):
     assert sched.remove(run=lc, path=path) is True
     assert not path.exists() and not lc.loaded
     assert sched.remove(run=lc, path=path) is False  # nothing left: says so, doesn't crash
+
+
+# ---- the trickle job -------------------------------------------------------------
+
+
+def test_the_trickle_job_runs_every_ten_minutes(tmp_path):
+    d = sched.build([], tmp_path / "riffle", tmp_path / "mtgo-trickle.log", sched.TRICKLE)
+    assert (d["Label"], d["StartInterval"]) == ("com.keltzbm.riffle-mtgo", 600)
+    assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "mtgo", "trickle"]
+    assert "StartCalendarInterval" not in d
+
+
+def test_the_trickle_job_installs_and_goes_beside_the_sync_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake = FakeLaunchctl()
+    path = sched.install([], exe=tmp_path / "riffle", run=fake, job=sched.TRICKLE)
+    assert path == tmp_path / "Library" / "LaunchAgents" / "com.keltzbm.riffle-mtgo.plist"
+    assert plistlib.loads(path.read_bytes())["StartInterval"] == 600
+    assert sched.log_path(sched.TRICKLE).name == "mtgo-trickle.log"
+    assert sched.status(run=fake, job=sched.TRICKLE).loaded
+    assert sched.remove(run=fake, job=sched.TRICKLE) and not path.exists()
+
+
+def test_the_schedule_commands_show_and_manage_the_trickle_job(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from riffle.cli import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake = FakeLaunchctl(print_out=PRINT)
+    install, status, remove = sched.install, sched.status, sched.remove
+    monkeypatch.setattr(
+        sched, "install", lambda times, job: install(times, tmp_path / "riffle", fake, job=job)
+    )
+    monkeypatch.setattr(sched, "status", lambda job=sched.SYNC: status(fake, job=job))
+    monkeypatch.setattr(sched, "remove", lambda job=sched.SYNC: remove(fake, job=job))
+
+    def run(*args):
+        return CliRunner().invoke(app, list(args)).output
+
+    shown = run("schedule", "trickle")
+    assert "every      10 minutes: riffle mtgo trickle" in shown and "loaded     yes" in shown
+    both = run("schedule")
+    assert both.index("com.keltzbm.riffle-sync") < both.index(
+        "com.keltzbm.riffle-mtgo"
+    )  # the fake loads any label
+    assert run("schedule", "trickle", "--remove") == "removed com.keltzbm.riffle-mtgo\n"
+    assert "no trickle job — start one with: riffle schedule trickle" in run("schedule")
+    assert run("schedule", "trickle", "--remove") == "no trickle job to remove\n"

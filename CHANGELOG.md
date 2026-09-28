@@ -95,6 +95,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   brings Postgres up and migrates it, so the database tests run there instead of skipping.
 
 ### Removed
+- **Breaking:** `riffle ingest mtgo` (`--days`, `--delay`, `--max-events`) and giving up on MTGO events. A run
+  that asked for pages as fast as a second apart got them stripped, and nothing an index listed was kept once a
+  run ended. The trickle below replaces both; `mtgo-misses.json` moves into its owed list on the first run.
 - **Breaking:** the DuckDB card catalog (`~/.local/share/riffle/mtg.duckdb`) and its loader, and DuckDB as a
   dependency. Postgres holds the only catalog; delete the old file by hand.
 - **Breaking:** `riffle ingest tcgcsv` and the daily price-archive download. tcgcsv.com took the archive down
@@ -102,6 +105,19 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- MTGO decklists come in as a trickle: a launchd job (`riffle schedule trickle`, beside the daily sync job) runs
+  `riffle mtgo trickle` every 10 minutes, all day. Each run asks for 1 to 3 pages, 5 seconds apart, and never more
+  than 5 in any 15 minutes; about 430 pages a day at full pace. It reads this month's index hourly and sweeps back
+  through every earlier month's for every format, and every event an index lists that isn't stored goes on an
+  owed list (`mtgo-owed.json`), tried on every run while under 30 days old, then weekly, and never dropped;
+  `riffle mtgo forget <slug>` drops one by hand. An empty answer is believed only after a stored event, asked for
+  again, comes back whole; stripped too, or a 429, means throttled: nothing counts against the event, the job
+  pauses 3 hours (6, then 12, if it happens again within a day) and comes back a page slower, then speeds up a
+  page after 144 whole answers in a row. A 404 or a redirect is an ordinary miss. Every request is logged
+  (`mtgo-requests.jsonl`: UTC time, URL, status, size, time taken, how it was read), and each fetched event keeps
+  the page's whole data object, gzipped, in `mtgo/raw/`. `riffle mtgo status` shows the pace, any pause, recent
+  requests, what's owed by month, and how far back the indexes have been read. Lists that won't parse exit 1;
+  a throttle doesn't.
 - `riffle ingest mtgo` tells mtgo.com's throttling apart from missing data. Throttled, the site answers with
   stripped pages instead of errors, which read as empty months and unpublished lists, so a long backfill silently
   lost whole months. Now an index listing no events is a failure unless its month began under two days ago, and an

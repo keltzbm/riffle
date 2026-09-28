@@ -21,6 +21,8 @@ ingest_app = typer.Typer(help="Load outside data.", no_args_is_help=True)
 app.add_typer(ingest_app, name="ingest")
 meta_app = typer.Typer(help="MTGO metagame: league 5-0s, challenges, showcases.", no_args_is_help=True)
 app.add_typer(meta_app, name="meta")
+mtgo_app = typer.Typer(help="MTGO decklists from mtgo.com, a few pages at a time.", no_args_is_help=True)
+app.add_typer(mtgo_app, name="mtgo")
 
 # ---- tab completion --------------------------------------------------------------------
 # The shell runs `riffle` itself on every Tab press and offers what these return. When
@@ -234,45 +236,6 @@ def _formats(fmt: list[str]) -> list[str] | None:
     return None if "all" in fmts else fmts
 
 
-@ingest_app.command("mtgo")
-def ingest_mtgo(
-    fmt: list[str] = FormatsOpt,
-    days: int = typer.Option(7, help="How far back to look"),
-    kind: list[str] = KindOpt,
-    delay: float = typer.Option(1.0, help="Seconds between page requests"),
-    max_events: int | None = typer.Option(
-        None,
-        "--max-events",
-        min=1,
-        help="Fetch at most this many events, newest first; later runs go further back",
-    ),
-) -> None:
-    """Fetch MTGO decklists (league 5-0s, challenges, showcases) from mtgo.com."""
-    from riffle.ingest import mtgo
-
-    since, fmts, kinds = date.today() - timedelta(days=days), _formats(fmt), _kinds(kind)
-    with _tracked("riffle ingest mtgo") as tracker:  # report inside: a failed step exits 1 on leaving
-        res = mtgo.ingest(fmts, since, kinds=kinds, delay=delay, max_events=max_events, tracker=tracker)
-        _echo(f"{len(res.fetched)} new events · {res.skipped} already stored · {mtgo.store_dir()}")
-        for slugs, what in (
-            (res.pending, "not published yet — retried next run"),
-            (res.empty, "empty though old enough to have lists, likely throttled — retried next run"),
-            (res.given_up, f"empty on {mtgo.GIVE_UP_AFTER} runs — skipped from now on"),
-        ):
-            if slugs:
-                _echo(f"{len(slugs)} {what}: {', '.join(slugs)}")
-        if res.missed:
-            _echo(f"{res.missed} skipped, given up on earlier runs")
-        if res.given_up or res.missed:
-            _echo(f"  to retry them, delete {mtgo.misses_path()}")
-        if res.left:
-            _echo(f"{res.left} left for the next run")
-        if res.stopped:
-            _echo(f"stopped early: {res.stopped}", err=True)
-        for slug, err in res.failed:
-            _echo(f"  ! {slug}: {err}", err=True)
-
-
 @ingest_app.command("prices")
 def ingest_prices(
     delay: float = typer.Option(0.1, help="Seconds between tcgcsv requests"),
@@ -338,11 +301,95 @@ def _events(fmt: list[str], days: int, kind: list[str] | None):
     if not events:
         names = "/".join(fmt)
         typer.echo(
-            f"no stored {names} events in the last {days} days — run: riffle ingest mtgo -f {fmt[0]}",
+            f"no stored {names} events in the last {days} days — see what's owed: riffle mtgo status",
             err=True,
         )
         raise typer.Exit(1)
     return events
+
+
+@mtgo_app.command("trickle")
+def mtgo_trickle() -> None:
+    """One run of the trickle: at most one index page, then owed events, newest first, as
+    many as the pace allows. The job (riffle schedule trickle) runs this every 10 minutes."""
+    from riffle.ingest import mtgo
+
+    with _tracked("riffle mtgo trickle") as tracker:  # report inside: a failed step exits 1 on leaving
+        res = mtgo.run_trickle(tracker=tracker)
+        if res.busy:
+            _echo("another trickle run is in progress; nothing asked")
+            return
+        if res.carried:
+            _echo(f"{res.carried} events from {mtgo.misses_path().name} moved to the owed list")
+        if res.paused_until:
+            _echo(f"paused until {res.paused_until:%Y-%m-%d %H:%M} UTC, after a throttle; nothing asked")
+        elif not res.budget:
+            _echo("the last 15 minutes hold as many requests as allowed; nothing asked")
+        _echo(f"{len(res.fetched)} new events · {res.owed} owed, {res.due} due · {res.level} pages a run")
+        if res.pending:
+            _echo(f"{len(res.pending)} not published yet: {', '.join(res.pending)}")
+        for slug, outcome in res.missed:
+            _echo(f"  {slug}: {outcome}, still owed")
+        if res.throttled and res.resume:
+            _echo(f"throttled: {res.throttled}; paused until {res.resume:%Y-%m-%d %H:%M} UTC")
+        if res.raised:
+            _echo(f"answers came back whole: up to {res.level} pages a run")
+        if res.stopped:
+            _echo(f"stopped early: {res.stopped}")
+        for slug, err in res.broken:
+            _echo(f"  ! {slug}: its lists wouldn't parse: {err}", err=True)
+
+
+@mtgo_app.command("status")
+def mtgo_status() -> None:
+    """Pace, pause, recent requests, what's owed by month, and how far back the indexes are read."""
+    from collections import Counter
+
+    from riffle import trickle
+    from riffle.ingest import mtgo
+
+    st = mtgo.status()
+    pace = f"pace       {st.pace.level} pages a run"
+    if st.pace.level < trickle.LEVELS[-1]:
+        pace += f", up a level after {trickle.SPEED_UP_AFTER - st.pace.whole_streak} more whole answers"
+    typer.echo(pace)
+    typer.echo(
+        f"paused     until {st.paused_until:%Y-%m-%d %H:%M} UTC" if st.paused_until else "paused     no"
+    )
+    typer.echo(f"requests   {len(st.window)} in the last 15 minutes (at most {trickle.CEILING})")
+    verdicts = ", ".join(f"{n} {v}" for v, n in Counter(r.verdict for r in st.day).most_common())
+    typer.echo(f"           {len(st.day)} in the last 24 hours{': ' + verdicts if verdicts else ''}")
+    typer.echo(f"owed       {len(st.owed)} events, {st.due} due now")
+    months = sorted(Counter(o.day[:7] for o in st.owed.values()).items(), reverse=True)
+    for month, n in months[:12]:
+        typer.echo(f"           {month}  {n}")
+    if len(months) > 12:
+        typer.echo(f"           older    {sum(n for _, n in months[12:])}")
+    read = sorted(st.months)
+    if read:
+        sweep = "the sweep is done" if st.sweep_done else "still going back"
+        typer.echo(f"indexes    read back to {read[0]}, {sweep}")
+    else:
+        typer.echo("indexes    none read yet")
+    typer.echo(f"log        {trickle.RequestLog(mtgo.SOURCE).path}")
+
+
+@mtgo_app.command("forget")
+def mtgo_forget(
+    slug: str = typer.Argument(..., help="An owed event's slug, as mtgo-owed.json lists it"),
+) -> None:
+    """Drop an event from the owed list, so the trickle stops asking for it."""
+    from riffle.ingest import mtgo
+
+    try:
+        dropped = mtgo.forget(slug)
+    except RuntimeError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    if not dropped:
+        typer.echo(f"{slug} isn't owed", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"forgot {slug}")
 
 
 @meta_app.command("cards")
@@ -400,7 +447,7 @@ def meta_show(
 
     path = mtgo.store_dir() / f"{event}.json"
     if not path.exists():
-        raise typer.BadParameter(f"no stored event {event} — run: riffle ingest mtgo")
+        raise typer.BadParameter(f"no stored event {event} — see what's still owed: riffle mtgo status")
     ev = mtgo.Event.from_dict(json.loads(path.read_text(encoding="utf-8")))
     deck = next((d for d in ev.decks if d.player.lower() == player.lower()), None)
     if deck is None:
@@ -708,11 +755,36 @@ def watch(interval: float = typer.Option(5.0, help="Seconds between checks")) ->
         typer.echo("\nstopped")
 
 
-schedule_app = typer.Typer(help="The daily launchd job that runs `riffle sync` (macOS).")
+schedule_app = typer.Typer(help="The launchd jobs (macOS): `riffle sync` daily, and the MTGO trickle.")
 app.add_typer(schedule_app, name="schedule")
 
 
 def _show_schedule() -> None:
+    _show_sync()
+    typer.echo()
+    _show_trickle()
+
+
+def _show_trickle() -> None:
+    from riffle import schedule as sched
+
+    job = sched.TRICKLE
+    st = sched.status(job=job)
+    if not st.installed and not st.loaded:
+        typer.echo("no trickle job — start one with: riffle schedule trickle")
+        return
+    typer.echo(job.label)
+    typer.echo(f"  every      {(job.interval or 0) // 60} minutes: riffle {' '.join(job.args)}")
+    typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: riffle schedule trickle'}")
+    if st.loaded:
+        typer.echo(
+            f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
+        )
+    typer.echo(f"  log        {sched.log_path(job)}")
+    typer.echo(f"  plist      {sched.plist_path(job)}")
+
+
+def _show_sync() -> None:
     from datetime import datetime
 
     from riffle import schedule as sched
@@ -738,14 +810,14 @@ def _show_schedule() -> None:
 
 @schedule_app.callback(invoke_without_command=True)
 def schedule_main(ctx: typer.Context) -> None:
-    """Show the schedule (times, next run, last result). Subcommands: set, remove."""
+    """Show both jobs (times, next run, last result). Subcommands: set, remove, trickle."""
     if ctx.invoked_subcommand is None:
         _show_schedule()
 
 
 @schedule_app.command("show")
 def schedule_show() -> None:
-    """Times, next run, whether it's loaded, and how the last run went."""
+    """Times, next run, whether each job is loaded, and how its last run went."""
     _show_schedule()
 
 
@@ -766,10 +838,28 @@ def schedule_set(
 
 @schedule_app.command("remove")
 def schedule_remove() -> None:
-    """Unload and delete the job."""
+    """Unload and delete the daily sync job."""
     from riffle import schedule as sched
 
     typer.echo(f"removed {sched.LABEL}" if sched.remove() else "no schedule to remove")
+
+
+@schedule_app.command("trickle")
+def schedule_trickle(
+    remove: bool = typer.Option(False, "--remove", help="Unload and delete the trickle job instead"),
+) -> None:
+    """Run `riffle mtgo trickle` every 10 minutes. Replaces any existing trickle job."""
+    from riffle import schedule as sched
+
+    if remove:
+        removed = sched.remove(job=sched.TRICKLE)
+        typer.echo(f"removed {sched.TRICKLE.label}" if removed else "no trickle job to remove")
+        return
+    try:
+        sched.install([], job=sched.TRICKLE)
+    except RuntimeError as e:
+        raise typer.BadParameter(str(e)) from e
+    _show_trickle()
 
 
 db_app = typer.Typer(help="The Postgres database: start it, migrate it, check it.", no_args_is_help=True)

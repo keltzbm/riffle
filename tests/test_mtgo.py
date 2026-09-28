@@ -1,9 +1,11 @@
+import gzip
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from typer.testing import CliRunner
 
-from riffle import net
+from riffle import net, trickle
 from riffle.analysis import metagame
 from riffle.ingest import mtgo
 from riffle.ingest.decklist import parse_text
@@ -47,14 +49,6 @@ CHALLENGE = {
     ],
 }
 LEAGUE = {"decklists": [{"player": "carol", "main_deck": [_row("Thoughtseize", 2)], "sideboard_deck": []}]}
-TODAY = date(2026, 9, 21)
-SEPTEMBER = {"since": date(2026, 9, 1), "until": TODAY}
-
-
-@pytest.fixture(autouse=True)
-def fixed_today(monkeypatch):
-    """Event ages count from TODAY, so these tests don't age with the calendar."""
-    monkeypatch.setattr(mtgo, "_today", lambda: TODAY)
 
 
 def test_slugs_and_classification():
@@ -109,34 +103,6 @@ def test_missing_data_is_an_error():
         raise AssertionError("expected ValueError")
 
 
-def test_ingest_filters_skips_and_stores(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    pages = {
-        "https://www.mtgo.com/decklists/2026/09": INDEX,
-        "https://www.mtgo.com/decklist/modern-challenge-32-2026-09-1912850001": _page(CHALLENGE),
-        "https://www.mtgo.com/decklist/modern-league-2026-09-2012850002": "<html>broken</html>",
-    }
-    calls = []
-
-    def get(url):
-        calls.append(url)
-        return pages[url]
-
-    res = mtgo.ingest("modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get)
-    assert [e.slug for e in res.fetched] == ["modern-challenge-32-2026-09-1912850001"]
-    assert res.pending == ["modern-league-2026-09-2012850002"]  # page up, no data yet
-    assert not any("pioneer" in u or "2026-08-31" in u for u in calls)  # format and date filters
-
-    again = mtgo.ingest(
-        "modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get, kinds=["challenge"]
-    )
-    assert again.skipped == 1 and not again.fetched
-
-    stored = mtgo.load(fmt="modern", since=date(2026, 9, 1))
-    assert [e.slug for e in stored] == ["modern-challenge-32-2026-09-1912850001"]
-    assert stored[0].decks[0].main[0].name == "Thoughtseize"
-
-
 def test_card_stats_and_find():
     e1 = mtgo.parse_event("modern-challenge-32-2026-09-1912850001", CHALLENGE)
     e2 = mtgo.parse_event("modern-league-2026-09-2012850002", LEAGUE)
@@ -149,36 +115,7 @@ def test_card_stats_and_find():
     assert [d.player for _, d in metagame.find_decks([e1, e2], player="BOB")] == ["bob"]
 
 
-def test_unreachable_index_is_reported_not_raised(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-
-    def get(url):
-        raise net.FetchError("timed out")
-
-    res = mtgo.ingest("modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get)
-    assert not res.fetched
-    assert res.failed == [("https://www.mtgo.com/decklists/2026/09", "timed out")]
-
-
 EMPTY = {"decklists": []}
-
-
-def test_empty_events_are_pending_then_fetched(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    slug = "modern-challenge-32-2026-09-1912850001"
-    url = f"https://www.mtgo.com/decklist/{slug}"
-    pages = {"https://www.mtgo.com/decklists/2026/09": f'<a href="/decklist/{slug}">x</a>', url: _page(EMPTY)}
-    kw = dict(since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=pages.__getitem__)
-
-    first = mtgo.ingest("modern", **kw)
-    assert first.pending == [slug] and not first.fetched and not mtgo.is_stored(slug)
-
-    pages[url] = "<html>not rendered yet</html>"  # no data object at all: also pending
-    assert mtgo.ingest("modern", **kw).pending == [slug]
-
-    pages[url] = _page(CHALLENGE)  # published: now it's fetched
-    assert [e.slug for e in mtgo.ingest("modern", **kw).fetched] == [slug]
-    assert mtgo.ingest("modern", **kw).skipped == 1
 
 
 def test_old_empty_files_are_refetched_and_hidden(tmp_path, monkeypatch):
@@ -187,17 +124,6 @@ def test_old_empty_files_are_refetched_and_hidden(tmp_path, monkeypatch):
     mtgo.save(mtgo.parse_event(slug, EMPTY))  # what the first version wrote
     assert not mtgo.is_stored(slug)
     assert mtgo.load("modern") == []
-
-
-def test_all_formats(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    pages = {"https://www.mtgo.com/decklists/2026/09": INDEX}
-    for slug in mtgo.event_slugs(INDEX):
-        pages[f"https://www.mtgo.com/decklist/{slug}"] = _page(CHALLENGE)
-    kw = dict(since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=pages.__getitem__)
-    got = mtgo.ingest(None, **kw)
-    assert {e.format for e in got.fetched} == {"modern", "pioneer"}
-    assert {e.format for e in mtgo.load(["pioneer"])} == {"pioneer"}
 
 
 def test_fingerprint_groups_identical_lists_only():
@@ -239,18 +165,6 @@ def test_format_and_kind_table(name, fmt, kind):
 def test_real_slug_shapes_parse(slug):
     name, day, eid = mtgo.parse_slug(slug)
     assert day == "2026-03-31" and eid.isdigit() and not name.endswith("-")
-
-
-@pytest.mark.parametrize(
-    "start, end, months",
-    [
-        ((2026, 9, 1), (2026, 9, 21), [(2026, 9)]),
-        ((2025, 11, 15), (2026, 2, 1), [(2025, 11), (2025, 12), (2026, 1), (2026, 2)]),  # across a year
-        ((2026, 9, 30), (2026, 10, 1), [(2026, 9), (2026, 10)]),
-    ],
-)
-def test_months(start, end, months):
-    assert mtgo._months(date(*start), date(*end)) == months
 
 
 def test_main_deck_rows_flagged_sideboard_move_to_side():
@@ -317,353 +231,319 @@ def test_load_filters(tmp_path, monkeypatch):
     assert mtgo.load(folder=tmp_path / "nowhere") == []
 
 
-# ---- ingest behaviour ---------------------------------------------------------------
+# ---- the trickle ------------------------------------------------------------------
+
+NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+SEP = "https://www.mtgo.com/decklists/2026/09"
+AUG = "https://www.mtgo.com/decklists/2026/08"
+OLD = "modern-challenge-32-2026-08-0312840001"  # past PENDING_DAYS, and past FRESH_DAYS
+OLDER = "modern-league-2026-08-0212840000"
+YOUNG = "modern-league-2026-09-2012850002"
+STORED = "modern-challenge-32-2026-09-1812849999"  # asked for again to check an empty answer
 
 
-def _site(slugs, page=None):
-    index = "".join(f'<a href="/decklist/{s}">x</a>' for s in slugs)
-    pages = {"https://www.mtgo.com/decklists/2026/09": index, "https://www.mtgo.com/decklists/2026/08": ""}
-    for s in slugs:
-        pages[f"https://www.mtgo.com/decklist/{s}"] = page or _page(CHALLENGE)
-    return pages
+def _url(slug):
+    return f"https://www.mtgo.com/decklist/{slug}"
 
 
-def test_date_bounds_are_inclusive(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    slugs = [
-        "modern-league-2026-09-0112850001",
-        "modern-league-2026-09-2112850002",
-        "modern-league-2026-09-2212850003",
-        "modern-league-2026-08-3112850004",
+class Site:
+    """mtgo.com as a dict: text answers 200, an int is a bare status, an exception is
+    raised, and anything else is a 404. moved maps a URL to where it redirects."""
+
+    def __init__(self, pages=None, moved=None):
+        self.pages, self.moved, self.asked = dict(pages or {}), dict(moved or {}), []
+
+    def __call__(self, url):
+        self.asked.append(url)
+        page = self.pages.get(url, 404)
+        if isinstance(page, Exception):
+            raise page
+        if isinstance(page, int):
+            return net.Answer(page, url, b"")
+        return net.Answer(200, self.moved.get(url, url), page.encode())
+
+
+class Clock:
+    def __init__(self, at=NOW):
+        self.at = at
+
+    def __call__(self):
+        return self.at
+
+
+def _trickle(site, clock=None, **kw):
+    return mtgo.run_trickle(get=site, clock=clock or Clock(), sleep=lambda s: None, **kw)
+
+
+def _owe(*slugs):
+    owed = trickle.load_owed(mtgo.SOURCE)
+    for slug in slugs:
+        owed[slug] = trickle.Owed(day=mtgo.parse_slug(slug)[1], found="2026-09-01T00:00:00+00:00")
+    trickle.save_owed(mtgo.SOURCE, owed)
+
+
+def _store_canary(page=CHALLENGE):
+    mtgo.save(mtgo.parse_event(STORED, CHALLENGE))
+    return {_url(STORED): _page(page)}
+
+
+@pytest.fixture
+def no_index(monkeypatch):
+    """Every index already read: a run goes straight to owed events."""
+    monkeypatch.setattr(mtgo, "next_index", lambda months, at: None)
+
+
+def test_a_first_run_reads_this_months_index_then_the_newest_owed_events():
+    challenge, league, pioneer = mtgo.event_slugs(INDEX)[:3]
+    site = Site({SEP: INDEX, **{_url(s): _page(CHALLENGE) for s in (challenge, league, pioneer)}})
+    res = _trickle(site)
+    assert site.asked == [SEP, _url(pioneer), _url(league)]  # 3 pages at the top pace, newest first
+    assert [e.slug for e in res.fetched] == [pioneer, league]
+    assert (res.listed, res.newly_owed, res.owed, res.due) == (4, 4, 2, 2)
+    raw = json.loads(gzip.decompress(mtgo.raw_path(pioneer).read_bytes()))
+    assert (raw["url"], raw["fetched"], raw["data"]) == (
+        _url(pioneer),
+        "2026-09-21T12:00:00+00:00",
+        CHALLENGE,
+    )
+    assert [e.slug for e in mtgo.load("pioneer")] == [pioneer]  # the raw folder isn't read as events
+    log = trickle.RequestLog(mtgo.SOURCE).since(NOW)
+    assert [(r.url, r.verdict) for r in log] == [
+        (SEP, "whole"),
+        (_url(pioneer), "whole"),
+        (_url(league), "whole"),
     ]
-    pages = _site(slugs)
-    res = mtgo.ingest(
-        "modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=pages.__getitem__
-    )
-    assert sorted(e.date for e in res.fetched) == ["2026-09-01", "2026-09-21"]
 
 
-def test_kind_filter_skips_fetching(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    pages = _site(["modern-league-2026-09-2012850002", "modern-challenge-32-2026-09-1912850001"])
-    fetched = []
-    res = mtgo.ingest(
-        "modern",
-        since=date(2026, 9, 1),
-        until=date(2026, 9, 21),
-        delay=0,
-        kinds=["challenge"],
-        get=lambda u: fetched.append(u) or pages[u],
-    )
-    assert [e.kind for e in res.fetched] == ["challenge"]
-    assert not any("league" in u for u in fetched)
+def _read(minutes_ago, events=5, at=NOW):
+    return {"read": trickle.stamp(at - timedelta(minutes=minutes_ago)), "events": events}
 
 
-def test_event_page_error_is_reported_and_run_continues(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    bad, good = "modern-league-2026-09-2012850002", "modern-challenge-32-2026-09-1912850001"
-    pages = _site([bad, good])
-
-    def get(url):
-        if bad in url:
-            raise net.FetchError("timed out")
-        return pages[url]
-
-    res = mtgo.ingest("modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get)
-    assert res.failed == [(bad, "timed out")] and [e.slug for e in res.fetched] == [good]
-
-
-def test_each_format_is_a_step_with_its_total(tmp_path, monkeypatch, tracker):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    good, pending, broken = (
-        "modern-challenge-32-2026-09-1912850001",
-        "modern-league-2026-09-2012850002",
-        "pioneer-league-2026-09-2012850003",
-    )
-    pages = _site([good, pending, broken])
-    pages[f"https://www.mtgo.com/decklist/{pending}"] = _page(EMPTY)
-
-    def get(url):
-        if broken in url:
-            raise net.FetchError("timed out")
-        return pages[url]
-
-    mtgo.ingest(None, since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get, tracker=tracker)
-    index, pioneer, modern = tracker.steps  # newest first: the pioneer event has the higher id
-    assert (index.label, index.total, index.unit) == ("mtgo.com index", 1, "months")
-    assert index.outcome == ("ok", "3 to fetch, 0 already stored")
-    assert (modern.label, modern.total, modern.unit) == ("mtgo modern", 2, "events")
-    assert modern.updates == [(1, None), (2, None)]
-    assert modern.outcome == ("ok", "1 new, 1 not published yet")
-    assert pioneer.outcome == ("fail", "1 failed")
-
-    tracker.steps.clear()
-    mtgo.ingest("modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get, tracker=tracker)
-    assert tracker.outcomes() == {
-        "mtgo.com index": ("ok", "1 to fetch, 1 already stored"),
-        "mtgo modern": ("ok", "1 not published yet"),
-    }
+def test_which_index_a_run_reads():
+    assert mtgo.next_index({}, NOW) == (2026, 9)
+    fresh = {"2026-09": _read(10)}
+    assert mtgo.next_index(fresh, NOW) == (2026, 8)  # the sweep back begins
+    assert mtgo.next_index({"2026-09": _read(61)}, NOW) == (2026, 9)  # the current month, hourly
+    assert mtgo.next_index({**fresh, "2026-08": _read(9000), "2026-07": _read(9000)}, NOW) == (2026, 6)
+    oct3 = datetime(2026, 10, 3, tzinfo=UTC)
+    just_ended = {"2026-10": _read(10, at=oct3), "2026-09": _read(61, at=oct3)}
+    assert mtgo.next_index(just_ended, oct3) == (2026, 9)  # hourly too, for a week
+    ended = {**fresh, "2026-08": _read(1, 0), "2026-07": _read(1, 0), "2026-06": _read(1, 0)}
+    assert mtgo.next_index(ended, NOW) is None and mtgo.sweep_next(ended, NOW) is None
+    assert mtgo.next_index({**ended, "2026-07": _read(1)}, NOW) == (
+        2026,
+        5,
+    )  # a month with events resets the count
 
 
-def test_an_unreadable_index_fails_its_step(tmp_path, monkeypatch, tracker):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-
-    def get(url):
-        raise net.FetchError("timed out")
-
-    mtgo.ingest("modern", since=date(2026, 9, 1), until=date(2026, 9, 21), delay=0, get=get, tracker=tracker)
-    assert tracker.outcomes() == {"mtgo.com index": ("fail", "0 to fetch, 0 already stored, 1 unreadable")}
-
-
-def test_an_event_linked_from_two_months_is_fetched_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    slug = "modern-league-2026-09-0112850001"
-    pages = _site([slug])
-    pages["https://www.mtgo.com/decklists/2026/08"] = pages["https://www.mtgo.com/decklists/2026/09"]
-    asked = []
-    res = mtgo.ingest(
-        "modern",
-        since=date(2026, 8, 1),
-        until=date(2026, 9, 21),
-        delay=0,
-        get=lambda u: asked.append(u) or pages[u],
-    )
-    assert [e.slug for e in res.fetched] == [slug]
-    assert asked.count(f"https://www.mtgo.com/decklist/{slug}") == 1
+def test_the_ceiling_leaves_only_what_the_last_15_minutes_allow():
+    log = trickle.RequestLog(mtgo.SOURCE)
+    for minutes in (1, 2, 3, 20):
+        log.add(trickle.Request(trickle.stamp(NOW - timedelta(minutes=minutes)), "x", 200, 1, 1, "whole"))
+    site = Site({SEP: INDEX})
+    res = _trickle(site)
+    assert res.budget == 2 and site.asked == [SEP, _url(mtgo.event_slugs(INDEX)[2])]
 
 
-def test_index_requests_are_paced_too(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    sleeps = []
-    monkeypatch.setattr(mtgo.time, "sleep", sleeps.append)
-    pages = {
-        "https://www.mtgo.com/decklists/2026/07": "",
-        "https://www.mtgo.com/decklists/2026/08": "",
-        "https://www.mtgo.com/decklists/2026/09": "",
-    }
-    mtgo.ingest("modern", since=date(2026, 7, 1), until=date(2026, 9, 21), delay=1.5, get=pages.__getitem__)
-    assert sleeps == [1.5, 1.5]  # between the 3 index pages, not before the first
+def test_a_month_just_begun_may_list_no_events():
+    october = "https://www.mtgo.com/decklists/2026/10"
+    site = Site({october: "<html></html>"})
+    res = _trickle(site, Clock(datetime(2026, 10, 1, 6, tzinfo=UTC)))
+    assert site.asked == [october] and res.throttled is None and res.stopped is None
 
 
-# ---- metagame ------------------------------------------------------------------------
+def test_an_empty_page_for_a_young_event_is_not_published_yet(no_index):
+    _owe(YOUNG)
+    site = Site({_url(YOUNG): "<html>not rendered yet</html>"})
+    res = _trickle(site)
+    assert res.pending == [YOUNG] and site.asked == [_url(YOUNG)]  # nothing checked, nothing counted
+    owed = trickle.load_owed(mtgo.SOURCE)[YOUNG]
+    assert (owed.tries, owed.last) == (0, "not published yet")
 
 
-def test_card_stats_side_only_and_empty():
-    e = mtgo.parse_event("modern-challenge-32-2026-09-1912850001", CHALLENGE)
-    side = {s.name: s for s in metagame.card_stats([e], board="side")}
-    assert set(side) == {"Fire/Ice", "Lightning Bolt"}
-    assert side["Lightning Bolt"].main_decks == 0 and side["Lightning Bolt"].side_decks == 1
-    assert metagame.card_stats([]) == []
-    assert metagame.CardStat("x").share(0) == 0.0 and metagame.CardStat("x").avg == 0.0
+def test_an_old_empty_page_is_a_miss_when_a_stored_event_comes_back_whole(no_index):
+    _owe(OLD)
+    site = Site({_url(OLD): _page(EMPTY), **_store_canary()})
+    res = _trickle(site)
+    assert site.asked == [_url(OLD), _url(STORED)]
+    assert res.missed == [(OLD, "empty")] and res.throttled is None
+    owed = trickle.load_owed(mtgo.SOURCE)[OLD]
+    assert (owed.tries, owed.last, owed.last_try) == (1, "empty", "2026-09-21T12:00:00+00:00")
+    assert trickle.RequestLog(mtgo.SOURCE).since(NOW)[-1].verdict == "canary whole"
 
 
-def test_card_stats_order_is_stable():
-    e = mtgo.parse_event("modern-challenge-32-2026-09-1912850001", CHALLENGE)
-    names = [s.name for s in metagame.card_stats([e])]
-    assert names[0] == "Lightning Bolt"  # in both decks
-    assert names == [s.name for s in metagame.card_stats([e])]
+def test_an_old_empty_page_and_a_stripped_stored_event_pause_the_trickle(no_index):
+    _owe(OLD, OLDER)
+    site = Site({_url(OLD): _page(EMPTY), **_store_canary(EMPTY)})
+    res = _trickle(site)
+    assert site.asked == [_url(OLD), _url(STORED)]  # the run stops there
+    assert "came back empty" in res.throttled and res.resume == NOW + timedelta(hours=3)
+    assert (res.level, trickle.load_owed(mtgo.SOURCE)[OLD].tries) == (2, 0)  # nothing counted against it
+    later = Site()
+    res = _trickle(later, Clock(NOW + timedelta(hours=1)))
+    assert res.paused_until == NOW + timedelta(hours=3) and later.asked == []
 
 
-def test_find_decks_card_and_player_together():
-    e = mtgo.parse_event("modern-challenge-32-2026-09-1912850001", CHALLENGE)
-    assert [d.player for _, d in metagame.find_decks([e], card="Lightning Bolt", player="alice")] == ["alice"]
-    assert metagame.find_decks([e], card="Lightning Bolt", player="nobody") == []
+def test_an_old_months_empty_index_is_checked_against_a_stored_event(monkeypatch):
+    monkeypatch.setattr(mtgo, "next_index", lambda months, at: (2026, 8))
+    site = Site({AUG: "<html>no links</html>", **_store_canary()})
+    res = _trickle(site)
+    assert site.asked == [AUG, _url(STORED)] and res.throttled is None
+    assert json.loads(mtgo.months_path().read_text())["2026-08"]["events"] == 0
+    site.pages[_url(STORED)] = _page(EMPTY)
+    res = _trickle(site, Clock(NOW + timedelta(minutes=20)))
+    assert "index listed no events" in res.throttled
 
 
-# ---- throttling -------------------------------------------------------------------
+def test_nothing_stored_to_check_against_ends_the_run_counting_nothing(no_index):
+    _owe(OLD)
+    res = _trickle(Site({_url(OLD): _page(EMPTY)}))
+    assert "nothing stored" in res.stopped and trickle.load_owed(mtgo.SOURCE)[OLD].tries == 0
 
 
-def _september(*slugs: str, page: str | None = None) -> dict[str, str]:
-    """mtgo.com with September's index linking these events, each page holding `page`
-    (a challenge's lists unless given)."""
-    links = "".join(f'<a href="/decklist/{s}">event</a>' for s in slugs)
-    return {
-        "https://www.mtgo.com/decklists/2026/09": links,
-        **{f"https://www.mtgo.com/decklist/{s}": page or _page(CHALLENGE) for s in slugs},
-    }
+def test_a_404_or_a_redirect_is_an_ordinary_miss(no_index):
+    _owe(OLD, OLDER)
+    site = Site({_url(OLDER): _page(CHALLENGE)}, moved={_url(OLDER): "https://www.mtgo.com/decklists"})
+    res = _trickle(site)
+    assert sorted(res.missed) == [(OLD, "missing"), (OLDER, "redirect")]
+    owed = trickle.load_owed(mtgo.SOURCE)
+    assert owed[OLD].tries == owed[OLDER].tries == 1
 
 
-def _league(day: int) -> str:
-    return f"modern-league-2026-09-{day:02d}{12850000 + day}"
+def test_a_429_throttles_without_asking_for_a_stored_event(no_index):
+    _owe(OLD)
+    site = Site({_url(OLD): 429})
+    res = _trickle(site)
+    assert site.asked == [_url(OLD)] and "429" in res.throttled and res.resume
+    assert trickle.RequestLog(mtgo.SOURCE).since(NOW)[-1].verdict == "throttled"
 
 
-def test_an_index_listing_no_events_fails_unless_its_month_just_began(monkeypatch, tracker):
-    pages = {"https://www.mtgo.com/decklists/2026/09": ""}
-    res = mtgo.ingest("modern", delay=0, get=pages.__getitem__, tracker=tracker, **SEPTEMBER)
-    assert res.failed == [("https://www.mtgo.com/decklists/2026/09", "no events listed, likely throttled")]
-    assert tracker.outcomes() == {"mtgo.com index": ("fail", "0 to fetch, 0 already stored, 1 unreadable")}
-
-    monkeypatch.setattr(mtgo, "_today", lambda: date(2026, 10, 1))
-    pages = {"https://www.mtgo.com/decklists/2026/10": ""}
-    assert not mtgo.ingest("modern", since=date(2026, 10, 1), delay=0, get=pages.__getitem__).failed
-
-
-def test_an_empty_page_is_pending_while_young_then_empty():
-    young, old = _league(20), _league(10)
-    res = mtgo.ingest(
-        "modern", delay=0, get=_september(young, old, page=_page(EMPTY)).__getitem__, **SEPTEMBER
-    )
-    assert (res.pending, res.empty) == ([young], [old])
+@pytest.mark.parametrize("page, why", [(net.FetchError("timed out"), "timed out"), (503, "HTTP 503")])
+def test_no_answer_ends_the_run_and_counts_nothing(no_index, page, why):
+    _owe(OLD, OLDER)
+    site = Site({_url(OLD): page})
+    res = _trickle(site)
+    assert site.asked == [_url(OLD)] and why in res.stopped and res.throttled is None
+    assert trickle.load_owed(mtgo.SOURCE)[OLD].last_try is None
+    assert trickle.load_pace(mtgo.SOURCE).paused_until is None
 
 
-def test_bad_streaks_pause_longer_each_time_then_stop_the_run(monkeypatch, tracker):
-    sleeps: list[float] = []
-    monkeypatch.setattr(mtgo.time, "sleep", sleeps.append)
-    pages = _september(*(_league(d) for d in range(1, 16)))
-
-    def get(url):
-        if "/decklist/" in url:
-            raise net.FetchError("timed out")
-        return pages[url]
-
-    res = mtgo.ingest("modern", delay=0.5, get=get, tracker=tracker, **SEPTEMBER)
-    assert sleeps == [0.5, 0.5, 0.5, 30.0, 0.5, 0.5, 60.0, 0.5, 0.5, 120.0, 0.5, 0.5]
-    assert (len(res.failed), res.left) == (12, 3)
-    assert res.stopped == "mtgo.com still answering badly after a 2m 00s pause"
-    pauses = [s.outcome for s in tracker.steps if s.label == "mtgo.com pause"]
-    assert pauses == [("ok", "after 3 bad answers in a row")] * 3
-    assert tracker.outcomes()["mtgo modern"] == ("fail", f"12 failed; stopped: {res.stopped}")
+def test_lists_that_wont_parse_fail_the_step_and_stay_owed(no_index, tracker):
+    _owe(OLD)
+    site = Site({_url(OLD): _page({"decklists": [{"player": "x", "main_deck": "not rows"}]})})
+    res = _trickle(site, tracker=tracker)
+    assert [slug for slug, _ in res.broken] == [OLD] and OLD in trickle.load_owed(mtgo.SOURCE)
+    assert tracker.outcomes()["mtgo events"][0] == "fail"
 
 
-def test_a_good_answer_resets_the_backoff(monkeypatch):
-    sleeps: list[float] = []
-    monkeypatch.setattr(mtgo.time, "sleep", sleeps.append)
-    slugs = [_league(d) for d in range(8, 0, -1)]  # fetched in this order, newest first
-    pages = _september(*slugs)
-
-    def get(url):
-        if "/decklist/" in url and slugs[3] not in url:  # only the fourth answers
-            raise net.FetchError("timed out")
-        return pages[url]
-
-    mtgo.ingest("modern", delay=0, get=get, **SEPTEMBER)
-    assert [s for s in sleeps if s] == [30.0, 30.0]
+def test_whole_answers_raise_the_pace(no_index):
+    trickle.save_pace(mtgo.SOURCE, trickle.Pace(level=2, whole_streak=trickle.SPEED_UP_AFTER - 1))
+    _owe(OLD)
+    res = _trickle(Site({_url(OLD): _page(CHALLENGE)}))
+    assert res.raised and res.level == 3
 
 
-def test_a_run_stopped_while_reading_the_index_fetches_nothing(monkeypatch, tracker):
-    monkeypatch.setattr(mtgo.time, "sleep", lambda seconds: None)
-
-    def get(url):
-        raise net.FetchError("timed out")
-
-    res = mtgo.ingest("modern", since=date(2025, 1, 1), until=TODAY, delay=0, get=get, tracker=tracker)
-    assert (len(res.failed), res.fetched) == (12, [])
-    assert tracker.outcomes()["mtgo.com index"] == (
-        "fail",
-        "stopped after 12 of 21 months: mtgo.com still answering badly after a 2m 00s pause",
-    )
-
-
-def test_an_old_event_empty_on_three_clean_runs_is_given_up():
-    slug = _league(10)
-    pages = _september(slug, page=_page(EMPTY))
-    asked: list[str] = []
-
-    def get(url):
-        asked.append(url)
-        return pages[url]
-
-    runs = [mtgo.ingest("modern", delay=0, get=get, **SEPTEMBER) for _ in range(4)]
-    assert [(r.empty, r.given_up, r.missed) for r in runs] == [
-        ([slug], [], 0),
-        ([slug], [], 0),
-        ([], [slug], 0),
-        ([], [], 1),  # not asked for again
-    ]
-    assert sum(slug in url for url in asked) == 3
-    assert json.loads(mtgo.misses_path().read_text(encoding="utf-8")) == {slug: 3}
-    assert mtgo.misses_path().parent == mtgo.store_dir().parent  # load() never reads it
-
-
-def test_empty_answers_right_after_bad_ones_dont_count_toward_giving_up():
-    broken, empty = _league(11), _league(10)
-    pages = _september(broken, empty, page=_page(EMPTY))
-
-    def get(url):
-        if broken in url:
-            raise net.FetchError("timed out")
-        return pages[url]
-
-    runs = [mtgo.ingest("modern", delay=0, get=get, **SEPTEMBER) for _ in range(3)]
-    assert (runs[-1].empty, runs[-1].given_up) == ([empty], [])
+def test_the_old_misses_file_moves_into_the_owed_list():
+    _store_canary()
+    mtgo.misses_path().write_text(json.dumps({OLD: 2, STORED: 3, "not-a-slug": 1}))
+    trickle.save_pace(mtgo.SOURCE, trickle.Pace(paused_until=trickle.stamp(NOW + timedelta(hours=1))))
+    res = _trickle(Site())
+    owed = trickle.load_owed(mtgo.SOURCE)
+    assert res.carried == 1 and list(owed) == [OLD] and owed[OLD].tries == 2
     assert not mtgo.misses_path().exists()
 
 
-def test_a_counted_miss_is_forgotten_once_its_lists_appear():
-    slug = _league(10)
-    pages = _september(slug, page=_page(EMPTY))
-    mtgo.ingest("modern", delay=0, get=pages.__getitem__, **SEPTEMBER)
-    assert json.loads(mtgo.misses_path().read_text(encoding="utf-8")) == {slug: 1}
-    pages[f"https://www.mtgo.com/decklist/{slug}"] = _page(LEAGUE)
-    assert [e.slug for e in mtgo.ingest("modern", delay=0, get=pages.__getitem__, **SEPTEMBER).fetched] == [
-        slug
-    ]
-    assert not mtgo.misses_path().exists()
+def test_a_run_already_going_keeps_another_from_asking():
+    site = Site({SEP: INDEX})
+    with mtgo._lock() as held:
+        assert held
+        assert _trickle(site).busy and site.asked == []
+        with pytest.raises(RuntimeError, match="in progress"):
+            mtgo.forget(OLD)
 
 
-def test_max_events_takes_the_newest_and_leaves_the_rest_for_later_runs():
-    pages = _september(*(_league(d) for d in (3, 12, 7, 18)))
-    first = mtgo.ingest("modern", delay=0, max_events=2, get=pages.__getitem__, **SEPTEMBER)
-    assert ([e.date for e in first.fetched], first.left) == (["2026-09-18", "2026-09-12"], 2)
-    second = mtgo.ingest("modern", delay=0, max_events=2, get=pages.__getitem__, **SEPTEMBER)
-    assert ([e.date for e in second.fetched], second.left, second.skipped) == (
-        ["2026-09-07", "2026-09-03"],
-        0,
-        2,
-    )
+def test_forget_and_status(no_index):
+    _owe(OLD, YOUNG)
+    assert mtgo.forget(YOUNG) and not mtgo.forget(YOUNG)
+    log = trickle.RequestLog(mtgo.SOURCE)
+    log.add(trickle.Request(trickle.stamp(NOW - timedelta(minutes=5)), "x", 200, 1, 1, "whole"))
+    log.add(trickle.Request(trickle.stamp(NOW - timedelta(hours=2)), "x", 200, 1, 1, "empty"))
+    st = mtgo.status(Clock())
+    assert list(st.owed) == [OLD] and st.due == 1 and (len(st.window), len(st.day)) == (1, 2)
+    assert not st.sweep_done and st.paused_until is None
 
 
-def test_months_are_read_newest_first():
-    asked: list[str] = []
-
-    def get(url):
-        asked.append(url)
-        return '<a href="/decklist/modern-league-2020-01-0112340000">long gone</a>'
-
-    mtgo.ingest("modern", since=date(2026, 7, 1), until=TODAY, delay=0, get=get)
-    assert asked == [f"https://www.mtgo.com/decklists/2026/{m:02d}" for m in (9, 8, 7)]
+# ---- the commands -----------------------------------------------------------------
 
 
-def test_event_pages_get_longer_to_answer_than_the_index(monkeypatch):
-    timeouts: list[float] = []
-
-    def get_text(url, accept, timeout):
-        timeouts.append(timeout)
-        return ""
-
-    monkeypatch.setattr(mtgo.net, "get_text", get_text)
-    mtgo._get("https://www.mtgo.com/decklists/2026/09")
-    mtgo._get(f"https://www.mtgo.com/decklist/{_league(20)}")
-    assert timeouts == [mtgo.INDEX_TIMEOUT, mtgo.EVENT_TIMEOUT]
-
-
-def test_the_command_reports_everything_even_when_a_step_failed(monkeypatch):
-    from typer.testing import CliRunner
-
+def _cli(*args):
     from riffle.cli import app
 
-    asked = {}
+    return CliRunner().invoke(app, list(args))
 
-    def ingest(fmts, since, **kw):
-        asked.update(kw)
-        kw["tracker"].step("mtgo modern").fail("1 failed")
-        return mtgo.IngestResult(
+
+def test_the_trickle_command_reports_the_run(monkeypatch):
+    def run(tracker):
+        tracker.step("mtgo events").fail("1 unreadable")
+        return mtgo.TrickleResult(
+            level=2,
+            budget=2,
+            owed=7,
+            due=3,
+            carried=4,
             pending=["young"],
-            empty=["old"],
-            left=4,
-            stopped="mtgo.com gave up",
-            failed=[("broken", "timed out")],
+            missed=[("gone", "missing")],
+            throttled="x came back empty",
+            resume=NOW + timedelta(hours=3),
+            broken=[("bad", "KeyError")],
         )
 
-    monkeypatch.setattr(mtgo, "ingest", ingest)
-    result = CliRunner().invoke(app, ["ingest", "mtgo", "--max-events", "5"])
-    assert (result.exit_code, asked["max_events"]) == (1, 5)
+    monkeypatch.setattr(mtgo, "run_trickle", run)
+    result = _cli("mtgo", "trickle")
+    assert result.exit_code == 1
     for line in (
-        "0 new events",
-        "1 not published yet — retried next run: young",
-        "1 empty though old enough to have lists",
-        "4 left for the next run",
-        "stopped early: mtgo.com gave up",
-        "! broken: timed out",
+        "4 events from mtgo-misses.json moved to the owed list",
+        "0 new events · 7 owed, 3 due · 2 pages a run",
+        "1 not published yet: young",
+        "gone: missing, still owed",
+        "throttled: x came back empty; paused until 2026-09-21 15:00 UTC",
+        "! bad: its lists wouldn't parse: KeyError",
     ):
         assert line in result.output
+
+
+@pytest.mark.parametrize(
+    "res, line",
+    [
+        (mtgo.TrickleResult(busy=True), "another trickle run is in progress"),
+        (mtgo.TrickleResult(paused_until=NOW), "paused until 2026-09-21 12:00 UTC"),
+        (mtgo.TrickleResult(level=3), "as many requests as allowed"),
+        (mtgo.TrickleResult(level=3, budget=3, raised=True, stopped="no answer"), "up to 3 pages a run"),
+    ],
+)
+def test_the_trickle_command_says_why_it_asked_little(monkeypatch, res, line):
+    monkeypatch.setattr(mtgo, "run_trickle", lambda tracker: res)
+    result = _cli("mtgo", "trickle")
+    assert result.exit_code == 0 and line in result.output
+
+
+def test_the_status_command():
+    _owe(OLD, YOUNG)
+    trickle.save_pace(mtgo.SOURCE, trickle.Pace(level=2, whole_streak=4))
+    mtgo._save_months({"2026-09": _read(10, at=trickle.now())})
+    result = _cli("mtgo", "status")
+    assert result.exit_code == 0
+    for line in (
+        "pace       2 pages a run, up a level after 140 more whole answers",
+        "owed       2 events, 2 due now",
+        "2026-09  1",
+        "2026-08  1",
+        "indexes    read back to 2026-09, still going back",
+    ):
+        assert line in result.output
+
+
+def test_the_forget_command():
+    _owe(OLD)
+    assert _cli("mtgo", "forget", OLD).output == f"forgot {OLD}\n"
+    assert _cli("mtgo", "forget", OLD).exit_code == 1

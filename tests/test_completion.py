@@ -71,7 +71,7 @@ def test_an_unreadable_vault_offers_files(vault):
         ("riffle legal x -f pau", ["pauper", "paupercommander"]),
         ("riffle meta cards --board ", ["all", "main", "side"]),
         ("riffle meta decks -k ", list(mtgo.KINDS)),
-        ("riffle ingest mtgo -f ", [*mtgo.FORMATS, "all"]),
+        ("riffle meta decks -f ", [*mtgo.FORMATS, "all"]),
         ("riffle meta cards -f du", ["duel-commander"]),
     ],
 )

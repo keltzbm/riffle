@@ -65,32 +65,29 @@ from their lists.
 ## Metagame (MTGO)
 
 ```bash
-riffle ingest mtgo -f modern --days 7          # league 5-0s, challenges, showcases from mtgo.com
-riffle ingest mtgo -f pauper -k league          # just leagues; -k repeats
+riffle schedule trickle                          # fetch mtgo.com's decklists a few pages at a time, all day
+riffle mtgo status                               # pace, pauses, recent requests, what's still owed
 riffle meta cards -f modern --days 14           # most-played cards: share, avg copies, main/side
 riffle meta decks -f modern --card "Psychic Frog"
 riffle meta show <event-slug> <player> -o ~/Downloads/list.txt
 riffle own ~/Downloads/list.txt                  # what that list costs you
 ```
 
-Events are stored once each under `~/.local/share/riffle/mtgo/`; re-running only
-fetches new ones.
+mtgo.com throttles by request rate, answering with stripped pages rather than
+errors, so Riffle never asks it for much at once. The trickle job runs
+`riffle mtgo trickle` every 10 minutes: 1 to 3 pages a run, never more than 5
+in any 15 minutes. It reads this month's index hourly and sweeps back through
+every earlier month, and keeps every event an index lists on an owed list until
+it's stored. An empty page is checked against a stored event first; if that
+comes back stripped too, the job pauses for hours and comes back slower, then
+speeds up again while pages come back whole. Nothing is given up;
+`riffle mtgo forget <slug>` drops an event by hand.
+
+Events are stored once each under `~/.local/share/riffle/mtgo/`, with each
+page's whole data object gzipped in `mtgo/raw/`. Every request is logged in
+`~/.local/share/riffle/mtgo-requests.jsonl`.
 
 A deck is named by its note's slug, or by a path to any `.md` or `.txt` list.
-
-mtgo.com throttles long runs by answering with stripped pages rather than
-errors. Riffle tells those apart by age, pauses (30 s, then 60 s and 120 s)
-when bad answers come in a row, and stops after that; the next run picks up
-where it left off. For a long backfill, `--max-events` spreads the work over
-several runs, newest first:
-
-```zsh
-riffle ingest mtgo -f all --days 365 --max-events 300
-```
-
-An old event that stays empty on three runs is skipped from then on;
-`~/.local/share/riffle/mtgo-misses.json` lists them, and deleting it retries
-them.
 
 ## Price history (every game)
 
@@ -153,6 +150,7 @@ riffle watch                       # resync on every deck-note save or new ManaB
 riffle schedule set 07:00 19:30    # launchd job at these 24-hour times; replaces any old schedule
 riffle schedule                    # times, next run, last result, log path
 riffle schedule remove
+riffle schedule trickle            # the MTGO trickle, every 10 minutes; --remove to stop it
 ```
 
 The scheduled job runs as the Mac wakes, so `riffle sync` first waits up to two
