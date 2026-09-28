@@ -2,12 +2,13 @@
 each day's prices.
 
 Published daily; carries oracle ids, legalities, and prices — including
-MTGO tix (Scryfall sources those from Cardhoarder). One API request for the
-index, then one file from *.scryfall.io, which has no rate limit — at most
-once a day, since prices only change daily — and then one more API request for
-the set list (<data_dir>/scryfall/sets.json: parent sets and release dates,
-which card objects lack). Headers and 429 handling: riffle.net. The card
-catalog in Postgres is loaded from these files by riffle.ingest.scryfall_catalog.
+MTGO tix (Scryfall sources those from Cardhoarder). Every refresh asks the
+bulk index, one API request, when Scryfall last published the file; only a
+file for a newer day than the one kept is downloaded, from *.scryfall.io,
+which has no rate limit, and then one more API request fetches the set list
+(<data_dir>/scryfall/sets.json: parent sets and release dates, which card
+objects lack). Headers and 429 handling: riffle.net. The card catalog in
+Postgres is loaded from these files by riffle.ingest.scryfall_catalog.
 
 Since 2026-07-20 bulk files are gzipped JSON Lines only, linked from
 `jsonl_download_uri`. The old `download_uri` (one big JSON array) is gone;
@@ -82,14 +83,31 @@ def remote_info(kind: str = "default_cards") -> dict:
     raise RuntimeError(f"no bulk file of type {kind}")
 
 
-def is_stale(max_age_hours: float = 24) -> bool:
-    """Whether the bulk file is missing or was downloaded more than max_age_hours ago."""
-    if not meta_path().exists() or bulk_file() is None:
-        return True
-    downloaded = json.loads(meta_path().read_text()).get("downloaded_at")
-    if not downloaded:
-        return True
-    return (datetime.now(UTC) - datetime.fromisoformat(downloaded)).total_seconds() > max_age_hours * 3600
+def _published(stamp: object) -> datetime | None:
+    """A bulk file's updated_at as a time, or None if it isn't one."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        published = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return published if published.tzinfo else published.replace(tzinfo=UTC)
+
+
+def is_current(info: dict) -> bool:
+    """Whether the kept bulk file is for the same day as the one Scryfall publishes now, or a
+    later one. Days, not times: the price history keeps one file a day, so a second file the
+    same day would add nothing to it. Going by the download's age instead skipped every other
+    day for a job run at the same time each day, which starts a few seconds short of 24 hours
+    after the last download finished."""
+    if bulk_file() is None or not meta_path().exists():
+        return False
+    try:
+        kept = _published(json.loads(meta_path().read_text()).get("updated_at"))
+    except (OSError, ValueError, AttributeError):
+        return False
+    remote = _published(info.get("updated_at"))
+    return kept is not None and remote is not None and kept.date() >= remote.date()
 
 
 def download_url(info: dict) -> tuple[str, str]:
@@ -101,9 +119,12 @@ def download_url(info: dict) -> tuple[str, str]:
     raise RuntimeError(f"Scryfall bulk entry has no download link: {sorted(info)}")
 
 
-def download(dest_dir: Path | None = None, progress: net.Progress | None = None) -> tuple[Path, dict]:
+def download(
+    dest_dir: Path | None = None, progress: net.Progress | None = None, info: dict | None = None
+) -> tuple[Path, dict]:
+    """The bulk file info names (the bulk index's entry, asked for when not given)."""
     dest_dir = dest_dir or data_dir()
-    info = remote_info()
+    info = info or remote_info()
     url, filename = download_url(info)
     dest = dest_dir / filename
     fresh = dest_dir / (filename + ".new")  # checked before it replaces the last good file
@@ -121,17 +142,20 @@ def download(dest_dir: Path | None = None, progress: net.Progress | None = None)
     return dest, info
 
 
-def refresh(force: bool = False, max_age_hours: float = 24, tracker: Tracker = SILENT) -> None:
-    """Download the bulk file, unless the last one is recent; then the set list. A failure is
-    reported on its step, never raised: the last download stays, and a sync carries on with it."""
-    if not force and not is_stale(max_age_hours):
-        tracker.step("Scryfall bulk data").ok("current")
-        if not sets_path().exists():
-            refresh_sets(tracker)
-        return
+def refresh(force: bool = False, tracker: Tracker = SILENT) -> None:
+    """Download the bulk file when Scryfall has published one for a newer day than the one
+    kept (see is_current), then the set list; force downloads it anyway. A failure is reported
+    on its step, never raised: the last download stays, and a sync carries on with it."""
     step = tracker.step("Scryfall bulk data", unit="bytes")
     try:
-        path, info = download(progress=step.update)
+        info = remote_info()
+        if not force and is_current(info):
+            published = _published(info.get("updated_at"))
+            step.ok(f"current, Scryfall {published:%Y-%m-%d}" if published else "current")
+            if not sets_path().exists():
+                refresh_sets(tracker)
+            return
+        path, info = download(progress=step.update, info=info)
     except Exception as e:
         step.fail(str(e) or type(e).__name__)
         return
@@ -181,10 +205,9 @@ def cards(bulk: Path) -> Iterator[dict]:
 def bulk_updated_at(bulk: Path) -> datetime:
     """When Scryfall published the bulk file: its updated_at, else the file's own time."""
     if meta_path().exists():
-        stamp = json.loads(meta_path().read_text()).get("updated_at")
-        if stamp:
-            published = datetime.fromisoformat(stamp)
-            return published if published.tzinfo else published.replace(tzinfo=UTC)
+        published = _published(json.loads(meta_path().read_text()).get("updated_at"))
+        if published:
+            return published
     return datetime.fromtimestamp(bulk.stat().st_mtime, UTC)
 
 

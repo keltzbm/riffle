@@ -20,7 +20,7 @@ Postgres holds the card catalog, so set it up first ([Database](#database-postgr
 
 ```bash
 riffle db up && riffle db upgrade
-riffle ingest scryfall                          # ~500 MB download, once a day at most
+riffle ingest scryfall                          # ~500 MB download, once per day Scryfall publishes
 riffle ingest manabox ~/Downloads/collection.csv
 riffle sync --offline
 ```

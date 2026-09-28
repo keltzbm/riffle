@@ -143,7 +143,7 @@ def _refresh(tracker: Tracker, force: bool = False) -> None:
 
 @ingest_app.command("scryfall")
 def ingest_scryfall(
-    force: bool = typer.Option(False, help="Download and load even if under a day old"),
+    force: bool = typer.Option(False, help="Download and load even if Riffle has Scryfall's newest day"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
 ) -> None:
     """Download Scryfall's bulk card data and set list, and load them."""
