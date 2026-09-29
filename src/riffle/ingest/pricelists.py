@@ -254,8 +254,10 @@ def _set_aside(fresh: Path, plist: PriceList, at: datetime) -> Path:
 
 
 def _size(size: int) -> str:
-    """A size to read at a glance: a difference is often a few kilobytes."""
-    return f"{size / 1e6:,.1f} MB" if size >= 1e6 else f"{size / 1e3:,.0f} KB"
+    """A size to read at a glance: a difference is often a few kilobytes, or bytes."""
+    if size >= 1e6:
+        return f"{size / 1e6:,.1f} MB"
+    return f"{size / 1e3:,.0f} KB" if size >= 1e3 else f"{size:,} bytes"
 
 
 def _log(store: str, entry: dict) -> None:

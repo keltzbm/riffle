@@ -3,6 +3,7 @@ and kept whole or as a difference (riffle.runs), with every check logged."""
 
 import gzip
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -348,6 +349,7 @@ def test_no_answer_skips_the_store_s_other_lists(data_dir):
 
 def test_sizes_under_a_megabyte_are_in_kilobytes():
     assert pricelists._size(49_983) == "50 KB" and pricelists._size(51_698_006) == "51.7 MB"
+    assert pricelists._size(312) == "312 bytes"
 
 
 def test_every_store_list_has_its_own_folder():
@@ -403,7 +405,8 @@ def test_riffle_watch_exits_1_when_a_list_fails(cli, monkeypatch):
 
 def test_riffle_watch_names_the_stores_when_given_another(cli):
     result = cli("prices", "watch", "tcgplayer")
-    said = " ".join(result.output.replace("│", " ").split())  # the error box wraps at 80 columns
+    # CI's terminal gets colour codes, and the error box wraps at 80 columns: read the words alone
+    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", result.output).replace("│", " ").split())
     assert (
         result.exit_code == 2
         and "'tcgplayer' has no lists to watch; the stores: cardkingdom, manapool" in said
