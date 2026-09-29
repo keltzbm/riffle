@@ -6,7 +6,7 @@ import json
 import lzma
 import os
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from typer.testing import CliRunner
@@ -332,18 +332,44 @@ def test_watched_lists_kept_as_logged_are_all_right(data, monkeypatch):
     assert len(three_lists()) == 3
     rep = by_source()["Card Kingdom"]
     assert rep.files == 3 and rep.problems == [] and rep.summary() == "3 lists over 1 day: all right"
-    assert rep.notes == ["singles: 3 kept in 1 run, one every 3h 00m lately"]
+    assert rep.notes == ["singles: 3 kept in 1 run; lateness judged from 14 gaps, 2 so far"]
 
 
-def test_a_list_three_usual_gaps_past_its_last_is_late(data, monkeypatch):
-    three_lists()
-    watched("2026-09-27 22:08:38", datetime(2026, 9, 28, 5, 40, tzinfo=UTC), "0.47")
-    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 15, 0, tzinfo=UTC))
+def every_three_hours(count: int, longer: dict[int, int] | None = None) -> datetime:
+    """Card Kingdom's singles every 3 hours, from 2026-09-25 01:08:38 Pacific, the gap before list n
+    longer[n] hours instead. When the last was made."""
+    made = datetime(2026, 9, 25, 1, 8, 38, tzinfo=pricelists.PACIFIC)
+    for n in range(count):
+        if n:
+            made += timedelta(hours=(longer or {}).get(n, 3))
+        watched(f"{made:%Y-%m-%d %H:%M:%S}", made + timedelta(minutes=30), f"0.{40 + n}")
+    return made
+
+
+def singles_note(at: datetime) -> str:
+    folder = pricelists.lists_dir(pricelists.CARD_KINGDOM[0])
+    n = len(runs.runs(folder))
     (note,) = by_source()["Card Kingdom"].notes
-    assert note == (
-        "singles: 4 kept in 1 run, one every 3h 00m lately; "
-        "late: the last was made 2026-09-28 05:08 UTC, 9h 51m ago"
+    return note.replace(f"in {n} run{'s' * (n != 1)}", "in N runs")
+
+
+def test_a_list_is_late_past_its_margin_times_its_longest_gap_in_30_days(data, monkeypatch):
+    last = every_three_hours(16)  # 15 gaps of 3 hours: the bar is 1.25 x 3 h = 3 h 45 m
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=3, minutes=44))
+    assert singles_note(last) == "singles: 16 kept in N runs, one every 3h 00m lately"
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=4))
+    assert singles_note(last) == (
+        "singles: 16 kept in N runs, one every 3h 00m lately; late: the last was made 2026-09-27 05:08 UTC, "
+        "4h 00m ago, past 1.25 × its longest gap in 30 days (3h 45m)"
     )
+
+
+def test_a_list_that_often_runs_past_its_longest_gap_learns_a_wider_margin(data, monkeypatch):
+    last = every_three_hours(18, longer={15: 5, 17: 7})  # 5 h is 1.67 x the longest before it, 7 h 1.4 x
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=9))
+    assert singles_note(last) == (
+        "singles: 18 kept in N runs, one every 3h 00m lately, its margin 1.40 from its own gaps"
+    )  # 9 h is under 1.40 x 7 h: an irregular list, not a late one
 
 
 def test_a_kept_file_changed_or_missing_is_named(data):
