@@ -14,9 +14,13 @@ header of a file Riffle gzipped, the file's own time otherwise). `riffle check` 
     Cardmarket                each guide kept a day under the day of its createdAt, and each kept
                               since in its runs as its log says; every guide made before its fetch,
                               and each game's lateness (riffle.lateness)
-    MTGJSON                   each file named by the date in its meta, no later than its fetch
+    MTGJSON                   each file kept a day named by the date in its meta, no later than
+                              its fetch; each build kept since in its runs as its log says, made
+                              before its fetch; the files set aside counted; its lateness
     GoatBots                  each day's zip holds that day's price file, no later than its fetch;
-                              each whole year's archive runs to Dec 31
+                              each price file kept since in its runs as its log says, made before
+                              its fetch; the zips set aside counted; its lateness; each whole
+                              year's archive runs to Dec 31
     tcgcsv                    each day's last-updated.txt is that day's, from before its fetch, and
                               no set under it from a later refresh (by its Last-Modified); each game
                               kept in its runs as its kept.json says. Games not finished are noted:
@@ -227,19 +231,35 @@ def cardmarket_guides() -> Report:
         if made.date().isoformat() != path.parent.name:
             rep.problems.append(f"{_rel(path)}: made on {made.date()}, kept under {path.parent.name}")
         _made_late(rep, path, made, pricelists.fetched(path))
-    for entry in _kept_entries(rep, cardmarket.STORE):
-        made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
-        if made is None or got is None or "file" not in entry:
-            log = _rel(watching.log_path(cardmarket.STORE))
-            rep.problems.append(f"{log}: an entry it can't read: {entry}")
-            continue
-        rep.files += 1
-        rep.days.add(made.date().isoformat())
-        _hashed(rep, entry)
-        _made_late(rep, data_dir() / entry["file"], made, got)
+    _logged(rep, cardmarket.STORE, lambda entry, made: made.date())
     games = [*cardmarket.GAMES, *cardmarket.OTHERS]
     _lateness(rep, {game: cardmarket.made(game) for game in games}, "guide")
     return rep
+
+
+def _logged(rep: Report, store: str, day: Callable[[dict, datetime], date | None]) -> None:
+    """Each list a store's log says it kept: its files as kept, made before its fetch, and its
+    day, which day gives from the entry and when the list was made."""
+    for entry in _kept_entries(rep, store):
+        made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
+        when = None if made is None else day(entry, made)
+        if made is None or got is None or when is None or "file" not in entry:
+            rep.problems.append(f"{_rel(watching.log_path(store))}: an entry it can't read: {entry}")
+            continue
+        rep.files += 1
+        rep.days.add(when.isoformat())
+        _hashed(rep, entry)
+        _made_late(rep, data_dir() / entry["file"], made, got)
+
+
+def _one_list(rep: Report, store: str, name: str, folder: Path) -> None:
+    """A store watched for one list (riffle.watching.one): each kept under the day its log
+    names, the files set aside, and whether the list is late."""
+    _logged(rep, store, lambda entry, made: _day(str(entry.get("day", ""))))
+    aside = [path for path in (data_dir() / store / "aside").glob("*") if path.is_file()]
+    if aside:
+        rep.notes.append(f"{len(aside)} set aside in {store}/aside, not kept as any list")
+    _lateness(rep, {name: watching.made(folder)}, "list")
 
 
 def _lateness(rep: Report, lists: dict[str, list[datetime]], what: str) -> None:
@@ -296,6 +316,7 @@ def mtgjson_files() -> Report:
                 rep.problems.append(
                     f"{_rel(path)}: dated after it was fetched, {times.shown(_file_time(path))}"
                 )
+    _one_list(rep, mtgjson.STORE, mtgjson.LIST, mtgjson.lists_dir())
     return rep
 
 
@@ -326,6 +347,7 @@ def goatbots_days() -> Report:
             continue
         if last != date(year, 12, 31):
             rep.problems.append(f"{_rel(path)}: runs to {last or 'no day of the year'}, short of Dec 31")
+    _one_list(rep, goatbots.STORE, goatbots.LIST, goatbots.lists_dir())
     return rep
 
 

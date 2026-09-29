@@ -5,6 +5,7 @@ import http.client
 import io
 import socket
 import urllib.error
+from datetime import UTC, datetime
 
 import pytest
 
@@ -336,6 +337,31 @@ def test_a_new_list_sent_plain_is_kept_as_sent(server, tmp_path):
     )
     assert got == net.Fetched("new", LIST[: net.HEAD], None, len(LIST))
     assert (tmp_path / "list").read_bytes() == LIST and progress == [net.HEAD, len(LIST)]
+
+
+def test_a_list_found_carries_its_last_modified_in_utc(server, tmp_path):
+    stamp = {"Last-Modified": "Tue, 29 Sep 2026 06:12:38 GMT"}
+    server["answers"] = [Answer(LIST, stamp), Answer(LIST, stamp)]
+    new = net.fetch_new(URL, tmp_path / "list", never_kept)
+    known = net.fetch_new(URL, tmp_path / "other", lambda head: True)
+    at = datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)
+    assert new is not None and new.modified == at
+    assert known is not None and known.modified == at
+
+
+@pytest.mark.parametrize(
+    ("value", "at"),
+    [
+        ("Tue, 29 Sep 2026 06:12:38 GMT", datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)),
+        ("Tue, 29 Sep 2026 08:12:38 +0200", datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)),
+        ("Tue, 29 Sep 2026 06:12:38 -0000", datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)),
+        ("yesterday", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_an_http_date_is_read_in_utc_or_not_at_all(value, at):
+    assert net.http_time(value) == at
 
 
 def test_a_gzip_list_that_never_ends_is_cut_off(server, tmp_path):

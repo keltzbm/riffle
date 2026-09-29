@@ -1,24 +1,29 @@
-"""What every store's watch shares: its lock, its log, the ETags it last kept, and how a list
-kept in a run (riffle.runs) is logged and said.
+"""What every store's watch shares: its lock, its log, the ETags it last kept, how a list
+kept in a run (riffle.runs) is logged and said, and the watch of a store with one list.
 
     <data_dir>/<store>/watch.lock          one run at a time a store
     <data_dir>/<store>/watch.jsonl         every check: when, which list, what came; for a list
                                            kept, its stamp, file, size, and the SHA-256 of the
                                            list and of the file, which riffle.ingest.checks checks
     <data_dir>/<store>/watch-etags.json    the ETag of each list last kept
+    <data_dir>/<store>/aside/              what a watch fetched and couldn't keep as a list,
+                                           named by when it was fetched
 """
 
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import locks, runs
+from riffle import cadence, lateness, locks, net, runs, times
 from riffle.config import data_dir
+from riffle.progress import Step, Tracker
 
-STORES = ("cardkingdom", "manapool", "cardmarket", "tcgcsv")  # each watched by `riffle watch <store>`
+# each watched by `riffle watch <store>`
+STORES = ("cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots")
 
 
 @dataclass
@@ -144,3 +149,105 @@ def record(kept: runs.Kept) -> dict:
         "sha256": kept.sha256,
         "file_sha256": kept.file_sha256,
     }
+
+
+def served(path: Path, got: net.Fetched) -> dict:
+    """The file a source served, as its log entry says it: its SHA-256, size and ETag."""
+    return {"served_sha256": runs.file_sha256(path), "served_size": path.stat().st_size, "etag": got.etag}
+
+
+def days(store: str, name: str) -> list[date]:
+    """The days of one list's kept lists, as the store's log says them, oldest first."""
+    found = set()
+    for entry in entries(store):
+        if entry.get("list") == name and entry.get("result") == "kept":
+            try:
+                found.add(date.fromisoformat(str(entry.get("day"))))
+            except ValueError:
+                continue
+    return sorted(found)
+
+
+def aside(store: str, stem: str, suffix: str, at: datetime) -> Path:
+    """A free name in the store's aside folder for a file fetched at `at`: stem, the UTC time,
+    then suffix."""
+    when = f"{stem}-{at.astimezone(UTC):%Y-%m-%dT%H%M%SZ}"
+    folder = data_dir() / store / "aside"
+    dest, n = folder / f"{when}{suffix}", 1
+    while dest.exists():
+        n += 1
+        dest = folder / f"{when}-{n}{suffix}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def set_aside(store: str, fresh: Path, name: str, at: datetime) -> str:
+    """Keep a file as served in the store's aside folder, named by name and when it was
+    fetched: AllPricesToday.json.xz becomes AllPricesToday-<UTC time>.json.xz. Where it went,
+    relative to the data folder."""
+    stem, dot, rest = name.partition(".")
+    dest = aside(store, stem, dot + rest, at)
+    fresh.replace(dest)
+    return dest.relative_to(data_dir()).as_posix()
+
+
+def waiting(plan: cadence.Plan, what: str) -> str:
+    """When a list not due is asked next, and when the next is expected, once that's learned."""
+    said = f"next asked {times.shown(plan.next)}"
+    if plan.expected is None:
+        learned = f"learned from {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
+        return f"{said}; its next {what}'s time is {learned}"
+    return f"{said}; its next {what} expected {times.shown(plan.expected)}"
+
+
+def made(folder: Path) -> list[datetime]:
+    """When each list kept in folder was made, oldest first."""
+    return sorted(filter(None, map(runs.parse, runs.kept(folder))))
+
+
+Ask = Callable[[dict[str, str], datetime, Step], dict]  # (ETags, now, step) -> the check's log entry
+
+
+def one(
+    store: str,
+    name: str,
+    label: str,
+    ask: Ask,
+    folder: Path,
+    tracker: Tracker,
+    clock: Callable[[], datetime] = times.now,
+    always: bool = False,
+) -> Watch:
+    """The watch of a store with one list, kept in folder: ask for it when riffle.cadence says
+    it's due (from when its lists kept were made and its checks), or always (the sync), and log
+    the check. ask gets the ETags, the time and the step, ends the step, and returns the log
+    entry's result; one that fails raises, and the step fails. A run that finds the store's
+    lock held asks nothing."""
+    res = Watch()
+    with held(store) as mine:
+        if not mine:
+            res.busy = True
+            tracker.step(label).ok("another run is asking for it")
+            return res
+        tags, found, now = load_tags(store), entries(store), clock()
+        if not always:
+            busy = longest(found, name, now, lateness.WINDOW)
+            plan = cadence.plan(made(folder), checks(found, name), now, busy)
+            if not plan.ask:
+                res.waiting.append(label)
+                tracker.step(label).ok(waiting(plan, "list"))
+                return res
+        step = tracker.step(label, unit="bytes")
+        entry: dict = {"at": at(now), "list": name}
+        started = time.monotonic()
+        try:
+            entry |= ask(tags, now, step)
+        except (net.FetchError, OSError) as e:
+            res.failed.append((label, str(e)))
+            step.fail(str(e))
+            entry |= {"result": "failed", "why": str(e)}
+        else:
+            {"kept": res.kept, "empty": res.empty}.get(entry["result"], res.same).append(label)
+        log(store, entry | {"seconds": round(time.monotonic() - started, 1)})
+        save_tags(store, tags)
+    return res
