@@ -239,16 +239,11 @@ def resolve(cats: list[dict], games: dict[str, str] = GAMES) -> dict[str, int]:
     return {code: by_name[name.casefold()] for code, name in games.items() if name.casefold() in by_name}
 
 
-def _slug(name: str) -> str:
-    """A category's name as a folder name: "Pokemon Japan" is pokemon-japan."""
-    return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
-
-
 def kept(cats: list[dict]) -> dict[str, int]:
     """Game code -> categoryId for every category in tcgcsv's list but SKIPPED, each code
     the category's name as a slug."""
     return {
-        _slug(str(c.get("name", ""))) or str(c["categoryId"]): int(c["categoryId"])
+        watching.slug(str(c.get("name", ""))) or str(c["categoryId"]): int(c["categoryId"])
         for c in cats
         if "categoryId" in c and int(c["categoryId"]) not in SKIPPED
     }

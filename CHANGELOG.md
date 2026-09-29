@@ -7,6 +7,15 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Cardmarket games are learned, not only listed: once a Cardmarket day (the first run after a guide made since
+  the last look), `riffle watch cardmarket` and the sync ask for the guide of every game ID not known, from 1 to
+  five past the highest known, by its first bytes (`Cardmarket new games: no new game; asked 4, 14, 25-29`).
+  Each ID whose guide answers is a game, named from the first `categoryName` in its singles product list
+  (`Cyberpunk Single` is `cyberpunk`, `game-<id>` with a warning if the list gives none), kept in
+  `cardmarket/games.json`, and asked for from then on like the rest, its first guide in the same run. A look
+  Cardmarket doesn't answer saves nothing and warns, and the next run looks again; a `games.json` that can't be
+  read is set aside in `cardmarket/aside/` and its games learned again. Each look is logged in
+  `cardmarket/watch.jsonl`, and `riffle check` judges the learned games' lateness too.
 - MTGJSON and GoatBots are watched too: `riffle watch mtgjson` and `riffle watch goatbots`, each a job of its own
   under `riffle schedule watch` (six watch jobs), asked when its next list is due, with the ETag of the last file
   kept. MTGJSON's `AllPricesToday.json.xz` is checked against its `.sha256`, unpacked whole, and kept in runs
@@ -257,6 +266,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- Cardmarket's Cyberpunk (game 23, from 2026-08-27) and Gundam (24, from 2026-09-01) guides were never kept:
+  Riffle's Cardmarket games were a list written before Cardmarket added them. The first look finds both.
 - A list under 512 bytes couldn't be kept as a difference: zstd refused the window asked for. A difference's window
   is now at least zstd's smallest, 1 KiB.
 - A list kept already under its stamp, by a run cut off before it said so, is found and not kept a second time;

@@ -11,6 +11,7 @@ kept in a run (riffle.runs) is logged and said, and the watch of a store with on
 """
 
 import json
+import re
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -121,6 +122,11 @@ def save_tags(store: str, tags: dict[str, str]) -> None:
     part = path.with_name(path.name + ".part")
     part.write_text(json.dumps(tags, indent=1, sort_keys=True), encoding="utf-8")
     part.replace(path)
+
+
+def slug(name: str) -> str:
+    """A list's name as a folder name: "Pokemon Japan" is pokemon-japan."""
+    return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
 
 
 def size(n: int) -> str:
