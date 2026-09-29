@@ -167,6 +167,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- A watch asks for a list from when it goes online, not from when it's made: each list's lead is measured to the
+  earliest it could have been online, the last check that didn't get it, and goes below zero when its lists go
+  online after they're expected. MTGJSON makes each build about 06:12 UTC and serves it after 13:00, so from its
+  18th build (about 2026-10-16) its watch waits through the morning instead of asking at every firing until the
+  build is up, about 95 requests a day: `next asked 10:32 UTC; its next list expected 06:12 UTC, online from
+  about 12:57 UTC`. tcgcsv's and Cardmarket's lists go online seconds after they're made, so theirs stay as they
+  were. A list that goes online sooner than any before is found when the window opens or at a far check, and
+  nothing is lost; a list with no checks logged counts as online when made.
 - Every MTGJSON build is kept, even for a day a kept 90-day file covers: the two disagree about the same day in some
   cards. The sync runs MTGJSON's and GoatBots' watches once each, then keeps what isn't a daily list: MTGJSON's
   90-day file when a day is missing (counting the days kept in runs), and GoatBots' card definitions (after a new

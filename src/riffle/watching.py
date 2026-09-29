@@ -92,6 +92,27 @@ def checks(found: list[dict], name: str) -> list[tuple[datetime, bool]]:
     return out
 
 
+FOUND = ("kept", "new")  # a check that got a new list: tcgcsv's says "new"
+
+
+def online(found: list[dict], name: str) -> dict[datetime, datetime]:
+    """When each list a check of it got could first have been online, by when it was made: the
+    last check before that got nothing new, or its made if that came later. A failed check tells
+    nothing, so it's passed over."""
+    out: dict[datetime, datetime] = {}
+    last: datetime | None = None  # the last check that got nothing new
+    for entry in found:
+        when = runs.parse(str(entry.get("at", "")))
+        result = entry.get("result")
+        if entry.get("list") != name or when is None or result in (None, "failed"):
+            continue
+        made = runs.parse(str(entry.get("made", "")))
+        if result in FOUND and made is not None and made not in out:
+            out[made] = made if last is None else max(made, last)
+        last = when
+    return out
+
+
 def longest(found: list[dict], name: str, now: datetime, within: timedelta) -> timedelta:
     """The longest fetch of one list logged in the `within` before now."""
     most = 0.0
@@ -198,12 +219,16 @@ def set_aside(store: str, fresh: Path, name: str, at: datetime) -> str:
 
 
 def waiting(plan: cadence.Plan, what: str) -> str:
-    """When a list not due is asked next, and when the next is expected, once that's learned."""
+    """When a list not due is asked next, and when the next is expected, once that's learned;
+    and when it's online, if it's learned to go online after that."""
     said = f"next asked {times.shown(plan.next)}"
     if plan.expected is None:
         learned = f"learned from {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
         return f"{said}; its next {what}'s time is {learned}"
-    return f"{said}; its next {what} expected {times.shown(plan.expected)}"
+    said = f"{said}; its next {what} expected {times.shown(plan.expected)}"
+    if plan.opens is not None and plan.opens > plan.expected:
+        said = f"{said}, online from about {times.shown(plan.opens)}"
+    return said
 
 
 def made(folder: Path) -> list[datetime]:
@@ -238,7 +263,7 @@ def one(
         tags, found, now = load_tags(store), entries(store), clock()
         if not always:
             busy = longest(found, name, now, lateness.WINDOW)
-            plan = cadence.plan(made(folder), checks(found, name), now, busy)
+            plan = cadence.plan(made(folder), checks(found, name), now, busy, online(found, name))
             if not plan.ask:
                 res.waiting.append(label)
                 tracker.step(label).ok(waiting(plan, "list"))

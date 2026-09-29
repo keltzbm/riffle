@@ -368,6 +368,34 @@ def test_the_watch_asks_only_when_the_next_build_is_due(data_dir, tracker):
     assert source.asked == [f"{B}/{mtgjson.TODAY}"]  # due: a 304
 
 
+def test_a_build_is_asked_from_when_it_goes_online_not_when_it_s_made(data_dir, tracker):
+    folder = data_dir / "mtgjson" / "lists" / "prices-today"
+    made = [datetime(2026, 9, 29, 6, 12, tzinfo=UTC) + timedelta(days=i) for i in range(17)]
+    for m in made:  # each build not served 6 h 45 min after it was made, and got 5 minutes later
+        stamp = runs.name(m)
+        (folder / stamp).mkdir(parents=True)
+        (folder / stamp / f"{stamp}{runs.BASE}").touch()
+        miss, got = (
+            runs.name(m + timedelta(hours=6, minutes=45)),
+            runs.name(m + timedelta(hours=6, minutes=50)),
+        )
+        watching.log("mtgjson", {"at": miss, "list": "prices-today", "result": "unchanged"})
+        watching.log("mtgjson", {"at": got, "list": "prices-today", "result": "kept", "made": stamp})
+    now = made[-1] + timedelta(days=1, hours=1)  # 07:12 UTC: the next build made, not yet online
+    watching.log(
+        "mtgjson",
+        {"at": runs.name(now - timedelta(minutes=5)), "list": "prices-today", "result": "unchanged"},
+    )
+    source = Source(answers())
+    res = watch(source, tracker, now=now, always=False)
+    assert source.asked == [] and res.waiting == ["MTGJSON prices today"]
+    assert tracker.outcomes()["MTGJSON prices today"] == (
+        "ok",
+        "next asked 2026-10-16 10:32 UTC; its next list expected 2026-10-16 06:12 UTC, "
+        "online from about 2026-10-16 12:57 UTC",
+    )
+
+
 def test_a_90_day_file_already_kept_is_left_alone(data_dir, tracker):
     run(Source(answers()))
     later = DAY + timedelta(40)  # missing days, and a refill due, but the file served is the old one
