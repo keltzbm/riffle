@@ -520,6 +520,22 @@ def test_each_cardmarket_game_is_judged_for_lateness_alone(data, monkeypatch):
     ]
 
 
+def test_a_cardmarket_game_learned_is_judged_too(data, monkeypatch):
+    last = datetime(2026, 9, 28, 0, 47, 45, tzinfo=UTC)
+    learned = {"cyberpunk": {"id": 23, "category": "Cyberpunk Single", "found": "2026-09-01T010000Z"}}
+    games = data / "cardmarket" / "games.json"
+    games.parent.mkdir(parents=True)
+    games.write_text(json.dumps({"looked": "2026-09-28T010000Z", "games": learned}))
+    cardmarket_guides(("mtg",), 16, last)
+    cardmarket_guides(("cyberpunk",), 16, last - timedelta(days=2))
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
+    assert by_source()["Cardmarket"].notes == [
+        "cyberpunk: late: the last was made 2026-09-26 00:47 UTC, 49h 00m ago,"
+        " past 1.25 × its longest gap in 30 days (30h 00m)",
+        "2 guides judged for lateness",
+    ]
+
+
 def one_list(store: str, name: str, folder, days: int, last: datetime, body) -> None:
     """A list every day, the last made at last, kept in its runs and logged with its day."""
     for k in reversed(range(days)):

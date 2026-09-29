@@ -75,7 +75,13 @@ def data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def few(monkeypatch):
+def no_look(monkeypatch):
+    """No looking for new games: the tests of looking are below."""
+    monkeypatch.setattr(cardmarket, "_looked", lambda fetch, tracker, now: {})
+
+
+@pytest.fixture
+def few(monkeypatch, no_look):
     """Just Magic and Flesh and Blood played, and two other games."""
     monkeypatch.setattr(cardmarket, "GAMES", {"mtg": 1, "fab": 16})
     monkeypatch.setattr(cardmarket, "OTHERS", {"pokemon": 6, "yugioh": 3})
@@ -183,7 +189,7 @@ def test_a_guide_not_due_is_not_asked_and_they_share_a_line(data_dir, few, track
     assert len(source.asked) == 4
 
 
-def test_a_guide_learned_daily_is_asked_from_its_expected_time(data_dir, monkeypatch, tracker):
+def test_a_guide_learned_daily_is_asked_from_its_expected_time(data_dir, monkeypatch, tracker, no_look):
     monkeypatch.setattr(cardmarket, "GAMES", {"mtg": 1})
     monkeypatch.setattr(cardmarket, "OTHERS", {})
     first = datetime(2026, 9, 1, 0, 45, tzinfo=UTC)
@@ -334,9 +340,10 @@ def test_the_games_played_come_first_then_the_rest_by_name():
     assert list(cardmarket.OTHERS) == sorted(cardmarket.OTHERS)
     ids = [*cardmarket.GAMES.values(), *cardmarket.OTHERS.values()]
     assert len(ids) == len(set(ids)) == 21  # 20 games and the accessories
+    assert list(cardmarket.games()) == [*cardmarket.GAMES, *cardmarket.OTHERS]  # none learned yet
 
 
-def test_accessories_are_kept_like_a_game(data_dir, monkeypatch, tracker):
+def test_accessories_are_kept_like_a_game(data_dir, monkeypatch, tracker, no_look):
     monkeypatch.setattr(cardmarket, "GAMES", {"mtg": 1})
     monkeypatch.setattr(cardmarket, "OTHERS", {"accessories": "accessories"})
     res = run(Source({url(1): guide(), url("accessories"): guide()}), tracker)
@@ -354,3 +361,168 @@ def test_a_guide_sent_without_an_etag_is_asked_whole_next_time_and_known_by_its_
     res = run(source, now=NOW + timedelta(hours=1))
     assert len(res.same) == 4 and all(tag is None for _, tag in source.asked)
     assert set(json.loads((data_dir / "watch-etags.json").read_text())) == {"mtg", "fab", "pokemon", "yugioh"}
+
+
+# ---- looking for games Cardmarket adds ----------------------------------------------------
+
+
+@pytest.fixture
+def two(monkeypatch):
+    """Magic played and Pokémon (3) not: a look asks 2 and 4-8."""
+    monkeypatch.setattr(cardmarket, "GAMES", {"mtg": 1})
+    monkeypatch.setattr(cardmarket, "OTHERS", {"pokemon": 3})
+
+
+def plist(gid: int) -> str:
+    return f"{cardmarket.PRODUCTS}/products_singles_{gid}.json"
+
+
+def products(category: str = "Cyberpunk Single") -> bytes:
+    rows = [{"idProduct": 904772, "name": "Rebecca", "idCategory": 1661, "categoryName": category}]
+    return json.dumps({"version": 1, "createdAt": "2026-09-27T13:28:03+0200", "products": rows}).encode()
+
+
+def added(stamp: str = STAMP, **overrides) -> dict[str, bytes | None | Exception]:
+    """Magic's and Pokémon's guides, and game 5's, one Cardmarket added."""
+    found: dict[str, bytes | None | Exception] = {url(gid): guide(stamp) for gid in (1, 3, 5)}
+    return found | {plist(5): products()} | overrides
+
+
+def saved(data_dir) -> dict:
+    return json.loads((data_dir / "games.json").read_text())
+
+
+def test_a_look_finds_a_game_cardmarket_added_names_it_and_keeps_its_guide(data_dir, two, tracker):
+    source = Source(added())
+    res = run(source, tracker)
+    assert tracker.outcomes()["Cardmarket new games"] == ("ok", "found cyberpunk (5); asked 2, 4-8")
+    assert res.kept == ["Cardmarket mtg", "Cardmarket pokemon", "Cardmarket cyberpunk"] and not res.failed
+    assert source.urls() == [
+        url(1),
+        url(3),
+        url(2),
+        url(4),
+        url(5),
+        plist(5),
+        url(6),
+        url(7),
+        url(8),
+        url(5),
+    ]  # each game ID asked by its first bytes, then the guide found asked for whole
+    assert list(runs.kept(data_dir / "lists" / "cyberpunk")) == ["2026-09-27T004512Z"]
+    at = "2026-09-27T130000Z"
+    assert saved(data_dir) == {
+        "looked": at,
+        "games": {"cyberpunk": {"id": 5, "category": "Cyberpunk Single", "found": at}},
+    }
+    assert cardmarket.games() == {"mtg": 1, "cyberpunk": 5, "pokemon": 3}
+    look = logged(data_dir)[2]
+    assert look | {"seconds": 0} == {
+        "at": at,
+        "list": "new games",
+        "result": "looked",
+        "asked": [2, 4, 5, 6, 7, 8],
+        "found": {"cyberpunk": 5},
+        "seconds": 0,
+    }
+    assert logged(data_dir)[3]["list"] == "cyberpunk" and logged(data_dir)[3]["result"] == "kept"
+    assert not [p for p in data_dir.rglob("*") if p.name.endswith((".new", ".part"))]
+
+
+def test_a_learned_game_is_asked_like_the_rest_and_no_run_looks_again_the_same_day(data_dir, two, tracker):
+    run(Source(added()))
+    source = Source(added())
+    res = run(source, tracker, now=NOW + timedelta(hours=1))
+    assert source.urls() == [url(1), url(5), url(3)]  # the games by name, cyberpunk among them
+    assert len(res.same) == 3 and all(tag is not None for _, tag in source.asked)
+    assert "Cardmarket new games" not in tracker.outcomes()
+
+
+def test_a_new_cardmarket_day_brings_one_look_past_the_games_learned(data_dir, two, tracker):
+    run(Source(added()))
+    later = "2026-09-28T02:44:02+0200"
+    source = Source(added(later))
+    run(source, tracker, now=NOW + timedelta(days=1))
+    assert tracker.outcomes()["Cardmarket new games"] == ("ok", "no new game; asked 2, 4, 6-10")
+    assert saved(data_dir)["looked"] == "2026-09-28T130000Z"
+    assert list(saved(data_dir)["games"]) == ["cyberpunk"]
+    source = Source(added(later))
+    run(source, now=NOW + timedelta(days=1, hours=1))
+    assert source.urls() == [url(1), url(5), url(3)]
+
+
+def test_a_look_cardmarket_doesnt_answer_saves_nothing_and_the_next_run_looks_again(data_dir, two, tracker):
+    no = net.NoAnswer("no answer after 3 tries (timed out)")
+    run(Source(added(**{url(4): no})), tracker)
+    assert tracker.outcomes()["Cardmarket new games"] == (
+        "warn",
+        "not looked: no answer after 3 tries (timed out); looked again next run",
+    )
+    assert not (data_dir / "games.json").exists()
+    assert logged(data_dir)[-1] | {"seconds": 0} == {
+        "at": "2026-09-27T130000Z",
+        "list": "new games",
+        "result": "failed",
+        "why": "no answer after 3 tries (timed out)",
+        "seconds": 0,
+    }
+    res = run(Source(added()), now=NOW + timedelta(hours=1))
+    assert res.kept == ["Cardmarket cyberpunk"] and list(saved(data_dir)["games"]) == ["cyberpunk"]
+
+
+def test_no_run_looks_once_cardmarket_gave_no_answer(data_dir, two, tracker):
+    source = Source(added(**{url(1): net.NoAnswer("no answer after 3 tries (timed out)")}))
+    run(source, tracker)
+    assert source.urls() == [url(1)] and "Cardmarket new games" not in tracker.outcomes()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, b'{"version": 1, "products": []}', b'{"products": [{"categoryName": "Bad \\q Single"}]}'],
+    ids=["no product list", "no category", "not a JSON string"],
+)
+def test_a_game_its_product_list_doesnt_name_is_kept_by_its_id(data_dir, two, tracker, answer):
+    res = run(Source(added(**{plist(5): answer})), tracker)
+    assert tracker.outcomes()["Cardmarket new games"] == (
+        "warn",
+        "found game-5 (5); asked 2, 4-8; game-5: no name in its product list",
+    )
+    assert res.kept[-1] == "Cardmarket game-5"
+    assert saved(data_dir)["games"]["game-5"]["category"] is None
+
+
+def test_a_name_a_game_has_already_gets_its_id_after_it(data_dir, two, tracker):
+    run(Source(added(**{plist(5): products("Pokemon Single")})), tracker)
+    assert tracker.outcomes()["Cardmarket new games"] == ("ok", "found pokemon-5 (5); asked 2, 4-8")
+    assert list(runs.kept(data_dir / "lists" / "pokemon-5")) == ["2026-09-27T004512Z"]
+
+
+def test_an_answer_that_isnt_a_guide_is_no_game(data_dir, two, tracker):
+    source = Source(added(**{url(5): b"<html>Access denied</html>"}))
+    res = run(source, tracker)
+    assert tracker.outcomes()["Cardmarket new games"] == (
+        "warn",
+        "no new game; asked 2, 4-8; game 5 answered with something not a price guide",
+    )
+    assert plist(5) not in source.urls() and len(res.kept) == 2
+    assert saved(data_dir)["games"] == {}
+
+
+@pytest.mark.parametrize("text", ["not JSON", '{"games": []}', '{"games": {"x": {"id": "5"}}}', "[]"])
+def test_a_games_file_that_cant_be_read_is_set_aside_and_its_games_learned_again(
+    data_dir, two, tracker, text
+):
+    run(Source(added()))
+    (data_dir / "games.json").write_text(text)
+    assert cardmarket.learned() == {}
+    source = Source(added())
+    res = run(source, tracker, now=NOW + timedelta(hours=1))
+    assert tracker.outcomes()["Cardmarket new games"] == (
+        "warn",
+        "games.json couldn't be read: set aside as cardmarket/aside/games-2026-09-27T140000Z.json;"
+        " found cyberpunk (5); asked 2, 4-8",
+    )
+    assert (data_dir / "aside" / "games-2026-09-27T140000Z.json").read_text() == text
+    assert list(saved(data_dir)["games"]) == ["cyberpunk"]
+    assert tracker.outcomes()["Cardmarket cyberpunk"] == ("ok", "no new guide since the last one kept")
+    assert res.same[-1] == "Cardmarket cyberpunk"

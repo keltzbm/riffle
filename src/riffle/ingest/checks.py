@@ -232,8 +232,7 @@ def cardmarket_guides() -> Report:
             rep.problems.append(f"{_rel(path)}: made on {made.date()}, kept under {path.parent.name}")
         _made_late(rep, path, made, pricelists.fetched(path))
     _logged(rep, cardmarket.STORE, lambda entry, made: made.date())
-    games = [*cardmarket.GAMES, *cardmarket.OTHERS]
-    _lateness(rep, {game: cardmarket.made(game) for game in games}, "guide")
+    _lateness(rep, {game: cardmarket.made(game) for game in cardmarket.games()}, "guide")
     return rep
 
 
