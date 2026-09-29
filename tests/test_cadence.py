@@ -97,9 +97,41 @@ def test_a_list_early_more_than_a_year_ago_is_forgotten():
     assert cadence.lead(made, made[16] + 366 * DAY) == timedelta(0)
 
 
+LAG = timedelta(hours=6, minutes=48)  # MTGJSON's build of 2026-09-29: made 06:12 UTC, not served at 13:00
+
+
+def test_the_lead_is_measured_to_when_each_list_could_first_be_online():
+    made = daily(20)
+    late = {m: m + LAG for m in made}
+    assert cadence.lead(made, made[-1], late) == -LAG  # the window opens after the expected time
+    assert cadence.lead(made, made[-1], {m: m for m in made}) == timedelta(0)  # online when made: as before
+    one = {m: t for m, t in late.items() if m != made[17]}  # online when made: the year's allowance
+    assert cadence.lead(made, made[-1], one) == -LAG
+    two = {m: t for m, t in one.items() if m != made[18]}
+    assert cadence.lead(made, made[-1], two) == timedelta(0)
+
+
+def test_the_delay_is_learned_in_the_lead_not_beside_it():
+    made = drifting({16: 6, 17: 2, 18: 4})  # a lead of 4 minutes when online as made
+    ten = {m: m + timedelta(minutes=10) for m in made}
+    assert cadence.lead(made, made[-1], ten) == timedelta(minutes=-6)  # 4 minutes early, online 10 later
+
+
 def test_with_nothing_logged_the_first_firing_asks():
     plan = cadence.plan(daily(3), [], T0 + 3 * DAY)
-    assert plan.ask and plan.expected is None and plan.far == cadence.EVERY and plan.gaps == 2
+    assert plan.ask and plan.expected is None and plan.opens is None
+    assert plan.far == cadence.EVERY and plan.gaps == 2
+
+
+def test_a_list_that_goes_online_hours_after_it_s_made_is_asked_from_then():
+    made = daily(17)
+    expected = T0 + 17 * DAY
+    week = every(expected + timedelta(hours=5), 42, timedelta(hours=4))  # the last an hour after expected
+    late = {m: m + LAG for m in made}
+    before = cadence.plan(made, week, expected + timedelta(hours=2), online=late)
+    assert not before.ask and before.expected == expected and before.next == before.opens == expected + LAG
+    assert cadence.plan(made, week, expected + LAG, online=late).ask
+    assert cadence.plan(made, week, expected + timedelta(hours=2)).ask  # by when it's made: every firing
 
 
 def test_a_learned_list_is_asked_from_its_expected_time_until_it_comes():

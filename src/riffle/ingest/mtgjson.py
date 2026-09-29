@@ -3,6 +3,7 @@ Cardhoarder in one file, with the past 90 days to start from.
 
 MTGJSON builds its files once a day, about 06:12 UTC by their Last-Modified, and serves them
 hours later: the syncs at 13:00 UTC on 2026-09-28 and 2026-09-29 still found the day before's.
+Its watch learns when a build goes online from its own checks (riffle.cadence), and asks from then.
 It serves them without a key, each beside a .sha256 of itself:
 
     https://mtgjson.com/api/v5/Meta.json               the latest build's date and version

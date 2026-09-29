@@ -2,11 +2,12 @@
 fetches took."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from riffle import watching
+from riffle import cadence, watching
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 
@@ -44,6 +45,60 @@ def test_checks_and_the_longest_fetch_come_from_the_log(data):
     ]
     assert watching.longest(found, "mtg", NOW, timedelta(days=30)) == timedelta(seconds=60)
     assert watching.longest(found, "op", NOW, timedelta(days=30)) == timedelta(0)
+
+
+def test_when_each_list_could_first_be_online_comes_from_its_checks(data):
+    for entry in (
+        {"at": "2026-09-29T211657Z", "list": "prices-today", "result": "kept", "made": "2026-09-29T061238Z"},
+        {"at": "2026-09-30T050000Z", "list": "prices-today", "result": "unchanged"},  # before it was made
+        {"at": "2026-09-30T125500Z", "list": "prices-today", "result": "unchanged"},
+        {"at": "2026-09-30T125800Z", "list": "other", "result": "unchanged"},
+        {"at": "2026-09-30T130000Z", "list": "prices-today", "result": "failed", "why": "HTTP 503"},
+        {"at": "2026-09-30T130500Z", "list": "prices-today", "result": "kept", "made": "2026-09-30T061200Z"},
+        {"at": "2026-09-30T131000Z", "list": "prices-today", "result": "known", "made": "2026-09-30T061200Z"},
+        {"at": "2026-10-01T061500Z", "list": "prices-today", "result": "kept", "made": "2026-10-01T061200Z"},
+        {"at": "2026-10-01T061600Z", "list": "prices-today", "result": "kept", "made": "2026-10-01T061200Z"},
+        {"at": "2026-10-01T062000Z", "list": "prices-today", "result": "kept", "made": "someday"},
+        {"at": "not a time", "list": "prices-today", "result": "unchanged"},
+        {"at": "2026-10-01T070000Z", "list": "prices-today"},  # no result: not a check
+        {"at": "2026-09-29T200400Z", "list": "last-updated", "result": "same", "made": "2026-09-28T200554Z"},
+        {"at": "2026-09-29T200800Z", "list": "last-updated", "result": "same", "made": "2026-09-28T200554Z"},
+        {"at": "2026-09-29T201315Z", "list": "last-updated", "result": "new", "made": "2026-09-29T200557Z"},
+    ):
+        watching.log("mtgjson", entry)
+    found = watching.entries("mtgjson")
+    assert watching.online(found, "prices-today") == {
+        datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC): datetime(
+            2026, 9, 29, 6, 12, 38, tzinfo=UTC
+        ),  # first check
+        datetime(2026, 9, 30, 6, 12, tzinfo=UTC): datetime(2026, 9, 30, 12, 55, tzinfo=UTC),
+        datetime(2026, 10, 1, 6, 12, tzinfo=UTC): datetime(2026, 10, 1, 6, 12, tzinfo=UTC),
+    }
+    assert watching.online(found, "last-updated") == {  # tcgcsv's
+        datetime(2026, 9, 29, 20, 5, 57, tzinfo=UTC): datetime(2026, 9, 29, 20, 8, tzinfo=UTC)
+    }
+    assert watching.online(found, "none") == {}
+
+
+def test_a_list_not_due_says_when_it_goes_online_once_that_s_after_its_expected_time():
+    expected = datetime(2026, 10, 16, 6, 12, tzinfo=UTC)
+    late = cadence.Plan(
+        False,
+        expected + timedelta(hours=4),
+        expected,
+        expected + timedelta(hours=6, minutes=48),
+        timedelta(hours=6),
+        16,
+    )
+    assert watching.waiting(late, "list") == (
+        "next asked 2026-10-16 10:12 UTC; its next list expected 2026-10-16 06:12 UTC, "
+        "online from about 2026-10-16 13:00 UTC"
+    )
+    early = replace(late, opens=expected - timedelta(minutes=2))
+    assert (
+        watching.waiting(early, "list")
+        == "next asked 2026-10-16 10:12 UTC; its next list expected 2026-10-16 06:12 UTC"
+    )
 
 
 def test_etags_that_cant_be_read_are_none(data):

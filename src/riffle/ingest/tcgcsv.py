@@ -587,7 +587,9 @@ def watch(
         log = watching.entries(STORE)
         if not always and _whole(log) is not False:
             busy = watching.longest(log, DAY, now, lateness.WINDOW)
-            res.plan = cadence.plan(made(), watching.checks(log, CHECKED), now, busy)
+            res.plan = cadence.plan(
+                made(), watching.checks(log, CHECKED), now, busy, watching.online(log, CHECKED)
+            )
             if not res.plan.ask:
                 tracker.step("tcgcsv").ok(watching.waiting(res.plan, "day"))
                 return res

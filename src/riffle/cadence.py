@@ -7,8 +7,12 @@ A watch job fires every EVERY. At each firing a list is asked for when either ho
 - Its next list is due: past its expected time less its lead, and asked at every firing from
   then until the list comes, however late. Expected is the last list's time plus the median of
   its last 14 gaps (riffle.lateness.usual); there's none until it has 14. The lead is the list's
-  own: the least that would have left at most one of its lists in the last year coming before
-  the window opened (lateness.ALLOWED in lateness.HISTORY, the margin's allowance).
+  own: the least that would have left at most one of its lists in the last year online before
+  the window opened (lateness.ALLOWED in lateness.HISTORY, the margin's allowance). A list counts
+  as online from the later of when it was made and the last check that didn't get it
+  (riffle.watching.online). The lead goes below zero when a list's lists go online after they're
+  expected, and the window then opens after the expected time: MTGJSON's build is made about
+  06:12 UTC and served after 13:00.
 - The far interval has passed since its last check: the longest whole minute c with
   N · f^⌊L/c⌋ ≤ TARGET, where L is its shortest gap in the 30 days before its last list less its
   longest fetch, N its lists a year, and f the CONFIDENCE upper bound on its checks' failure rate
@@ -25,13 +29,20 @@ Why these (the vault's price-watch-numbers note has the proof):
 - The lead: on the same replay, 1.4 minutes typically and 5.4 at most. It kept 99% of lists
   within one firing of their publish, as a 30-minute lead did, with half the requests; with no
   lead the 99th percentile was 7.7 minutes.
+- Online from the last check that didn't get a list, not from the check that got it: a list
+  found late would open the next window late, where its first check finds the list at once, so
+  the window would never learn the list was online sooner. The last miss is at most when the
+  list went online, so the window opens no later than the lists' true times would open it: the
+  bound's error costs requests, never a late find. And the delay is learned in the lead, not
+  beside it, so at most one list a year comes before its window, not one for each. The Mac's
+  clock against the source's is learned there too.
 - The far interval is price-watch-numbers §3's check interval, from each list's own log. On
   tcgcsv it settles near 6 hours once a week of checks is logged: about 5 requests a day in all,
   against 288 at every firing. A failed check shortens it.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import median
@@ -51,6 +62,7 @@ class Plan:
     ask: bool  # ask at this firing
     next: datetime  # when it's asked next, if not now
     expected: datetime | None  # when its next list is expected; None until it has 14 gaps
+    opens: datetime | None  # when it's asked at every firing from: expected less the lead
     far: timedelta  # the far interval
     gaps: int  # gaps between its lists so far
 
@@ -93,30 +105,41 @@ def expected(made: Sequence[datetime]) -> datetime | None:
     return None if gap is None else made[-1] + gap
 
 
-def lead(made: Sequence[datetime], now: datetime) -> timedelta:
+def lead(
+    made: Sequence[datetime], now: datetime, online: Mapping[datetime, datetime] | None = None
+) -> timedelta:
     """How early the window opens before the expected time: the least that would have left at
-    most lateness.ALLOWED of the list's lists in the last year coming before their window."""
+    most lateness.ALLOWED of the list's lists in the last year online before their window. A list
+    is online from online[its made], or from its made if it has none. Below zero when its lists
+    go online after they're expected."""
+    online = online or {}
     early = []
     for i in range(lateness.LEAST_GAPS + 1, len(made)):
         if now - made[i] > lateness.HISTORY:
             continue
         guess = expected(made[i - lateness.LEAST_GAPS - 1 : i])
-        if guess is not None and made[i] < guess:
-            early.append(guess - made[i])
+        assert guess is not None  # LEAST_GAPS gaps
+        early.append(guess - online.get(made[i], made[i]))
     early.sort(reverse=True)
     return early[lateness.ALLOWED] if len(early) > lateness.ALLOWED else _NONE
 
 
 def plan(
-    made: Sequence[datetime], checks: Sequence[tuple[datetime, bool]], now: datetime, busy: timedelta = _NONE
+    made: Sequence[datetime],
+    checks: Sequence[tuple[datetime, bool]],
+    now: datetime,
+    busy: timedelta = _NONE,
+    online: Mapping[datetime, datetime] | None = None,
 ) -> Plan:
     """Whether to ask for a list at this firing, and when it's asked next if not: made is when
-    its lists were made, checks each check (when, failed), busy its longest fetch."""
+    its lists were made, checks each check (when, failed), busy its longest fetch, online when
+    each list could first have been online, by its made (riffle.watching.online)."""
     made = sorted(made)
     interval = far(made, checks, now, busy)
     last = max((at for at, _ in checks), default=None)
     due = now if last is None else last + interval
     coming = expected(made)
-    if coming is not None:
-        due = min(due, coming - lead(made, now))
-    return Plan(due <= now, max(due, now), coming, interval, max(0, len(made) - 1))
+    opens = None if coming is None else coming - lead(made, now, online)
+    if opens is not None:
+        due = min(due, opens)
+    return Plan(due <= now, max(due, now), coming, opens, interval, max(0, len(made) - 1))

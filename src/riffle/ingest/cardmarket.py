@@ -421,7 +421,9 @@ def watch(
             now = clock()
             if not always:
                 busy = watching.longest(log, game, now, lateness.WINDOW)
-                plan = cadence.plan(made(game), watching.checks(log, game), now, busy)
+                plan = cadence.plan(
+                    made(game), watching.checks(log, game), now, busy, watching.online(log, game)
+                )
                 if not plan.ask:
                     res.waiting.append(game)
                     plans.append(plan)
