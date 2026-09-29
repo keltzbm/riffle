@@ -66,18 +66,22 @@ def margin(made: list[datetime], now: datetime) -> float:
     return max(MARGIN, recent[ALLOWED]) if len(recent) > ALLOWED else MARGIN
 
 
+def usual(made: list[datetime]) -> timedelta | None:
+    """The median of a list's last LEAST_GAPS gaps (times oldest first); None until it has them."""
+    if len(made) <= LEAST_GAPS:
+        return None
+    recent = zip(made[-LEAST_GAPS - 1 :], made[-LEAST_GAPS:], strict=False)
+    return timedelta(seconds=median((b - a).total_seconds() for a, b in recent))
+
+
 def judge(made: list[datetime], now: datetime) -> Verdict | None:
     """Whether a list made at these times (oldest first) is late at `now`; None until it has
     LEAST_GAPS gaps."""
-    if len(made) <= LEAST_GAPS:
+    gap = usual(made)
+    if gap is None:
         return None
     last = made[-1]
     longest = max(b - a for a, b in zip(made, made[1:], strict=False) if b >= last - WINDOW)
     m = margin(made, now)
     since = now - last
-    usual = timedelta(
-        seconds=median(
-            (b - a).total_seconds() for a, b in zip(made[-LEAST_GAPS - 1 :], made[-LEAST_GAPS:], strict=False)
-        )
-    )
-    return Verdict(usual, longest, m, since, since > longest * m)
+    return Verdict(gap, longest, m, since, since > longest * m)

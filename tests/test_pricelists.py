@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from typer.testing import CliRunner
 
-from riffle import locks, net, runs
+from riffle import locks, net, runs, watching
 from riffle.cli import _complete_store, app
 from riffle.ingest import empties, pricelists
 
@@ -102,7 +102,7 @@ def test_the_first_list_is_kept_whole_as_its_run_s_base(data_dir, tracker):
         "cardkingdom/lists/singles/2026-09-27T200838Z/2026-09-27T200838Z.json.zst"
     )
     assert runs.rebuild(path) == ck() and runs.rebuild(runs.copies(path.parent)[1]) == ck()
-    size, whole = pricelists._size(path.stat().st_size), pricelists._size(len(ck()))
+    size, whole = watching.size(path.stat().st_size), watching.size(len(ck()))
     # 13:08:38 Pacific is 20:08 UTC; the job log (not a terminal) shows UTC
     assert tracker.outcomes()["Card Kingdom singles"] == (
         "ok",
@@ -120,8 +120,8 @@ def test_a_list_made_later_is_kept_as_a_difference(data_dir, tracker):
     assert path.name.endswith(".diff.zst") and runs.rebuild(path) == later
     assert tracker.outcomes()["Card Kingdom singles"] == (
         "ok",
-        f"kept the list made 2026-09-27 23:08 UTC, {pricelists._size(len(later))}: "
-        f"a difference of {pricelists._size(path.stat().st_size)}",
+        f"kept the list made 2026-09-27 23:08 UTC, {watching.size(len(later))}: "
+        f"a difference of {watching.size(path.stat().st_size)}",
     )
 
 
@@ -347,8 +347,8 @@ def test_no_answer_skips_the_store_s_other_lists(data_dir):
 
 
 def test_sizes_under_a_megabyte_are_in_kilobytes():
-    assert pricelists._size(49_983) == "50 KB" and pricelists._size(51_698_006) == "51.7 MB"
-    assert pricelists._size(312) == "312 bytes"
+    assert watching.size(49_983) == "50 KB" and watching.size(51_698_006) == "51.7 MB"
+    assert watching.size(312) == "312 bytes"
 
 
 def test_every_store_list_has_its_own_folder():
@@ -404,12 +404,23 @@ def test_riffle_watch_exits_1_when_a_list_fails(cli, monkeypatch):
 
 def test_riffle_watch_names_the_stores_when_given_another(cli, plain):
     result = cli("watch", "tcgplayer")
-    said = "'tcgplayer' has no lists to watch; the stores: cardkingdom, manapool"
+    said = "'tcgplayer' has no lists to watch; the stores: cardkingdom, manapool, cardmarket, tcgcsv"
     assert result.exit_code == 2 and said in plain(result.output)
+
+
+def test_riffle_watch_runs_tcgcsv_s_and_cardmarket_s_watches(cli, monkeypatch):
+    from riffle.ingest import cardmarket, tcgcsv
+
+    calls = []
+    monkeypatch.setattr(tcgcsv, "watch", lambda tracker: calls.append("tcgcsv"))
+    monkeypatch.setattr(cardmarket, "watch", lambda tracker: calls.append("cardmarket"))
+    assert cli("watch", "tcgcsv").exit_code == 0 and cli("watch", "cardmarket").exit_code == 0
+    assert calls == ["tcgcsv", "cardmarket"]
 
 
 def test_the_stores_tab_complete():
     assert _complete_store("man") == ["manapool"]
+    assert _complete_store("c") == ["cardkingdom", "cardmarket"]
 
 
 def test_a_check_is_logged_to_the_second(data_dir):

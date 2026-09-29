@@ -117,6 +117,32 @@ def test_a_base_too_small_to_difference_against_starts_a_new_run(tmp_path):
     assert runs.keep(tmp_path, later(30), b"{}\n").kind == "base"
 
 
+def test_a_small_list_is_a_difference_too(tmp_path):
+    base = b'{"data": [{"id": 1, "price": 150}, {"id": 2, "price": 99}]}'  # well under zstd's 1 KiB window
+    runs.keep(tmp_path, AT, base * 2)
+    kept = runs.keep(tmp_path, later(30), base * 2 + b" ")
+    assert kept.kind == "diff" and runs.rebuild(kept.path) == base * 2 + b" "
+
+
+def test_a_list_kept_already_under_its_stamp_is_not_kept_again(tmp_path):
+    first = runs.keep(tmp_path, AT, listing())
+    again = runs.keep(tmp_path, AT, listing())  # a run cut off before it said it kept it
+    assert again == first and len(list(tmp_path.rglob("*.zst"))) == 2
+    diff = runs.keep(tmp_path, later(30), listing(seed=1, changed=20))
+    assert runs.keep(tmp_path, later(30), listing(seed=1, changed=20)) == diff
+
+
+def test_another_list_under_a_kept_stamp_is_refused(tmp_path):
+    runs.keep(tmp_path, AT, listing())
+    with pytest.raises(runs.Taken, match="another list is kept under the time this one was made"):
+        runs.keep(tmp_path, AT, listing(seed=1, changed=20))
+    first, copy = runs.copies(tmp_path / runs.name(AT))
+    first.write_bytes(b"damaged")
+    copy.write_bytes(b"damaged")
+    with pytest.raises(runs.Taken):  # can't be read to tell
+        runs.keep(tmp_path, AT, listing())
+
+
 def test_a_damaged_copy_of_the_base_is_set_aside_and_written_again(tmp_path):
     runs.keep(tmp_path, AT, listing())
     first, copy = runs.copies(tmp_path / runs.name(AT))

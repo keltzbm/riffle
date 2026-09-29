@@ -7,6 +7,18 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- tcgcsv and Cardmarket are watched too: `riffle watch tcgcsv` and `riffle watch cardmarket`, each a job of its
+  own under `riffle schedule watch`, so a day that fails to fetch is asked for again at the next run, not the next
+  sync. Each is asked only when its next list is due, learned from its own lists and checks (`riffle.cadence`):
+  from its expected time (the last list plus the median of its last 14 gaps), less a lead that leaves at most one
+  list a year before it, until the list comes; otherwise every far interval, the longest that keeps the lists lost
+  to failed checks under one a decade on its own checks' failure rate over the last week. tcgcsv's settles near 6
+  hours, about 5 requests a day against 288. A run not due says when it asks next (`next asked 14:05 MDT; its next
+  day expected 14:05 MDT`); a Cardmarket guide not new costs a 304 with the ETag of the last one kept.
+- Each tcgcsv game's finished day and each Cardmarket guide is kept in runs (`tcgcsv/lists/<game>/`,
+  `cardmarket/lists/<game>/`), as Card Kingdom's and Mana Pool's lists are, and `riffle check` hashes them and
+  notes each one's lateness. A tcgcsv day's `kept.json` says where its game is kept; the days before stay as they
+  were, `prices.jsonl.gz` and `daily/<day>/<game>.json.gz`.
 - Every list Card Kingdom and Mana Pool publish is kept, not one a day: Card Kingdom makes a new list every few
   hours and Mana Pool about every half hour. `riffle watch <store>` asks for each of the store's lists once
   and keeps a new one in `<store>/lists/<list>/`, in runs: a run's first list whole, twice, and each later one as a
@@ -135,6 +147,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The sync runs tcgcsv's and Cardmarket's watches once each, whether or not a list is due, instead of fetching
+  them itself; each takes its store's lock, so a sync and a job never fetch the same store at once. Cardmarket's
+  20-hour wait before asking again goes: a guide's ETag says whether it's new.
 - `riffle check` calls a list late once the time since its last list is more than its margin times the longest gap it
   had in the 30 days before that list. Each list learns its own margin: at least 1.25, raised to the least value that
   would have raised at most one alarm on its own gaps over the last year, so an irregular list isn't called late for
@@ -227,6 +242,10 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A list under 512 bytes couldn't be kept as a difference: zstd refused the window asked for. A difference's window
+  is now at least zstd's smallest, 1 KiB.
+- A list kept already under its stamp, by a run cut off before it said so, is found and not kept a second time;
+  another list under the same stamp is refused.
 - Scryfall's second bulk file of a day is downloaded. Scryfall publishes about twice a day (09:05 and 21:05 UTC on
   2026-09-28), and a refresh skipped any file for a day it already had; the step is now `Scryfall default cards`,
   current only when that very file is kept. Each download no longer deletes the file before it, or one set aside

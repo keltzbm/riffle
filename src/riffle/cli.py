@@ -64,9 +64,9 @@ def _complete_mtgo_format(incomplete: str) -> list[str]:
 
 
 def _complete_store(incomplete: str) -> list[str]:
-    from riffle.ingest import pricelists
+    from riffle import watching
 
-    return _offer(list(pricelists.STORES), incomplete)
+    return _offer(list(watching.STORES), incomplete)
 
 
 def _complete_kind(incomplete: str) -> list[str]:
@@ -352,7 +352,7 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
     sources: list[tuple[str, Callable[..., object]]] = [
         ("MTGJSON prices", mtgjson.snapshot),
         ("GoatBots prices", goatbots.snapshot),
-        ("Cardmarket prices", cardmarket.snapshot),
+        ("Cardmarket prices", partial(cardmarket.watch, always=True)),
         ("Card Kingdom prices", partial(pricelists.watch, pricelists.CARD_KINGDOM)),
         ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),
     ]
@@ -360,8 +360,9 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         with contained(tracker, label, _failure) as scope:
             snapshot(tracker=scope)
     with contained(tracker, "tcgcsv prices", _failure) as scope:
-        snap = tcgcsv.snapshot(delay=delay, tracker=scope)
-        _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
+        snap = tcgcsv.watch(delay=delay, tracker=scope, always=True).snap
+        if snap is not None:
+            _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
 
 
 def _events(fmt: list[str], days: int, kind: list[str] | None):
@@ -384,15 +385,28 @@ def watch_cmd(
 ) -> None:
     """Keep every new list a store publishes: each of its lists asked for once, a new one kept
     whole or as a difference against its run's first. The jobs (riffle schedule watch) run
-    this every 5 minutes."""
-    from riffle.ingest import pricelists
+    this every 5 minutes; tcgcsv and Cardmarket ask only when their next list is due, as
+    learned from their own lists and checks."""
+    from riffle import watching
 
-    lists = pricelists.STORES.get(store)
-    if lists is None:
-        stores = ", ".join(pricelists.STORES)
+    if store not in watching.STORES:
+        stores = ", ".join(watching.STORES)
         raise typer.BadParameter(f"'{store}' has no lists to watch; the stores: {stores}")
     with _tracked(f"riffle watch {store}") as tracker:  # a failed step exits 1 on leaving
-        pricelists.watch(lists, tracker=tracker)
+        _watcher(store)(tracker=tracker)
+
+
+def _watcher(store: str) -> Callable[..., object]:
+    """A store's watch, one of watching.STORES."""
+    from riffle.ingest import cardmarket, pricelists, tcgcsv
+
+    watchers: dict[str, Callable[..., object]] = {
+        "cardkingdom": partial(pricelists.watch, pricelists.CARD_KINGDOM),
+        "manapool": partial(pricelists.watch, pricelists.MANA_POOL),
+        "cardmarket": cardmarket.watch,
+        "tcgcsv": tcgcsv.watch,
+    }
+    return watchers[store]
 
 
 @mtgo_app.command("trickle")
@@ -918,9 +932,9 @@ def _show_schedule() -> None:
 
 def _watch_jobs() -> list:
     from riffle import schedule as sched
-    from riffle.ingest import pricelists
+    from riffle import watching
 
-    return [sched.watch_job(store) for store in pricelists.STORES]
+    return [sched.watch_job(store) for store in watching.STORES]
 
 
 def _show_every(job, what: str, start: str) -> None:
