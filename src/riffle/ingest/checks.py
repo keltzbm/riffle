@@ -11,13 +11,16 @@ header of a file Riffle gzipped, the file's own time otherwise). `riffle check` 
                               clock isn't Pacific. The lists set aside are counted, and each list's
                               usual gap is noted, and whether it's late by its own learned margin
                               (riffle.lateness).
-    Cardmarket                each guide under the day of its createdAt, made before its fetch
+    Cardmarket                each guide kept a day under the day of its createdAt, and each kept
+                              since in its runs as its log says; every guide made before its fetch,
+                              and each game's lateness (riffle.lateness)
     MTGJSON                   each file named by the date in its meta, no later than its fetch
     GoatBots                  each day's zip holds that day's price file, no later than its fetch;
                               each whole year's archive runs to Dec 31
     tcgcsv                    each day's last-updated.txt is that day's, from before its fetch, and
-                              no set under it from a later refresh (by its Last-Modified). Games
-                              not finished are noted: tcgcsv's day passed, or it's being fetched.
+                              no set under it from a later refresh (by its Last-Modified); each game
+                              kept in its runs as its kept.json says. Games not finished are noted:
+                              tcgcsv's day passed, or it's being fetched. And its lateness.
     Scryfall                  no day's prices kept before that day began (UTC)
 """
 
@@ -31,10 +34,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import lateness, runs, times
+from riffle import lateness, runs, times, watching
 from riffle.config import data_dir
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 from riffle.progress import elapsed
+from riffle.runs import zstd
 
 SLACK = pricelists.SLACK
 MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
@@ -130,7 +134,7 @@ def store(lists: tuple[pricelists.PriceList, ...]) -> Report:
 
 def _kept_entries(rep: Report, store: str) -> list[dict]:
     """The lists a store's watch log says it kept."""
-    path = pricelists.log_path(store)
+    path = watching.log_path(store)
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -170,9 +174,7 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
         plist = named.get(entry.get("list", ""))
         made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
         if plist is None or made is None or got is None or "file" not in entry:
-            rep.problems.append(
-                f"{_rel(pricelists.log_path(lists[0].store))}: an entry it can't read: {entry}"
-            )
+            rep.problems.append(f"{_rel(watching.log_path(lists[0].store))}: an entry it can't read: {entry}")
             continue
         rep.files += 1
         rep.days.add(pricelists.day_of(made, plist).isoformat())
@@ -225,7 +227,49 @@ def cardmarket_guides() -> Report:
         if made.date().isoformat() != path.parent.name:
             rep.problems.append(f"{_rel(path)}: made on {made.date()}, kept under {path.parent.name}")
         _made_late(rep, path, made, pricelists.fetched(path))
+    for entry in _kept_entries(rep, cardmarket.STORE):
+        made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
+        if made is None or got is None or "file" not in entry:
+            log = _rel(watching.log_path(cardmarket.STORE))
+            rep.problems.append(f"{log}: an entry it can't read: {entry}")
+            continue
+        rep.files += 1
+        rep.days.add(made.date().isoformat())
+        _hashed(rep, entry)
+        _made_late(rep, data_dir() / entry["file"], made, got)
+    games = [*cardmarket.GAMES, *cardmarket.OTHERS]
+    _lateness(rep, {game: cardmarket.made(game) for game in games}, "guide")
     return rep
+
+
+def _lateness(rep: Report, lists: dict[str, list[datetime]], what: str) -> None:
+    """Whether each list is late by its own margin (riffle.lateness), from when it was made: a
+    note for each one late, and one for the rest."""
+    waiting, judged = [], []
+    for name, made in lists.items():
+        if len(made) < 2:
+            continue
+        verdict = lateness.judge(made, times.now())
+        if verdict is None:
+            waiting.append(len(made) - 1)
+            continue
+        judged.append(verdict)
+        if verdict.late:
+            bar = elapsed((verdict.longest * verdict.margin).total_seconds())
+            ago = elapsed(verdict.since.total_seconds())
+            who = f"{name}: " if len(lists) > 1 else ""
+            rep.notes.append(
+                f"{who}late: the last was made {times.shown(made[-1])}, {ago} ago, "
+                f"past {verdict.margin:.2f} × its longest gap in 30 days ({bar})"
+            )
+    if waiting:
+        fewest = f"{min(waiting)} so far" + (" at the fewest" if len(waiting) > 1 else "")
+        many = f"{len(waiting)} {what}s: " if len(lists) > 1 else ""
+        rep.notes.append(f"{many}lateness judged from {lateness.LEAST_GAPS} gaps, {fewest}")
+    if len(lists) > 1 and judged:
+        rep.notes.append(f"{len(judged)} {what}{'s' * (len(judged) != 1)} judged for lateness")
+    elif judged and not judged[0].late:
+        rep.notes.append(f"one every {elapsed(judged[0].usual.total_seconds())} lately")
 
 
 def _mtgjson_day(path: Path) -> date | None:
@@ -286,9 +330,13 @@ def goatbots_days() -> Report:
 
 
 def _set_times(path: Path) -> list[tuple[int, datetime]]:
-    """Each set in a tcgcsv price file (kept or being fetched) with its Last-Modified, if it has one."""
-    with gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb") as f:
-        body = f.read()
+    """Each set in a tcgcsv game's day (kept gzipped, in its runs as kept.json says, or being
+    fetched) with its Last-Modified, if it has one."""
+    if path.name == tcgcsv.KEPT:
+        body = tcgcsv.kept_game(path.parent) or b""
+    else:
+        with gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb") as f:
+            body = f.read()
     return [(int(m[1]), datetime.fromisoformat(m[2].decode())) for m in TCGCSV_SET.finditer(body)]
 
 
@@ -296,7 +344,15 @@ def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: li
     """A game's sets, each from no later refresh than its day's; and whether it's finished."""
     day = date.fromisoformat(game.parent.name)
     kept, part, missing = (game / name for name in (tcgcsv.PRICES, tcgcsv.PART, tcgcsv.MISSING))
-    for path in (kept, part):
+    record = game / tcgcsv.KEPT
+    days = [kept, part]
+    if record.exists():
+        try:
+            _hashed(rep, json.loads(record.read_text(encoding="utf-8")))
+            days.append(record)
+        except (ValueError, KeyError, TypeError):
+            rep.problems.append(f"{_rel(record)}: unreadable")
+    for path in days:
         if stamp is None or not path.exists():
             continue
         try:
@@ -305,7 +361,7 @@ def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: li
                 for gid, when in _set_times(path)
                 if when - stamp > tcgcsv.NEXT_REFRESH and when.astimezone(UTC).date() > day
             ]
-        except (OSError, EOFError) as e:
+        except (OSError, EOFError, ValueError, KeyError, TypeError, zstd.ZstdError) as e:
             rep.problems.append(f"{_rel(path)}: unreadable ({e})")
             continue
         if late:
@@ -318,7 +374,7 @@ def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: li
         never = missing.read_text(encoding="utf-8").split()
         count = f"{len(never):,} sets never fetched" if all(n.isdigit() for n in never) else "which unknown"
         unfinished.append(f"{day} {game.name} ({count})")
-    elif not kept.exists():
+    elif not tcgcsv.finished(game):
         unfinished.append(f"{day} {game.name} (no prices kept)")
 
 
@@ -348,6 +404,7 @@ def tcgcsv_days() -> Report:
         more = f", and {len(unfinished) - SHOWN:,} more" if len(unfinished) > SHOWN else ""
         games = f"{len(unfinished):,} game{'s' * (len(unfinished) != 1)}"
         rep.notes.append(f"{games} unfinished: {', '.join(unfinished[:SHOWN])}{more}")
+    _lateness(rep, {"days": tcgcsv.made()}, "list")
     return rep
 
 

@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from typer.testing import CliRunner
 
-from riffle import net, runs, times
+from riffle import net, runs, times, watching
 from riffle.cli import app
 from riffle.ingest import checks, pricelists
 
@@ -405,7 +405,7 @@ def test_a_watched_list_made_after_its_fetch_means_the_clock_isn_t_pacific(data)
 
 def test_a_watch_log_it_can_t_read_is_named(data):
     three_lists()
-    log = pricelists.log_path("cardkingdom")
+    log = watching.log_path("cardkingdom")
     with log.open("a") as f:
         f.write(json.dumps({"result": "unchanged", "list": "singles"}) + "\n")  # a check, not a list
         f.write("{not json\n")
@@ -414,4 +414,107 @@ def test_a_watch_log_it_can_t_read_is_named(data):
     assert problems == [
         "cardkingdom/watch.jsonl: line 5 isn't JSON",
         "cardkingdom/watch.jsonl: an entry it can't read: {'result': 'kept', 'list': 'singles'}",
+    ]
+
+
+# ---- tcgcsv and Cardmarket kept in runs (0033) --------------------------------------
+
+
+def test_a_tcgcsv_game_kept_in_its_runs_is_checked_as_its_record_says(data):
+    from riffle.ingest import tcgcsv
+
+    day = data / "tcgcsv" / "daily" / "2026-09-27"
+    (day / "mtg").mkdir(parents=True)
+    (day / "last-updated.txt").write_text("2026-09-27T20:04:59+0000")
+    at(day / "last-updated.txt", FETCHED)
+    (day / "mtg" / "prices.jsonl.part").write_bytes(
+        price_lines((1, "2026-09-27T20:04:00+00:00"), (4, "2026-09-28T20:04:30+00:00"))
+    )
+    tcgcsv._finish(day / "mtg", datetime(2026, 9, 27, 20, 4, 59, tzinfo=UTC))
+    (day / "op").mkdir()
+    (day / "op" / "kept.json").write_text("not JSON")
+    rep = by_source()["tcgcsv"]
+    assert rep.problems == [
+        "tcgcsv/daily/2026-09-27/mtg/kept.json: set 4 is from a later refresh, 2026-09-28 20:04 UTC",
+        "tcgcsv/daily/2026-09-27/op/kept.json: unreadable",
+    ]
+    record = json.loads((day / "mtg" / "kept.json").read_text())
+    (data / record["file"]).write_bytes(b"damaged")
+    (data / record["file"]).with_name("2026-09-27T200459Z.copy.json.zst").unlink()
+    problems = by_source()["tcgcsv"].problems
+    assert (
+        "tcgcsv/lists/mtg/2026-09-27T200459Z/2026-09-27T200459Z.json.zst: changed since it was kept"
+        in problems
+    )
+    assert "tcgcsv/lists/mtg/2026-09-27T200459Z/2026-09-27T200459Z.copy.json.zst: missing" in problems
+    assert any(p.startswith("tcgcsv/daily/2026-09-27/mtg/kept.json: unreadable (") for p in problems)
+
+
+def tcgcsv_days(n: int, last: datetime) -> None:
+    for k in range(n):
+        made = last - timedelta(days=k)
+        folder = data_dir_of() / "tcgcsv" / "daily" / made.date().isoformat()
+        folder.mkdir(parents=True)
+        (folder / "last-updated.txt").write_text(made.strftime("%Y-%m-%dT%H:%M:%S%z"))
+        at(folder / "last-updated.txt", made + timedelta(hours=2))
+
+
+def data_dir_of():
+    from riffle.config import data_dir
+
+    return data_dir()
+
+
+def test_tcgcsv_s_days_are_judged_for_lateness(data, monkeypatch):
+    last = datetime(2026, 9, 27, 20, 5, tzinfo=UTC)
+    tcgcsv_days(5, last)
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
+    assert by_source()["tcgcsv"].notes == ["lateness judged from 14 gaps, 4 so far"]
+    tcgcsv_days(11, last - timedelta(days=5))
+    assert by_source()["tcgcsv"].notes == ["one every 24h 00m lately"]
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=31))
+    assert by_source()["tcgcsv"].notes == [
+        "late: the last was made 2026-09-27 20:05 UTC, 31h 00m ago,"
+        " past 1.25 × its longest gap in 30 days (30h 00m)"
+    ]
+
+
+def cardmarket_guides(games: tuple[str, ...], days: int, last: datetime) -> None:
+    """Each game's guide every day, the last made at last, kept in its runs and logged."""
+    from riffle.ingest import cardmarket
+
+    for game in games:
+        for k in reversed(range(days)):
+            made = last - timedelta(days=k)
+            kept = runs.keep(cardmarket.lists_dir(game), made, guide(made.strftime("%Y-%m-%dT%H:%M:%S%z")))
+            watching.log(
+                "cardmarket",
+                {"at": runs.name(made + timedelta(minutes=5)), "list": game} | watching.record(kept),
+            )
+
+
+def test_cardmarket_guides_kept_in_runs_are_checked_as_their_log_says(data, monkeypatch):
+    last = datetime(2026, 9, 28, 0, 47, 45, tzinfo=UTC)
+    cardmarket_guides(("mtg", "fab"), 2, last)
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
+    rep = by_source()["Cardmarket"]
+    assert rep.files == 4 and rep.problems == [] and rep.summary() == "4 guides over 2 days: all right"
+    assert rep.notes == ["2 guides: lateness judged from 14 gaps, 1 so far at the fewest"]
+    watching.log("cardmarket", {"at": "2026-09-28T010000Z", "list": "op", "result": "kept"})
+    assert by_source()["Cardmarket"].problems == [
+        "cardmarket/watch.jsonl: an entry it can't read:"
+        " {'at': '2026-09-28T010000Z', 'list': 'op', 'result': 'kept'}"
+    ]
+
+
+def test_each_cardmarket_game_is_judged_for_lateness_alone(data, monkeypatch):
+    last = datetime(2026, 9, 28, 0, 47, 45, tzinfo=UTC)
+    cardmarket_guides(("mtg", "fab"), 16, last)
+    cardmarket_guides(("op",), 16, last - timedelta(days=2))
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
+    notes = by_source()["Cardmarket"].notes
+    assert notes == [
+        "op: late: the last was made 2026-09-26 00:47 UTC, 49h 00m ago,"
+        " past 1.25 × its longest gap in 30 days (30h 00m)",
+        "3 guides judged for lateness",
     ]

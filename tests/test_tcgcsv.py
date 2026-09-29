@@ -2,11 +2,12 @@
 
 import gzip
 import json
-from datetime import UTC, date, datetime
+import re
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from riffle import net
+from riffle import locks, net, runs, watching
 from riffle.ingest import tcgcsv
 
 B = tcgcsv.BASE
@@ -80,9 +81,16 @@ def fab_answers(**overrides):
     return answers
 
 
-def lines(path):
-    with gzip.open(path, "rt", encoding="utf-8") as f:
-        return [json.loads(line) for line in f]
+def plain(outcome: tuple[str, str]) -> tuple[str, str]:
+    """A game's step without how its day was kept, which is sized by zstd."""
+    return outcome[0], re.sub(r", kept as [^;]*", "", outcome[1])
+
+
+def lines(game_dir):
+    """A finished game's day as kept: one set a line."""
+    kept = tcgcsv.kept_game(game_dir)
+    assert kept is not None, f"{game_dir.name} isn't finished"
+    return [json.loads(line) for line in kept.decode().splitlines()]
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +129,7 @@ def test_snapshot_stores_a_game_as_returned_under_tcgcsv_day(data_dir, sleeps):
     day = data_dir / "tcgcsv" / "daily" / "2026-09-24"
     assert (day / "last-updated.txt").read_bytes() == STAMP.strip()
     assert (day / "fab" / "groups.json").read_bytes() == groups(200, 100)
-    assert lines(day / "fab" / "prices.jsonl.gz") == [row(100, prices(1, 2)), row(200, prices(3))]
+    assert lines(day / "fab") == [row(100, prices(1, 2)), row(200, prices(3))]
     by_id = [f"{B}/tcgplayer/62/100/prices", f"{B}/tcgplayer/62/200/prices"]
     assert asked[-2:] == by_id  # sorted by id, not in the listing's order
     assert sleeps == [0.1, 0.1, 0.1]  # a pause before each request after the day's first two
@@ -142,7 +150,7 @@ def test_missing_price_file_is_kept_as_null(data_dir, sleeps):
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/200/prices": None}))
     snap = tcgcsv.snapshot(FAB, fetch=fetch)
     assert snap.fetched == ["fab"]
-    assert lines(tcgcsv.day_dir(DAY, "fab") / "prices.jsonl.gz")[1] == row(200, None, modified=None)
+    assert lines(tcgcsv.day_dir(DAY, "fab"))[1] == row(200, None, modified=None)
 
 
 def test_a_failed_set_keeps_the_rest_and_the_next_run_asks_only_for_it(data_dir, sleeps, tracker):
@@ -159,13 +167,16 @@ def test_a_failed_set_keeps_the_rest_and_the_next_run_asks_only_for_it(data_dir,
     assert snap.failed == [("fab", why)] and snap.fetched == ["op"]
     assert tracker.outcomes()["tcgcsv fab"] == ("fail", why)
     fab = tcgcsv.day_dir(DAY, "fab")
-    assert not (fab / "prices.jsonl.gz").exists() and (fab / "prices.jsonl.part").exists()
+    assert not tcgcsv.finished(fab) and (fab / "prices.jsonl.part").exists()
     assert tcgcsv.stored_days({"fab": "x", "op": "x"}) == []  # a day counts only when every game has it
     fetch, asked = fake_fetch(fab_answers())
     snap = tcgcsv.snapshot(both, fetch=fetch, tracker=tracker)
     assert asked == [f"{B}/last-updated.txt", f"{B}/tcgplayer/62/100/prices"]  # nothing kept is asked again
-    assert snap.fetched == ["fab"] and tracker.outcomes()["tcgcsv fab"] == ("ok", "the last 1 set of 2")
-    assert lines(fab / "prices.jsonl.gz") == [row(100, prices(1, 2)), row(200, prices(3))]  # sorted by set
+    assert snap.fetched == ["fab"] and plain(tracker.outcomes()["tcgcsv fab"]) == (
+        "ok",
+        "the last 1 set of 2",
+    )
+    assert lines(fab) == [row(100, prices(1, 2)), row(200, prices(3))]  # sorted by set
     assert not (fab / "prices.jsonl.part").exists()
     assert tcgcsv.stored_days({"fab": "x", "op": "x"}) == [DAY]
 
@@ -187,18 +198,17 @@ def test_an_unexpected_page_fails_the_game_cleanly(data_dir, sleeps):
 def test_a_set_list_with_no_sets_is_a_finished_game(data_dir, sleeps, tracker):
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/groups": groups()}))
     snap = tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
-    assert snap.fetched == ["fab"] and tracker.outcomes()["tcgcsv fab"] == ("ok", "0 sets")
-    assert lines(tcgcsv.day_dir(DAY, "fab") / "prices.jsonl.gz") == []
+    assert snap.fetched == ["fab"] and plain(tracker.outcomes()["tcgcsv fab"]) == ("ok", "0 sets")
+    assert lines(tcgcsv.day_dir(DAY, "fab")) == []
 
 
 def test_pretty_printed_response_still_takes_one_line(data_dir, sleeps):
     pretty = json.dumps(json.loads(prices(1)), indent=2).encode()
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": pretty}))
     tcgcsv.snapshot(FAB, fetch=fetch)
-    path = tcgcsv.day_dir(DAY, "fab") / "prices.jsonl.gz"
-    with gzip.open(path, "rt", encoding="utf-8") as f:
-        assert len(f.read().splitlines()) == 2
-    assert lines(path)[0] == row(100, prices(1))
+    game = tcgcsv.day_dir(DAY, "fab")
+    assert len(tcgcsv.kept_game(game).splitlines()) == 2
+    assert lines(game)[0] == row(100, prices(1))
 
 
 def test_the_games_with_a_step_of_their_own_are_the_three_played():
@@ -211,7 +221,7 @@ def test_each_game_is_a_step(data_dir, sleeps, tracker):
     tcgcsv.snapshot({"fab": "Flesh & Blood TCG", "op": "One Piece Card Game"}, fetch=fetch, tracker=tracker)
     fab, op = tracker.steps
     assert (fab.label, fab.unit, fab.updates) == ("tcgcsv fab", "sets", [(0, 2), (1, None), (2, None)])
-    assert fab.outcome == ("ok", "2 sets") and op.outcome == ("fail", "HTTP 503")
+    assert plain(fab.outcome) == ("ok", "2 sets") and op.outcome == ("fail", "HTTP 503")
 
 
 def test_a_stored_game_is_a_finished_step(data_dir, sleeps, tracker):
@@ -293,15 +303,15 @@ def test_by_default_every_game_is_a_step_of_its_own(data_dir, sleeps, tracker):
     assert [step.label for step in tracker.steps] == [f"tcgcsv {game}" for game in games]
     day = tcgcsv.daily_dir() / "2026-09-24"
     assert (day / "categories.json").read_bytes() == EVERY_CAT
-    assert lines(day / "warhammer-box-sets" / "prices.jsonl.gz") == [row(40, prices(4))]
+    assert lines(day / "warhammer-box-sets") == [row(40, prices(4))]
     assert not [url for url in asked if "/69/" in url or "/70/" in url]  # comics are never asked for
     yugioh = tracker.steps[-1]
-    assert (yugioh.unit, yugioh.updates, yugioh.outcome) == (
+    assert (yugioh.unit, yugioh.updates, plain(yugioh.outcome)) == (
         "sets",
         [(0, 2), (1, None), (2, None)],
         ("ok", "2 sets"),
     )
-    assert tracker.outcomes()["tcgcsv mtg"] == ("ok", "1 set")
+    assert plain(tracker.outcomes()["tcgcsv mtg"]) == ("ok", "1 set")
 
 
 def test_a_rerun_the_same_day_costs_one_request(data_dir, sleeps, tracker):
@@ -323,7 +333,7 @@ def test_one_game_failing_leaves_the_rest(data_dir, sleeps, tracker):
     snap = tcgcsv.snapshot(fetch=fetch, tracker=tracker)
     why = "1 of 2 sets kept; set 21 failed (HTTP 503), asked again next run"
     assert snap.failed == [("yugioh", why)] and "warhammer-box-sets" in snap.fetched
-    assert not tcgcsv.day_dir(DAY, "yugioh").joinpath("prices.jsonl.gz").exists()  # the next run tries again
+    assert not tcgcsv.finished(tcgcsv.day_dir(DAY, "yugioh"))  # the next run tries again
     assert tracker.outcomes()["tcgcsv yugioh"] == ("fail", why)
 
 
@@ -333,7 +343,7 @@ def test_a_category_without_a_group_list_is_skipped_and_noted(data_dir, sleeps, 
     )
     assert snap.empty == ["pokemon-japan"] and not snap.failed
     assert tracker.outcomes()["tcgcsv pokemon-japan"] == ("ok", "no sets on tcgcsv (HTTP 404); skipped")
-    assert not tcgcsv.day_dir(DAY, "pokemon-japan").joinpath("prices.jsonl.gz").exists()
+    assert not tcgcsv.finished(tcgcsv.day_dir(DAY, "pokemon-japan"))
     assert "warhammer-box-sets" in snap.fetched  # the rest carry on
 
 
@@ -421,11 +431,11 @@ def test_sets_that_fail_are_counted_and_the_first_named(data_dir, sleeps, monkey
 def test_a_set_with_no_last_modified_is_kept_under_the_run_s_day_and_flagged(data_dir, sleeps, tracker):
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": net.Reply(prices(1, 2), {})}))
     tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
-    assert tracker.outcomes()["tcgcsv fab"] == (
+    assert plain(tracker.outcomes()["tcgcsv fab"]) == (
         "warn",
         "2 sets; 1 without a Last-Modified, kept under 2026-09-24",
     )
-    assert lines(tcgcsv.day_dir(DAY, "fab") / "prices.jsonl.gz")[0] == row(100, prices(1, 2), modified=None)
+    assert lines(tcgcsv.day_dir(DAY, "fab"))[0] == row(100, prices(1, 2), modified=None)
 
 
 def test_a_line_cut_off_mid_write_is_dropped_and_its_set_asked_again(data_dir, sleeps):
@@ -436,7 +446,7 @@ def test_a_line_cut_off_mid_write_is_dropped_and_its_set_asked_again(data_dir, s
     fetch, asked = fake_fetch(fab_answers())
     tcgcsv.snapshot(FAB, fetch=fetch)
     assert asked[-1] == f"{B}/tcgplayer/62/200/prices" and f"{B}/tcgplayer/62/100/prices" not in asked
-    assert lines(fab / "prices.jsonl.gz") == [row(100, prices(1, 2)), row(200, prices(3))]
+    assert lines(fab) == [row(100, prices(1, 2)), row(200, prices(3))]
 
 
 NEXT = b"2026-09-25T20:05:10+0000"
@@ -459,14 +469,14 @@ def test_a_set_from_the_next_refresh_moves_the_run_to_its_day(data_dir, sleeps, 
     assert snap.refreshed == date(2026, 9, 25) and snap.fetched == ["fab"]
     assert asked[5:] == [f"{B}/last-updated.txt", f"{B}/tcgplayer/62/groups", f"{B}/tcgplayer/62/100/prices"]
     old, new = tcgcsv.day_dir(DAY, "fab"), tcgcsv.day_dir(date(2026, 9, 25), "fab")
-    assert lines(old / "prices.jsonl.gz") == [row(100, prices(1, 2))]  # finished as it stood
+    assert lines(old) == [row(100, prices(1, 2))]  # finished as it stood
     assert (old / "missing.txt").read_text() == "200\n"
-    assert lines(new / "prices.jsonl.gz") == [
+    assert lines(new) == [
         row(100, prices(1, 2)),
         row(200, prices(3), "2026-09-25T20:04:30+00:00"),
     ]
     assert (new.parent / "last-updated.txt").read_bytes() == NEXT
-    assert tracker.outcomes() == {
+    assert {label: plain(said) for label, said in tracker.outcomes().items()} == {
         "tcgcsv fab": (
             "warn",
             "1 of 2 sets kept for 2026-09-24; tcgcsv published 2026-09-25 mid-run, and the rest go under it; "
@@ -501,7 +511,7 @@ def test_an_earlier_day_left_unfinished_is_finished_as_it_stood(data_dir, sleeps
         "warn",
         "finished as it stood; sets never fetched, named in missing.txt: fab 1, op, which unknown",
     )
-    assert lines(before / "fab" / "prices.jsonl.gz") == [row(2, prices(5))]
+    assert lines(before / "fab") == [row(2, prices(5))]
     assert (before / "fab" / "missing.txt").read_text() == "1\n"
     assert (before / "op" / "missing.txt").read_text() == "unknown: the day's set list wasn't kept\n"
     assert not list(before.rglob("*.part"))
@@ -524,10 +534,208 @@ def test_a_day_that_can_t_be_finished_fails_its_step_and_keeps_its_part_file(
     before.mkdir(parents=True)
     (before / "prices.jsonl.part").write_text(json.dumps(row(2, prices(5))) + "\n")
 
-    def full_disk(game_dir):
+    def full_disk(game_dir, stamp):
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(tcgcsv, "_finish", full_disk)
     tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0], tracker=tracker)
     assert tracker.outcomes()["tcgcsv 2026-09-23"] == ("fail", "[Errno 28] No space left on device")
     assert (before / "prices.jsonl.part").exists()
+
+
+# ---- each finished game kept by the run rule -------------------------------------
+
+
+def test_a_finished_game_is_kept_in_its_runs_under_the_day_s_stamp(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0], tracker=tracker)
+    fab = tcgcsv.day_dir(DAY, "fab")
+    record = json.loads((fab / "kept.json").read_text())
+    assert (record["made"], record["kind"], record["day"], record["sets"]) == (
+        "2026-09-24T200550Z",
+        "base",
+        "2026-09-24",
+        2,
+    )
+    assert record["file"] == "tcgcsv/lists/fab/2026-09-24T200550Z/2026-09-24T200550Z.json.zst"
+    assert not (fab / "prices.jsonl.gz").exists() and not (fab / "prices.jsonl.part").exists()
+    size = watching.size((data_dir.parent / "riffle" / record["file"]).stat().st_size)
+    assert tracker.outcomes()["tcgcsv fab"] == ("ok", f"2 sets, kept as a new run, {size} kept twice")
+
+
+def test_the_next_day_is_kept_as_a_difference(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0])
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers(**{f"{B}/last-updated.txt": NEXT}))[0], tracker=tracker)
+    fab = tcgcsv.day_dir(date(2026, 9, 25), "fab")
+    record = json.loads((fab / "kept.json").read_text())
+    assert (record["made"], record["kind"]) == ("2026-09-25T200510Z", "diff")
+    assert tracker.outcomes()["tcgcsv fab"][1].startswith("2 sets, kept as a difference of")
+    assert lines(fab) == [row(100, prices(1, 2)), row(200, prices(3))]
+    assert list(runs.kept(tcgcsv.lists_dir("fab"))) == ["2026-09-24T200550Z", "2026-09-25T200510Z"]
+
+
+def test_a_day_kept_before_the_runs_still_counts_as_finished(data_dir, sleeps, tracker):
+    fab = tcgcsv.day_dir(DAY, "fab")
+    fab.mkdir(parents=True)
+    body = (json.dumps(row(100, prices(1, 2))) + "\n").encode()
+    (fab / "prices.jsonl.gz").write_bytes(gzip.compress(body))
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0], tracker=tracker)
+    assert tracker.outcomes()["tcgcsv fab"] == ("ok", "already have 2026-09-24")
+    assert tcgcsv.kept_game(fab) == body and tcgcsv.stored_days(FAB) == [DAY]
+    assert tcgcsv.kept_game(tcgcsv.day_dir(DAY, "op")) is None
+
+
+def test_made_is_when_each_day_kept_was_published(data_dir):
+    for day, stamp in (("2026-09-24", STAMP), ("2026-09-25", NEXT), ("2026-09-26", b"garbled")):
+        folder = data_dir / "tcgcsv" / "daily" / day
+        folder.mkdir(parents=True)
+        (folder / "last-updated.txt").write_bytes(stamp)
+    assert tcgcsv.made() == [
+        datetime(2026, 9, 24, 20, 5, 50, tzinfo=UTC),
+        datetime(2026, 9, 25, 20, 5, 10, tzinfo=UTC),
+    ]
+
+
+def test_an_earlier_day_with_no_stamp_is_kept_under_its_midnight(data_dir, sleeps):
+    before = tcgcsv.day_dir(date(2026, 9, 23), "fab")
+    before.mkdir(parents=True)
+    (before / "prices.jsonl.part").write_text(json.dumps(row(2, prices(5))) + "\n")
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0])
+    assert json.loads((before / "kept.json").read_text())["made"] == "2026-09-23T000000Z"
+
+
+# ---- the watch: asked when due -------------------------------------------------------
+
+
+def watch(fetch, tracker=None, at: datetime = NOW, **kw) -> tcgcsv.Watched:
+    if tracker is not None:
+        kw["tracker"] = tracker
+    return tcgcsv.watch(FAB, fetch=fetch, clock=lambda: at, **kw)
+
+
+def logged(data_dir) -> list[dict]:
+    return [json.loads(line) for line in (data_dir / "tcgcsv" / "watch.jsonl").read_text().splitlines()]
+
+
+def test_the_first_watch_asks_and_fetches_the_day(data_dir, sleeps):
+    fetch, asked = fake_fetch(fab_answers())
+    res = watch(fetch)
+    assert res.asked and res.snap is not None and res.snap.fetched == ["fab"]
+    assert asked.count(f"{B}/last-updated.txt") == 1  # the check is the day's first request
+    check, day = logged(data_dir)
+    assert check == {
+        "at": "2026-09-24T220000Z",
+        "list": "last-updated",
+        "result": "new",
+        "made": "2026-09-24T200550Z",
+    }
+    assert day | {"seconds": 0} == {
+        "at": "2026-09-24T220000Z",
+        "list": "day",
+        "made": "2026-09-24T200550Z",
+        "result": "whole",
+        "requests": 5,
+        "seconds": 0,
+    }
+
+
+def test_a_watch_before_the_next_check_is_due_asks_nothing(data_dir, sleeps, tracker):
+    watch(fake_fetch(fab_answers())[0])
+    fetch, asked = fake_fetch(fab_answers())
+    res = watch(fetch, tracker, at=NOW + timedelta(minutes=2))
+    assert asked == [] and not res.asked and res.plan is not None and not res.plan.ask
+    said = "next asked 2026-09-24 22:05 UTC; its next day's time is learned from 14 gaps, 0 so far"
+    assert tracker.outcomes() == {"tcgcsv": ("ok", said)}
+
+
+def test_a_due_check_that_finds_the_same_day_asks_once(data_dir, sleeps, tracker):
+    watch(fake_fetch(fab_answers())[0])
+    fetch, asked = fake_fetch(fab_answers())
+    res = watch(fetch, tracker, at=NOW + timedelta(minutes=5))
+    assert asked == [f"{B}/last-updated.txt"] and res.snap is None
+    assert tracker.outcomes() == {"tcgcsv": ("ok", "no new day since the one made 2026-09-24 20:05 UTC")}
+    assert logged(data_dir)[-1] == {
+        "at": "2026-09-24T220500Z",
+        "list": "last-updated",
+        "result": "same",
+        "made": "2026-09-24T200550Z",
+    }
+
+
+def test_a_failed_check_is_logged_and_fails_the_step(data_dir, sleeps, tracker):
+    fetch, _ = fake_fetch({f"{B}/last-updated.txt": net.NoAnswer("no answer after 3 tries")})
+    res = watch(fetch, tracker)
+    assert res.asked and res.snap is None
+    assert tracker.outcomes() == {"tcgcsv": ("fail", "no answer after 3 tries")}
+    assert logged(data_dir) == [
+        {
+            "at": "2026-09-24T220000Z",
+            "list": "last-updated",
+            "result": "failed",
+            "why": "no answer after 3 tries",
+        }
+    ]
+
+
+def test_a_day_not_yet_whole_is_asked_at_every_run(data_dir, sleeps):
+    watch(fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": net.FetchError("HTTP 503")}))[0])
+    assert logged(data_dir)[-1]["result"] == "short"
+    fetch, asked = fake_fetch(fab_answers())
+    res = watch(fetch, at=NOW + timedelta(minutes=1))  # not due by the schedule, but the day isn't whole
+    assert res.snap is not None and res.snap.fetched == ["fab"]
+    assert asked == [f"{B}/last-updated.txt", f"{B}/tcgplayer/62/100/prices"]
+    assert logged(data_dir)[-1]["result"] == "whole"
+
+
+def test_the_sync_asks_whether_or_not_a_day_is_due(data_dir, sleeps):
+    watch(fake_fetch(fab_answers())[0])
+    fetch, asked = fake_fetch(fab_answers())
+    watch(fetch, at=NOW + timedelta(minutes=1), always=True)
+    assert asked == [f"{B}/last-updated.txt"]
+
+
+def test_a_watch_that_finds_tcgcsv_s_lock_held_asks_nothing(data_dir, tracker):
+    fetch, asked = fake_fetch(fab_answers())
+    with locks.held(data_dir / "tcgcsv" / "watch.lock"):
+        res = watch(fetch, tracker)
+    assert res.busy and asked == []
+    assert tracker.outcomes() == {"tcgcsv": ("ok", "another run is asking for it")}
+
+
+def test_a_day_that_can_t_be_fetched_is_logged_short(data_dir, sleeps, tracker):
+    res = watch(fake_fetch(fab_answers(**{f"{B}/tcgplayer/categories": None}))[0], tracker)
+    assert res.snap is None and tracker.outcomes()["tcgcsv"] == ("fail", "categories: HTTP 404")
+    assert logged(data_dir)[-1] | {"seconds": 0} == {
+        "at": "2026-09-24T220000Z",
+        "list": "day",
+        "made": "2026-09-24T200550Z",
+        "result": "short",
+        "seconds": 0,
+    }
+
+
+def test_a_day_tcgcsv_moves_past_mid_run_is_short(data_dir, sleeps):
+    res = watch(fake_fetch(refreshing(NEXT))[0])
+    assert res.snap is not None and res.snap.refreshed == date(2026, 9, 25)
+    assert logged(data_dir)[-1]["result"] == "short"
+
+
+def test_a_learned_day_is_asked_from_its_expected_time(data_dir, sleeps, tracker):
+    last = datetime(2026, 9, 24, 20, 5, 50, tzinfo=UTC)
+    for n in range(15):  # 14 gaps of a day
+        folder = tcgcsv.daily_dir() / (last - timedelta(days=n)).date().isoformat()
+        folder.mkdir(parents=True)
+        (folder / "last-updated.txt").write_bytes((last - timedelta(days=n)).strftime(tcgcsv.STAMP).encode())
+    expected = last + timedelta(days=1)
+    checks = [expected - timedelta(hours=2 + 4 * n) for n in range(42)]  # a clean week
+    (data_dir / "tcgcsv" / "watch.jsonl").write_text(
+        "".join(
+            json.dumps({"at": runs.name(at), "list": "last-updated", "result": "same"}) + "\n"
+            for at in checks
+        )
+    )
+    fetch, asked = fake_fetch(fab_answers())
+    watch(fetch, tracker, at=expected - timedelta(minutes=1))
+    assert asked == []
+    said = "next asked 2026-09-25 20:05 UTC; its next day expected 2026-09-25 20:05 UTC"
+    assert tracker.outcomes() == {"tcgcsv": ("ok", said)}
+    assert watch(fetch, at=expected + timedelta(minutes=1)).asked

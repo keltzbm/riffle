@@ -235,13 +235,14 @@ def fetch_new(
     timeout: float = 60,
     retries: int = 2,
     progress: Progress | None = None,
+    missing: Collection[int] = (404,),
 ) -> Fetched | None:
-    """One request for a list that may be one already kept; None for 404. known gets the
+    """One request for a list that may be one already kept; None for 404 (or missing). known gets the
     list's first HEAD bytes and says whether it's kept. A new list streams to dest as download
     does, gzip unpacked, and one cut off is a FetchError: short of its Content-Length, or a gzip
     stream that never ends."""
     headers = {"Accept-Encoding": "gzip"} | ({"If-None-Match": etag} if etag else {})
-    r = _open(url, accept, timeout, retries, headers=headers, answers=(304,))
+    r = _open(url, accept, timeout, retries, missing=missing, headers=headers, answers=(304,))
     if r is None:
         return None
     if r.status == 304:

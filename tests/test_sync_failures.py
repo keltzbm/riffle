@@ -121,18 +121,19 @@ def online_steps(monkeypatch, calls, refresh_fails=False):
         else:
             step.ok("current")
 
-    def snapshot(delay, tracker):
+    def watch(delay, tracker, always):
         calls.append("tcgcsv")
         tracker.step("tcgcsv mtg").ok("456 groups")
-        return tcgcsv.Snapshot(day=date(2026, 9, 26), fetched=["mtg"], groups={"mtg": 456})
+        snap = tcgcsv.Snapshot(day=date(2026, 9, 26), fetched=["mtg"], groups={"mtg": 456})
+        return tcgcsv.Watched(asked=True, snap=snap)
 
     monkeypatch.setattr(scryfall, "refresh", refresh)
     monkeypatch.setattr(scryfall_catalog, "update", lambda tracker, force: calls.append("catalog"))
     monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson"))
     monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots"))
-    monkeypatch.setattr(cardmarket, "snapshot", lambda tracker: calls.append("cardmarket"))
+    monkeypatch.setattr(cardmarket, "watch", lambda tracker, always: calls.append("cardmarket"))
     monkeypatch.setattr(pricelists, "watch", lambda lists, tracker: calls.append(lists[0].store))
-    monkeypatch.setattr(tcgcsv, "snapshot", snapshot)
+    monkeypatch.setattr(tcgcsv, "watch", watch)
 
 
 def test_without_a_network_the_sync_goes_offline_and_exits_1(vault, monkeypatch):

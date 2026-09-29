@@ -1,4 +1,4 @@
-"""Daily TCGplayer prices from tcgcsv.com, one snapshot per day per game.
+"""Daily TCGplayer prices from tcgcsv.com: each game's prices every day tcgcsv publishes.
 
 tcgcsv mirrors TCGplayer's catalog and prices once a day and serves them as
 plain JSON, no key needed:
@@ -11,24 +11,34 @@ plain JSON, no key needed:
 It used to publish a daily archive of every price file at once. That was taken
 down in September 2026 (server costs; the maintainer is waiting on TCGplayer
 for terms), with the request that clients fetch the price files one at a time
-and never the same file twice in a day. So Riffle keeps its own history: once
-a day, for everything tcgcsv carries but comics, it fetches every group's
-("set's") price file and stores the responses as returned, in
+and never the same file twice in a day. So Riffle keeps its own history: each
+day tcgcsv publishes, for everything it carries but comics, it fetches every
+group's ("set's") price file and keeps the responses as returned:
 
     <data_dir>/tcgcsv/daily/<day>/last-updated.txt          tcgcsv's stamp for the day
     <data_dir>/tcgcsv/daily/<day>/categories.json           the category list that day
     <data_dir>/tcgcsv/daily/<day>/<game>/groups.json        the groups response
     <data_dir>/tcgcsv/daily/<day>/<game>/prices.jsonl.part  while the game is being fetched
-    <data_dir>/tcgcsv/daily/<day>/<game>/prices.jsonl.gz    the game, finished; one line per set:
-        {"groupId": ..., "fetched": <UTC>, "lastModified": <UTC>, "response": <the price file>}
+    <data_dir>/tcgcsv/daily/<day>/<game>/kept.json          the game, finished: its list's
+                                                            entry, as a watch log's
     <data_dir>/tcgcsv/daily/<day>/<game>/missing.txt        the sets never fetched, if any
+    <data_dir>/tcgcsv/lists/<game>/<base's stamp>/...       each finished day's list (riffle.runs)
 
-<day> is the date from last-updated.txt. tcgcsv publishes a day at about 20:05
-UTC, so a day spans both daily syncs: each set is appended to the game's part
-file as it arrives, and a set that fails is asked for by the next run of the
-same day, which asks for nothing already kept. A game with every set is
-gzipped, sorted by set; one a day left unfinished is gzipped as it stood at the
-next day's run, with missing.txt. Each set goes under the day its own
+A game's list is one line per set, sorted by set:
+
+    {"groupId": ..., "fetched": <UTC>, "lastModified": <UTC>, "response": <the price file>}
+
+kept by the run rule under the day's stamp: the run's first whole, twice, and
+each later day as a difference against it. Until 2026-09-29 a finished game was
+<day>/<game>/prices.jsonl.gz; those stay.
+
+<day> is the date from last-updated.txt. `riffle watch tcgcsv` asks for it when
+riffle.cadence says, learned from tcgcsv's own stamps and checks, and fetches a
+new day when it comes: each set is appended to the game's part file as it
+arrives, and a set that fails is asked for by the next run, which asks for
+nothing already kept. A game with every set is kept; one a day left unfinished
+is kept as it stood at the next day's run, with missing.txt. Every check and
+every day fetched goes in <data_dir>/tcgcsv/watch.jsonl. Each set goes under the day its own
 Last-Modified says: one from the next refresh moves the run on to that day.
 Days kept before resuming came in have no times on their lines. The games in
 GAMES are named by their tcgcsv category and resolved to IDs at run time; every
@@ -47,11 +57,12 @@ from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-from riffle import net, times
+from riffle import cadence, lateness, net, runs, times, watching
 from riffle.config import data_dir
 from riffle.progress import SILENT, Step, Tracker
 
 BASE = "https://tcgcsv.com"
+STORE = "tcgcsv"
 # Game code -> the game's category name on tcgcsv; IDs are looked up at run time. These are the
 # games played; every other category is kept too, named by its slug. Each game is its own step.
 GAMES = {"mtg": "Magic", "fab": "Flesh & Blood TCG", "op": "One Piece Card Game"}
@@ -62,7 +73,10 @@ DAILY_REQUESTS = 9_000  # tcgcsv asks for under 10,000 a day; games past this wa
 OVER_BUDGET = "past the day's request budget; the next day's run gets it"
 NO_ANSWER = "not asked: tcgcsv gave no answer"
 NEXT_REFRESH = timedelta(hours=1)  # a file this far past its day's stamp came from the next refresh
-PRICES, PART, MISSING = "prices.jsonl.gz", "prices.jsonl.part", "missing.txt"
+PRICES, PART, MISSING = "prices.jsonl.gz", "prices.jsonl.part", "missing.txt"  # PRICES: before 0033
+KEPT = "kept.json"
+CHECKED, DAY = "last-updated", "day"  # the watch log's two kinds of entry
+STAMP = "%Y-%m-%dT%H:%M:%S%z"  # last-updated.txt: 2026-09-24T20:05:50+0000
 SET_LINE = re.compile(rb'^\{"groupId": (\d+),', re.MULTILINE)
 
 Fetch = Callable[[str], net.Reply | None]  # url -> body and headers, or None for 404
@@ -78,6 +92,14 @@ class Snapshot:
     groups: dict[str, int] = field(default_factory=dict)  # game -> sets in its finished file
     requests: int = 0
     refreshed: date | None = None  # a day tcgcsv published mid-run, which the rest of the run went under
+
+
+@dataclass
+class Watched:
+    busy: bool = False  # another run held tcgcsv: nothing asked
+    asked: bool = False  # last-updated.txt was asked for
+    snap: Snapshot | None = None  # the day fetched, when one was
+    plan: cadence.Plan | None = None  # when it's asked next, when it wasn't due
 
 
 @dataclass
@@ -115,16 +137,45 @@ def day_dir(day: date, game: str) -> Path:
     return daily_dir() / day.isoformat() / game
 
 
+def lists_dir(game: str) -> Path:
+    return data_dir() / STORE / "lists" / game
+
+
+def finished(game_dir: Path) -> bool:
+    """Whether a game's day is finished: kept in its runs, or gzipped before 0033."""
+    return (game_dir / KEPT).exists() or (game_dir / PRICES).exists()
+
+
+def kept_game(game_dir: Path) -> bytes | None:
+    """A finished game's day as kept, one line per set; None if it isn't finished."""
+    record = game_dir / KEPT
+    if record.exists():
+        return runs.rebuild(data_dir() / json.loads(record.read_text(encoding="utf-8"))["file"])
+    old = game_dir / PRICES
+    return gzip.decompress(old.read_bytes()) if old.exists() else None
+
+
 def stored_days(games: dict[str, str] = GAMES) -> list[date]:
-    """Days with a price file for every game, oldest first."""
+    """Days with every game finished, oldest first."""
     if not daily_dir().exists():
         return []
     days = []
     for entry in daily_dir().iterdir():
         day = _date(entry.name)
-        if day is not None and all((entry / game / PRICES).exists() for game in games):
+        if day is not None and all(finished(entry / game) for game in games):
             days.append(day)
     return sorted(days)
+
+
+def made() -> list[datetime]:
+    """When tcgcsv published each day kept, from its last-updated.txt, oldest first."""
+    found = []
+    for path in daily_dir().glob("*/last-updated.txt") if daily_dir().is_dir() else []:
+        try:
+            found.append(datetime.strptime(path.read_text().strip(), STAMP).astimezone(UTC))
+        except (OSError, ValueError):
+            continue
+    return sorted(found)
 
 
 def _date(name: str) -> date | None:
@@ -141,7 +192,7 @@ def last_updated(fetch: Fetch = _get) -> datetime:
         raise net.FetchError("HTTP 404")
     text = reply.body.decode(errors="replace").strip()
     try:
-        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z")
+        return datetime.strptime(text, STAMP)
     except ValueError as e:
         raise net.FetchError(f"unexpected last-updated.txt: {text[:40]!r}") from e
 
@@ -224,15 +275,11 @@ def _write(dest: Path, body: bytes) -> None:
     tmp.replace(dest)
 
 
-def _target(day: date, game: str) -> Path:
-    return day_dir(day, game) / PRICES
-
-
 def _keep_stamp(stamp: datetime) -> None:
     """A day's last-updated.txt, kept the first time."""
     path = daily_dir() / stamp.date().isoformat() / "last-updated.txt"
     if not path.exists():
-        _write(path, stamp.strftime("%Y-%m-%dT%H:%M:%S%z").encode())
+        _write(path, stamp.strftime(STAMP).encode())
 
 
 def _categories(snap: Snapshot, fetch: Fetch) -> list[dict]:
@@ -287,10 +334,10 @@ def _append(part: Path, gid: int, fetched: datetime, modified: datetime | None, 
         f.write(f'{{"groupId": {gid}, "fetched": {at}, "lastModified": {mod}, "response": {response}}}\n')
 
 
-def _finish(game_dir: Path) -> list[int] | None:
-    """A game's part file gzipped to prices.jsonl.gz, one line per set sorted by set, with
-    missing.txt naming the day's sets not in it. Those sets, or None when the day's set list
-    wasn't kept to tell."""
+def _finish(game_dir: Path, stamp: datetime) -> tuple[list[int] | None, runs.Kept]:
+    """A game's part file kept in its runs under the day's stamp, one line per set sorted by
+    set, with missing.txt naming the day's sets not in it and kept.json saying where it's kept.
+    Those sets, or None when the day's set list wasn't kept to tell; and how it was kept."""
     part = game_dir / PART
     text = part.read_bytes() if part.exists() else b""  # no part: a set list with no sets
     lines: dict[int, bytes] = {}
@@ -308,14 +355,20 @@ def _finish(game_dir: Path) -> list[int] | None:
         _write(game_dir / MISSING, b"unknown: the day's set list wasn't kept\n")
     elif missing:
         _write(game_dir / MISSING, "".join(f"{g}\n" for g in missing).encode())
-    target = game_dir / PRICES
-    tmp = target.with_name(target.name + ".part")
-    with gzip.open(tmp, "wb") as out:
-        for gid in sorted(lines):
-            out.write(lines[gid] + b"\n")
-    tmp.replace(target)
+    data = b"".join(lines[gid] + b"\n" for gid in sorted(lines))
+    kept = runs.keep(lists_dir(game_dir.name), stamp, data)
+    record = watching.record(kept) | {"day": game_dir.parent.name, "sets": len(lines)}
+    _write(game_dir / KEPT, json.dumps(record).encode())
     part.unlink(missing_ok=True)
-    return missing
+    return missing, kept
+
+
+def _day_stamp(folder: Path, day: date) -> datetime:
+    """A day's stamp from its last-updated.txt; midnight UTC when it has none to read."""
+    try:
+        return datetime.strptime((folder / "last-updated.txt").read_text().strip(), STAMP)
+    except (OSError, ValueError):
+        return datetime.combine(day, datetime.min.time(), UTC)
 
 
 def _finish_days(run: _Run) -> None:
@@ -326,14 +379,14 @@ def _finish_days(run: _Run) -> None:
         day = _date(folder.name)
         if day is None or day >= run.day:
             continue
-        games = sorted(p.parent for p in folder.glob(f"*/{PART}") if not (p.parent / PRICES).exists())
+        games = sorted(p.parent for p in folder.glob(f"*/{PART}") if not finished(p.parent))
         if not games:
             continue
         step = run.tracker.step(f"tcgcsv {day}")
         short = []
         try:
             for game_dir in games:
-                missing = _finish(game_dir)
+                missing, _ = _finish(game_dir, _day_stamp(folder, day))
                 if missing is None:
                     short.append(f"{game_dir.name}, which unknown")
                 elif missing:
@@ -448,12 +501,13 @@ def _outcome(game: str, tally: _Tally, notes: list[str], run: _Run, step: Step) 
     have = tally.had + tally.kept
     flags = [f"{tally.unstamped:,} without a Last-Modified, kept under {run.day}"] if tally.unstamped else []
     if have == tally.listed:
-        _finish(day_dir(run.day, game))
+        _, kept = _finish(day_dir(run.day, game), run.stamp)
         run.snap.groups[game] = tally.listed
         run.snap.fetched.append(game)
         sets = _count(have, "set")
         if tally.had:
             sets = f"the last {_count(tally.kept, 'set')} of {tally.listed:,}"
+        sets += f", kept as {watching.how(kept)}"
         (step.warn if notes or flags else step.ok)("; ".join([*notes, sets, *flags]))
         return
     lacks = f"{have:,} of {tally.listed:,} sets kept"
@@ -474,6 +528,7 @@ def snapshot(
     delay: float = 0.1,
     fetch: Fetch = _get,
     tracker: Tracker = SILENT,
+    stamp: datetime | None = None,
 ) -> Snapshot:
     """Keep today's price files for every category tcgcsv carries but SKIPPED, or with
     `games` (code -> category name) for just those, asking for nothing already kept.
@@ -485,8 +540,9 @@ def snapshot(
     run past DAILY_REQUESTS waits. Once tcgcsv gives no answer, the rest of its games fail
     without being asked. Games an earlier day left unfinished are finished as they stood.
     delay is the pause before each request after the day's first two (tcgcsv asks for ~100 ms).
+    stamp is last-updated.txt when it was just read, and counts as the run's first request.
     """
-    stamp = last_updated(fetch)
+    stamp = stamp or last_updated(fetch)
     snap = Snapshot(day=stamp.date(), requests=1)
     run = _Run(fetch, delay, tracker, snap, snap.day, stamp)
     try:
@@ -501,7 +557,7 @@ def _games(games: dict[str, str] | None, run: _Run, stamp: datetime) -> None:
     named = GAMES if games is None else games
     todo = []
     for game in named:
-        if _target(snap.day, game).exists():
+        if finished(day_dir(snap.day, game)):
             snap.skipped.append(game)
             tracker.step(f"tcgcsv {game}").ok(f"already have {snap.day}")
         else:
@@ -515,10 +571,82 @@ def _games(games: dict[str, str] | None, run: _Run, stamp: datetime) -> None:
         _game(game, ids.get(game), named[game], run)
     if games is None:
         others = {game: cid for game, cid in sorted(kept(cats).items()) if cid not in ids.values()}
-        stored = [game for game in others if _target(run.day, game).exists()]
+        stored = [game for game in others if finished(day_dir(run.day, game))]
         if stored:
             snap.skipped.extend(stored)
             tracker.step(f"tcgcsv {_count(len(stored), 'more game')}").ok(f"already have {run.day}")
         for game, cid in others.items():
             if game not in stored:
                 _game(game, cid, game, run)
+
+
+def watch(
+    games: dict[str, str] | None = None,
+    delay: float = 0.1,
+    fetch: Fetch = _get,
+    tracker: Tracker = SILENT,
+    clock: Callable[[], datetime] = times.now,
+    always: bool = False,
+) -> Watched:
+    """Ask last-updated.txt when riffle.cadence says tcgcsv's next day is due, or always (the
+    sync), and fetch the day when a new one has come (snapshot). A day not yet whole is asked for
+    at every run until it is. Every check and every day fetched is logged. A run that finds
+    tcgcsv's lock held asks nothing."""
+    res = Watched()
+    with watching.held(STORE) as mine:
+        if not mine:
+            res.busy = True
+            tracker.step("tcgcsv").ok("another run is asking for it")
+            return res
+        now = clock()
+        log = watching.entries(STORE)
+        if not always and _whole(log) is not False:
+            busy = watching.longest(log, DAY, now, lateness.WINDOW)
+            res.plan = cadence.plan(made(), watching.checks(log, CHECKED), now, busy)
+            if not res.plan.ask:
+                tracker.step("tcgcsv").ok(_waiting(res.plan))
+                return res
+        res.asked = True
+        entry = {"at": watching.at(now), "list": CHECKED}
+        try:
+            stamp = last_updated(fetch)
+        except (net.FetchError, OSError) as e:
+            watching.log(STORE, entry | {"result": "failed", "why": str(e)})
+            tracker.step("tcgcsv").fail(str(e))
+            return res
+        if _whole(log) == runs.name(stamp):
+            watching.log(STORE, entry | {"result": "same", "made": runs.name(stamp)})
+            tracker.step("tcgcsv").ok(f"no new day since the one made {times.shown(stamp)}")
+            return res
+        watching.log(STORE, entry | {"result": "new", "made": runs.name(stamp)})
+        started = time.monotonic()
+        day: dict = {"list": DAY, "made": runs.name(stamp), "result": "short"}
+        try:
+            res.snap = snapshot(games, delay, fetch, tracker, stamp)
+        except (net.FetchError, OSError) as e:
+            tracker.step("tcgcsv").fail(str(e))
+        else:
+            whole = not res.snap.failed and res.snap.refreshed is None
+            day |= {"result": "whole" if whole else "short", "requests": res.snap.requests}
+        seconds = round(time.monotonic() - started, 1)
+        watching.log(STORE, {"at": watching.at(clock())} | day | {"seconds": seconds})
+    return res
+
+
+def _whole(log: list[dict]) -> str | bool | None:
+    """The stamp of the last day the log fetched whole; False when a new day has been asked
+    for since and isn't whole yet; None when it has fetched none."""
+    last: str | bool | None = None
+    for entry in log:
+        if entry.get("list") == CHECKED and entry.get("result") == "new":
+            last = False
+        elif entry.get("list") == DAY:
+            last = entry.get("made") if entry.get("result") == "whole" else False
+    return last
+
+
+def _waiting(plan: cadence.Plan) -> str:
+    said = f"next asked {times.shown(plan.next)}"
+    if plan.expected is None:
+        return f"{said}; its next day's time is learned from {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
+    return f"{said}; its next day expected {times.shown(plan.expected)}"

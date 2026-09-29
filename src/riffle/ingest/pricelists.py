@@ -73,20 +73,20 @@ Headers, retries, and 429 handling: riffle.net.
 """
 
 import gzip
-import json
 import re
 import shutil
 import zlib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from riffle import locks, net, runs, times
+from riffle import net, runs, times, watching
 from riffle.config import data_dir
 from riffle.ingest import empties
 from riffle.progress import SILENT, Step, Tracker
+from riffle.watching import Watch
 
 WRAPPER = (b"<html><head></head><body>", b"</body></html>")  # Card Kingdom's, sometimes
 HEAD = 4096  # bytes read at each end of a list
@@ -144,25 +144,8 @@ STORES = {lists[0].store: lists for lists in (CARD_KINGDOM, MANA_POOL)}
 Fetch = Callable[..., net.Fetched | None]  # net.fetch_new
 
 
-@dataclass
-class Watch:
-    busy: bool = False  # another run held the store: nothing asked
-    kept: list[str] = field(default_factory=list)  # labels of the lists kept this run
-    same: list[str] = field(default_factory=list)  # the list asked for was kept already
-    empty: list[str] = field(default_factory=list)  # answered with no rows
-    failed: list[tuple[str, str]] = field(default_factory=list)  # (label, why)
-
-
 def lists_dir(plist: PriceList) -> Path:
     return data_dir() / plist.store / "lists" / plist.name
-
-
-def log_path(store: str) -> Path:
-    return data_dir() / store / "watch.jsonl"
-
-
-def _tags_path(store: str) -> Path:
-    return data_dir() / store / "watch-etags.json"
 
 
 def _shown(path: Path) -> str:
@@ -253,35 +236,6 @@ def _set_aside(fresh: Path, plist: PriceList, at: datetime) -> Path:
     return dest
 
 
-def _size(size: int) -> str:
-    """A size to read at a glance: a difference is often a few kilobytes, or bytes."""
-    if size >= 1e6:
-        return f"{size / 1e6:,.1f} MB"
-    return f"{size / 1e3:,.0f} KB" if size >= 1e3 else f"{size:,} bytes"
-
-
-def _log(store: str, entry: dict) -> None:
-    path = log_path(store)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
-def _load_tags(store: str) -> dict[str, str]:
-    try:
-        found = json.loads(_tags_path(store).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str)}
-
-
-def _save_tags(store: str, tags: dict[str, str]) -> None:
-    path = _tags_path(store)
-    part = path.with_name(path.name + ".part")
-    part.write_text(json.dumps(tags, indent=1, sort_keys=True), encoding="utf-8")
-    part.replace(path)
-
-
 def _one(plist: PriceList, fetch: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
     """Ask for one list and keep it if it's new; end step saying what came. The log entry."""
     what = plist.url.rsplit("/", 1)[-1]
@@ -342,28 +296,14 @@ def _keep(
         raise runs.Unverified(f"{e}; the list is kept aside as {_shown(dest)}") from e
     if got.etag:
         tags[plist.name] = got.etag
-    how = (
-        f"a new run, {_size(kept.stored // 2)} kept twice"
-        if kept.kind == "base"
-        else f"a difference of {_size(kept.stored)}"
-    )
-    note = f"kept the list made {times.shown(at)}, {_size(kept.size)}: {how}"
+    note = f"kept the list made {times.shown(at)}, {watching.size(kept.size)}: {watching.how(kept)}"
     if at - now > SLACK:
         step.warn(f"{note}; it says it was made after it was fetched, so its clock isn't {plist.zone_name}")
     elif kept.notes:
         step.warn(f"{note}; {'; '.join(kept.notes)}")
     else:
         step.ok(note)
-    return {
-        "result": "kept",
-        "made": kept.stamp,
-        "kind": kept.kind,
-        "file": _shown(kept.path),
-        "size": kept.size,
-        "stored": kept.stored,
-        "sha256": kept.sha256,
-        "file_sha256": kept.file_sha256,
-    }
+    return watching.record(kept)
 
 
 def watch(
@@ -377,21 +317,21 @@ def watch(
     the rest fail without asking. A run that finds the store's lock held asks nothing."""
     store = lists[0].store
     res = Watch()
-    with locks.held(data_dir() / store / "watch.lock") as mine:
+    with watching.held(store) as mine:
         if not mine:
             res.busy = True
             tracker.step(f"{lists[0].label.rsplit(' ', 1)[0]} lists").ok("another run is asking for them")
             return res
-        tags = _load_tags(store)
+        tags = watching.load_tags(store)
         answering = True
         for plist in lists:
             now = clock()
-            entry: dict = {"at": runs.name(now.replace(microsecond=0)), "list": plist.name}
+            entry: dict = {"at": watching.at(now), "list": plist.name}
             if not answering:
                 why = "not asked: no answer to the list before"
                 res.failed.append((plist.label, why))
                 tracker.step(plist.label).fail(why)
-                _log(store, entry | {"result": "failed", "why": why})
+                watching.log(store, entry | {"result": "failed", "why": why})
                 continue
             step = tracker.step(plist.label, unit="bytes")
             try:
@@ -404,6 +344,6 @@ def watch(
             else:
                 sort = {"kept": res.kept, "empty": res.empty}.get(entry["result"], res.same)
                 sort.append(plist.label)
-            _log(store, entry)
-        _save_tags(store, tags)
+            watching.log(store, entry)
+        watching.save_tags(store, tags)
     return res

@@ -272,29 +272,22 @@ def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
 
 def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp_path, monkeypatch):
     run = _cli(tmp_path, monkeypatch, FakeLaunchctl(print_out=PRINT))
+    stores = ["cardkingdom", "manapool", "cardmarket", "tcgcsv"]
+    labels = [f"com.keltzbm.riffle-watch-{store}" for store in stores]
     shown = run("schedule", "watch")
-    assert shown.index("com.keltzbm.riffle-watch-cardkingdom") < shown.index(
-        "com.keltzbm.riffle-watch-manapool"
-    )
-    assert "every      5 minutes: riffle watch manapool" in shown and "loaded     yes" in shown
+    assert [shown.index(label) for label in labels] == sorted(shown.index(label) for label in labels)
+    assert "every      5 minutes: riffle watch tcgcsv" in shown and "loaded     yes" in shown
     agents = tmp_path / "Library" / "LaunchAgents"
-    assert sorted(p.name for p in agents.iterdir()) == [
-        "com.keltzbm.riffle-watch-cardkingdom.plist",
-        "com.keltzbm.riffle-watch-manapool.plist",
-    ]
+    assert sorted(p.name for p in agents.iterdir()) == sorted(f"{label}.plist" for label in labels)
     every = run("schedule")
     assert (
         every.index("riffle-mtgo")
         < every.index("riffle-watch-cardkingdom")
-        < every.index("riffle-watch-manapool")
+        < every.index("riffle-watch-tcgcsv")
     )
-    assert run("schedule", "watch", "--remove") == (
-        "removed com.keltzbm.riffle-watch-cardkingdom\nremoved com.keltzbm.riffle-watch-manapool\n"
-    )
+    assert run("schedule", "watch", "--remove") == "".join(f"removed {label}\n" for label in labels)
     assert "no cardkingdom watch job — start one with: riffle schedule watch" in run("schedule")
-    assert run("schedule", "watch", "--remove") == (
-        "no com.keltzbm.riffle-watch-cardkingdom to remove\nno com.keltzbm.riffle-watch-manapool to remove\n"
-    )
+    assert run("schedule", "watch", "--remove") == "".join(f"no {label} to remove\n" for label in labels)
 
 
 def test_a_watch_job_launchd_won_t_load_is_an_error(tmp_path, monkeypatch, plain):

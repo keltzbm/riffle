@@ -57,6 +57,10 @@ class Damaged(OSError):
     """Neither copy of a run's base reads whole."""
 
 
+class Taken(OSError):
+    """A list is kept under this stamp already, and it isn't the one being kept."""
+
+
 @dataclass(frozen=True)
 class Kept:
     stamp: str  # the list's name: when it was made, UTC
@@ -140,7 +144,7 @@ def _pack(data: bytes, base: bytes | None = None) -> bytes:
     options: dict[int, int] = {_P.compression_level: LEVEL, _P.checksum_flag: 1}
     if base is None:
         return zstd.ZstdCompressor(options=options).compress(data, zstd.ZstdCompressor.FLUSH_FRAME)
-    window = min(31, (len(base) + len(data)).bit_length())
+    window = min(31, max(10, (len(base) + len(data)).bit_length()))  # zstd's range: 1 KiB to 2 GiB
     options |= {_P.window_log: window, _P.enable_long_distance_matching: 1}
     packer = zstd.ZstdCompressor(options=options, zstd_dict=zstd.ZstdDict(base, is_raw=True).as_prefix)
     return packer.compress(data, zstd.ZstdCompressor.FLUSH_FRAME)
@@ -218,6 +222,9 @@ def keep(folder: Path, at: datetime, data: bytes) -> Kept:
     the run's rule allows, otherwise whole, starting a new run. Read back and checked before it
     counts; Unverified if it doesn't read back as the list."""
     stamp, sha256 = name(at), hashlib.sha256(data).hexdigest()
+    earlier = kept(folder).get(stamp)
+    if earlier is not None:
+        return _again(earlier, sha256, len(data))
     notes: list[str] = []
     found = runs(folder)
     latest = found[-1] if found else None
@@ -243,6 +250,22 @@ def keep(folder: Path, at: datetime, data: bytes) -> Kept:
         _write(path, whole)
         _verify(path, sha256)
     return Kept(stamp, first, "base", len(data), 2 * len(whole), sha256, file_sha256(first), tuple(notes))
+
+
+def _again(path: Path, sha256: str, size: int) -> Kept:
+    """A list kept already, as it was kept: a run cut off after keeping a list and before saying
+    so keeps it again. Taken when the file under its stamp is another list, or can't be read."""
+    try:
+        same = hashlib.sha256(rebuild(path)).hexdigest() == sha256
+    except (OSError, zstd.ZstdError):
+        same = False
+    if not same:
+        raise Taken(f"{path.name}: another list is kept under the time this one was made")
+    stamp = stamp_of(path)
+    assert stamp is not None  # kept() named it
+    if path.name.endswith(DIFF):
+        return Kept(stamp, path, "diff", size, path.stat().st_size, sha256, file_sha256(path))
+    return Kept(stamp, path, "base", size, 2 * path.stat().st_size, sha256, file_sha256(path))
 
 
 def _run_so_far(run: Path) -> tuple[int, int]:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from riffle import cadence
 from riffle.config import data_dir
 
 
@@ -35,7 +36,7 @@ PREFIX = "com.keltzbm.riffle"  # every job's label starts with it
 SYNC = Job(f"{PREFIX}-sync", ("sync",), "sync.log")
 TRICKLE = Job(f"{PREFIX}-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interval=600)
 LABEL = SYNC.label
-WATCH_EVERY = 300  # seconds: a Mana Pool list lasts about 30 minutes, so each gets about six tries
+WATCH_EVERY = int(cadence.EVERY.total_seconds())  # a Mana Pool list lasts about 30 minutes: six tries
 _TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
