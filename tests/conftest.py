@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from riffle import disk
 from riffle.models import CardRules, Prices, Printing
 
 CARDS = {
@@ -181,6 +182,7 @@ def isolated(tmp_path_factory, monkeypatch):
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
+    monkeypatch.setattr(disk, "WARN_BELOW", 0)  # the machine's own free space warns nowhere
 
 
 # ---- times ----------------------------------------------------------------------------

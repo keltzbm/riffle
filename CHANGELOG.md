@@ -7,6 +7,17 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Every bulk file Scryfall publishes is kept, each time it's published (about twice a day), as served:
+  `scryfall/bulk/<type>/<published>.jsonl.gz` for default cards, all cards (every language), oracle cards, unique
+  artwork, rulings, and Tagger's oracle and art tags, each on a step of its own (`Scryfall rulings: kept the
+  2026-09-29 15:00 MDT file, 5.4 MB`). Each download is read whole before it's kept; one that isn't whole gzip is
+  set aside as `<name>.bad`, fails its step, and is asked for again next run. A file whose contents, uncompressed,
+  are the newest kept file's isn't written again (`the same as the … file; not kept twice`), and
+  `scryfall/bulk/checks.jsonl` records every publish, kept or not.
+- Scryfall's set list is kept each time it changes, as `scryfall/sets/<fetched>.json`, with every fetch in
+  `scryfall/sets/checks.jsonl`.
+- An online sync records the disk's free space in `disk.jsonl` and warns on a `disk` step when it's under 50 GB,
+  with the days left at the rate it fell over the last week.
 - `riffle check` checks every price file Riffle keeps: that it's filed under the day its own stamp says, and that
   it wasn't made after it was fetched (the time in its gzip header, or the file's own). It reads only, prints a line
   per source, names each file that's wrong, and exits 1 if any is. For Card Kingdom and Mana Pool it also says how
@@ -190,6 +201,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- Scryfall's second bulk file of a day is downloaded. Scryfall publishes about twice a day (09:05 and 21:05 UTC on
+  2026-09-28), and a refresh skipped any file for a day it already had; the step is now `Scryfall default cards`,
+  current only when that very file is kept. Each download no longer deletes the file before it, or one set aside
+  as unreadable: the file kept before, `default-cards.jsonl.gz`, moves into `scryfall/bulk/default_cards/` on the
+  first refresh, named by its publish time from `bulk-meta.json`.
 - tcgcsv keeps each set's price file as it arrives. One set that failed voided its whole game, and the next run
   asked for every set again, against tcgcsv's rule of never fetching a file twice; now the game's step fails
   naming how many it lacks (`451 of 452 sets kept; set 23 failed (HTTP 500), asked again next run`), and the next
