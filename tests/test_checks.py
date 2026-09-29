@@ -11,8 +11,9 @@ from datetime import UTC, datetime
 import pytest
 from typer.testing import CliRunner
 
+from riffle import net, runs, times
 from riffle.cli import app
-from riffle.ingest import checks
+from riffle.ingest import checks, pricelists
 
 FETCHED = datetime(2026, 9, 27, 20, 51, 50, tzinfo=UTC)
 
@@ -303,3 +304,88 @@ def test_riffle_check_names_each_file_dated_wrong_and_exits_1(data):
         in result.output
     )
     assert result.output.rstrip().endswith("2 price files dated wrong")
+
+
+# ---- the lists kept since 2026-09-29, every one a store publishes -----------------------------
+
+
+def watched(made: str, fetched: datetime, price: str = "0.39") -> None:
+    """Card Kingdom's singles as `riffle watch cardkingdom` keeps them."""
+    rows = [{"id": n, "price_retail": price if n % 5 == 0 else "0.39", "qty_retail": n} for n in range(60)]
+    body = json.dumps({"meta": {"created_at": made}, "data": rows}).encode()
+
+    def fetch(url, dest, known, etag=None, accept="*/*", progress=None):
+        dest.write_bytes(body)
+        return net.Fetched("new", body[: net.HEAD], None, len(body))
+
+    pricelists.watch(pricelists.CARD_KINGDOM[:1], fetch=fetch, clock=lambda: fetched)
+
+
+def three_lists() -> dict:
+    for hour, price in ((13, "0.39"), (16, "0.41"), (19, "0.45")):
+        watched(f"2026-09-27 {hour}:08:38", datetime(2026, 9, 27, hour, 40, tzinfo=pricelists.PACIFIC), price)
+    return runs.kept(pricelists.lists_dir(pricelists.CARD_KINGDOM[0]))
+
+
+def test_watched_lists_kept_as_logged_are_all_right(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 2, 40, tzinfo=UTC))
+    assert len(three_lists()) == 3
+    rep = by_source()["Card Kingdom"]
+    assert rep.files == 3 and rep.problems == [] and rep.summary() == "3 lists over 1 day: all right"
+    assert rep.notes == ["singles: 3 kept in 1 run, one every 3h 00m lately"]
+
+
+def test_a_list_three_usual_gaps_past_its_last_is_late(data, monkeypatch):
+    three_lists()
+    watched("2026-09-27 22:08:38", datetime(2026, 9, 28, 5, 40, tzinfo=UTC), "0.47")
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 15, 0, tzinfo=UTC))
+    (note,) = by_source()["Card Kingdom"].notes
+    assert note == (
+        "singles: 4 kept in 1 run, one every 3h 00m lately; "
+        "late: the last was made 2026-09-28 05:08 UTC, 9h 51m ago"
+    )
+
+
+def test_a_kept_file_changed_or_missing_is_named(data):
+    files = three_lists()
+    diff = files["2026-09-27T230838Z"]
+    diff.write_bytes(diff.read_bytes() + b"x")
+    files["2026-09-28T020838Z"].unlink()
+    rel = lambda path: path.relative_to(data).as_posix()  # noqa: E731
+    assert by_source()["Card Kingdom"].problems == [
+        f"{rel(diff)}: changed since it was kept",
+        f"{rel(files['2026-09-28T020838Z'])}: missing",
+    ]
+
+
+def test_a_damaged_copy_of_a_base_says_the_other_is_whole(data):
+    files = three_lists()
+    copy = runs.copies(files["2026-09-27T200838Z"].parent)[1]
+    copy.write_bytes(b"damaged")
+    assert by_source()["Card Kingdom"].problems == [
+        f"{copy.relative_to(data).as_posix()}: changed since it was kept; its other copy is whole, "
+        "and the next list kept writes it again"
+    ]
+
+
+def test_a_watched_list_made_after_its_fetch_means_the_clock_isn_t_pacific(data):
+    watched("2026-09-27 13:08:38", datetime(2026, 9, 27, 19, 0, tzinfo=UTC))
+    (problem,) = by_source()["Card Kingdom"].problems
+    assert problem.endswith(
+        ".json.zst: made 2026-09-27 20:08 UTC, after it was fetched at 2026-09-27 19:00 UTC: "
+        "Card Kingdom's clock isn't Pacific time"
+    )
+
+
+def test_a_watch_log_it_can_t_read_is_named(data):
+    three_lists()
+    log = pricelists.log_path("cardkingdom")
+    with log.open("a") as f:
+        f.write(json.dumps({"result": "unchanged", "list": "singles"}) + "\n")  # a check, not a list
+        f.write("{not json\n")
+        f.write(json.dumps({"result": "kept", "list": "singles"}) + "\n")
+    problems = by_source()["Card Kingdom"].problems
+    assert problems == [
+        "cardkingdom/watch.jsonl: line 5 isn't JSON",
+        "cardkingdom/watch.jsonl: an entry it can't read: {'result': 'kept', 'list': 'singles'}",
+    ]

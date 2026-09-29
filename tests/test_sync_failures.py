@@ -131,7 +131,7 @@ def online_steps(monkeypatch, calls, refresh_fails=False):
     monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson"))
     monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots"))
     monkeypatch.setattr(cardmarket, "snapshot", lambda tracker: calls.append("cardmarket"))
-    monkeypatch.setattr(pricelists, "snapshot", lambda lists, tracker: calls.append(lists[0].store))
+    monkeypatch.setattr(pricelists, "watch", lambda lists, tracker: calls.append(lists[0].store))
     monkeypatch.setattr(tcgcsv, "snapshot", snapshot)
 
 
@@ -370,6 +370,6 @@ def test_watch_says_when_something_changed_in_the_mac_s_time(monkeypatch, denver
     monkeypatch.setattr(cli, "_resync_and_keep_watching", lambda: resyncs.append(1))
     monkeypatch.setattr("time.sleep", nap)
     monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 9, 41, 7, tzinfo=UTC))
-    output = CliRunner().invoke(app, ["watch"]).output
+    output = CliRunner().invoke(app, ["sync", "--watch"]).output
     assert "\n03:41:07 MDT changed: a.md\n" in output and output.rstrip().endswith("stopped")
     assert len(resyncs) == 2  # once at the start, once for the change

@@ -16,6 +16,10 @@ IncompleteRead, which isn't an OSError), or a download that ends short of its
 Content-Length (http.client just stops reading there). A host that gives no
 answer at all, try after try, is a NoAnswer, so a source asking it for many
 files can stop there instead of waiting out each one.
+
+fetch_new asks for a list that may be one already kept, with one request: it sends the
+last ETag, so a source that keeps them answers 304 and nothing more, asks for gzip, and
+hangs up once the list's first bytes show it's kept.
 """
 
 import http.client
@@ -24,6 +28,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +38,7 @@ from riffle import __version__
 USER_AGENT = f"riffle/{__version__} (github.com/keltzbm/riffle)"
 RETRY_STATUS = {429, 500, 502, 503, 504}
 CHUNK = 1 << 20
+HEAD = 4096  # bytes of a list fetch_new reads before deciding whether it's kept
 
 Progress = Callable[[int, int | None], None]  # (bytes so far, total bytes if known)
 
@@ -62,9 +68,19 @@ def _retry_after(e: urllib.error.HTTPError) -> float | None:
     return seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
 
 
-def _open(url: str, accept: str, timeout: float, retries: int, missing: Collection[int] = (404,)):
-    """An open response, or None for a status in missing. Retries stalls, rate limits, and 5xx."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+def _open(
+    url: str,
+    accept: str,
+    timeout: float,
+    retries: int,
+    missing: Collection[int] = (404,),
+    headers: dict[str, str] | None = None,
+    answers: Collection[int] = (),
+):
+    """An open response, or None for a status in missing. A status in answers is returned as
+    the response it is (a 304). Retries stalls, rate limits, and 5xx."""
+    sent = {"User-Agent": USER_AGENT, "Accept": accept, **(headers or {})}
+    req = urllib.request.Request(url, headers=sent)
     for attempt in range(retries + 1):
         backoff = 2.0 * (attempt + 1)
         try:
@@ -72,6 +88,8 @@ def _open(url: str, accept: str, timeout: float, retries: int, missing: Collecti
         except urllib.error.HTTPError as e:  # before URLError: HTTPError is a subclass
             if e.code in missing:
                 return None
+            if e.code in answers:
+                return e
             if e.code not in RETRY_STATUS or attempt == retries:
                 raise FetchError(f"HTTP {e.code}") from e
             wait = _retry_after(e) or backoff
@@ -195,3 +213,81 @@ def download(
         raise FetchError(f"download cut off after {done:,} of {total:,} bytes")
     tmp.replace(dest)
     return done
+
+
+@dataclass
+class Fetched:
+    """What fetch_new found: "unchanged" (a 304 for the ETag sent), "known" (hung up once the
+    list's first bytes showed it's kept) or "new" (written to dest whole, unpacked)."""
+
+    status: str
+    head: bytes  # the list's first bytes, unpacked; none when unchanged
+    etag: str | None  # the answer's, or the one sent when unchanged
+    size: int = 0  # bytes written
+
+
+def fetch_new(
+    url: str,
+    dest: Path,
+    known: Callable[[bytes], bool],
+    etag: str | None = None,
+    accept: str = "*/*",
+    timeout: float = 60,
+    retries: int = 2,
+    progress: Progress | None = None,
+) -> Fetched | None:
+    """One request for a list that may be one already kept; None for 404. known gets the
+    list's first HEAD bytes and says whether it's kept. A new list streams to dest as download
+    does, gzip unpacked, and one cut off is a FetchError: short of its Content-Length, or a gzip
+    stream that never ends."""
+    headers = {"Accept-Encoding": "gzip"} | ({"If-None-Match": etag} if etag else {})
+    r = _open(url, accept, timeout, retries, headers=headers, answers=(304,))
+    if r is None:
+        return None
+    if r.status == 304:
+        r.close()
+        return Fetched("unchanged", b"", etag)
+    tag = r.headers.get("ETag")
+    unpack = zlib.decompressobj(31) if (r.headers.get("Content-Encoding") or "").lower() == "gzip" else None
+    length = r.headers.get("Content-Length")
+    total = int(length) if length and length.isdigit() else None
+    sent = written = 0
+    tmp = dest.with_name(dest.name + ".part")
+
+    def more(size: int) -> bytes | None:
+        nonlocal sent
+        chunk = r.read(size)
+        sent += len(chunk)
+        if not chunk:
+            return None
+        return unpack.decompress(chunk) if unpack else chunk
+
+    try:
+        with r:
+            head = b""
+            while len(head) < HEAD and (got := more(HEAD)) is not None:
+                head += got
+            if known(head[:HEAD]):
+                return Fetched("known", head[:HEAD], tag)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with tmp.open("wb") as f:
+                f.write(head)
+                written = len(head)
+                if progress:
+                    progress(written, None)
+                while (got := more(CHUNK)) is not None:
+                    f.write(got)
+                    written += len(got)
+                    if progress:
+                        progress(written, None)
+    except (OSError, http.client.HTTPException, zlib.error) as e:
+        tmp.unlink(missing_ok=True)
+        raise FetchError(f"download interrupted after {written:,} bytes ({_why(e)})") from e
+    except BaseException:  # Ctrl-C: leave nothing half-written behind
+        tmp.unlink(missing_ok=True)
+        raise
+    if (total is not None and sent != total) or (unpack is not None and not unpack.eof):
+        tmp.unlink(missing_ok=True)
+        raise FetchError(f"download cut off after {written:,} bytes")
+    tmp.replace(dest)
+    return Fetched("new", head[:HEAD], tag, written)

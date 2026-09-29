@@ -1,5 +1,6 @@
 """riffle.net against a fake urlopen: retries, rate limits, 404s, and streamed downloads."""
 
+import gzip
 import http.client
 import io
 import socket
@@ -251,3 +252,128 @@ def test_the_network_is_up_when_any_host_answers(monkeypatch):
     monkeypatch.setattr(net.socket, "create_connection", create_connection)
     assert net.wait_online("api.scryfall.com", "mtgjson.com", "tcgcsv.com") is not None
     assert tried == ["api.scryfall.com", "mtgjson.com"]
+
+
+# ---- fetch_new: a list that may be one already kept --------------------------------------------
+
+LIST = b'{"meta": {"as_of": "2026-09-29T06:36:03Z"}, "data": [' + b'{"a": 1},' * 3000 + b'{"a": 2}]}'
+URL = "https://example.test/list"
+
+
+class Answer(Resp):
+    """A 200 with the headers a store sends."""
+
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None, length: bool = True):
+        super().__init__(body, length)
+        self.status = 200
+        self.headers = {**self.headers, **(headers or {})}
+        self.sent = 0
+
+    def read(self, size=-1):
+        chunk = super().read(size)
+        self.sent += len(chunk)
+        return chunk
+
+
+class Dropping(Answer):
+    """An answer that breaks off after its first read."""
+
+    def __init__(self, body: bytes, error: BaseException):
+        super().__init__(body)
+        self.error, self.reads = error, 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        if self.reads > 1:
+            raise self.error
+        return super().read(size)
+
+
+def never_kept(head: bytes) -> bool:
+    return False
+
+
+def test_fetch_new_asks_for_gzip_and_sends_the_last_etag(server, tmp_path):
+    server["answers"] = [http_error(304)]
+    got = net.fetch_new(URL, tmp_path / "list", never_kept, etag='"v1"')
+    assert got == net.Fetched("unchanged", b"", '"v1"')
+    req = server["requests"][0]
+    assert req.get_header("Accept-encoding") == "gzip" and req.get_header("If-none-match") == '"v1"'
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_new_with_no_etag_to_send_asks_plainly(server, tmp_path):
+    server["answers"] = [Answer(LIST)]
+    net.fetch_new(URL, tmp_path / "list", never_kept)
+    assert server["requests"][0].get_header("If-none-match") is None
+
+
+def test_a_list_already_kept_is_hung_up_on_after_its_first_bytes(server, tmp_path):
+    answer = Answer(LIST, {"ETag": '"v2"'})
+    server["answers"] = [answer]
+    seen = []
+    got = net.fetch_new(URL, tmp_path / "list", lambda head: seen.append(head) or True)
+    assert got == net.Fetched("known", LIST[: net.HEAD], '"v2"')
+    assert seen == [LIST[: net.HEAD]] and answer.closed and answer.sent == net.HEAD < len(LIST)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_new_list_sent_gzipped_is_kept_unpacked(server, tmp_path):
+    server["answers"] = [Answer(gzip.compress(LIST), {"Content-Encoding": "gzip", "ETag": '"v3"'})]
+    progress = []
+    got = net.fetch_new(
+        URL, tmp_path / "list", never_kept, progress=lambda done, total: progress.append((done, total))
+    )
+    assert got == net.Fetched("new", LIST[: net.HEAD], '"v3"', len(LIST))
+    assert (tmp_path / "list").read_bytes() == LIST and progress[-1] == (len(LIST), None)
+
+
+def test_a_new_list_sent_plain_is_kept_as_sent(server, tmp_path):
+    server["answers"] = [Answer(LIST)]
+    progress = []
+    got = net.fetch_new(
+        URL, tmp_path / "list", never_kept, progress=lambda done, total: progress.append(done)
+    )
+    assert got == net.Fetched("new", LIST[: net.HEAD], None, len(LIST))
+    assert (tmp_path / "list").read_bytes() == LIST and progress == [net.HEAD, len(LIST)]
+
+
+def test_a_gzip_list_that_never_ends_is_cut_off(server, tmp_path):
+    server["answers"] = [Answer(gzip.compress(LIST)[:-20], {"Content-Encoding": "gzip"}, length=False)]
+    with pytest.raises(net.FetchError, match="download cut off after"):
+        net.fetch_new(URL, tmp_path / "list", never_kept)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_list_short_of_its_length_is_cut_off(server, tmp_path):
+    answer = Answer(LIST)
+    answer.headers["Content-Length"] = str(len(LIST) + 10)
+    server["answers"] = [answer]
+    with pytest.raises(net.FetchError, match="download cut off after"):
+        net.fetch_new(URL, tmp_path / "list", never_kept)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_list_that_says_gzip_but_isn_t_is_a_fetch_error(server, tmp_path):
+    server["answers"] = [Answer(b"not gzip at all" * 50, {"Content-Encoding": "gzip"})]
+    with pytest.raises(net.FetchError, match="download interrupted after 0 bytes"):
+        net.fetch_new(URL, tmp_path / "list", never_kept)
+
+
+def test_a_list_broken_off_partway_leaves_nothing(server, tmp_path):
+    server["answers"] = [Dropping(LIST, ConnectionResetError("reset"))]
+    with pytest.raises(net.FetchError, match="download interrupted after 4,096 bytes"):
+        net.fetch_new(URL, tmp_path / "list", never_kept)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ctrl_c_partway_through_a_list_leaves_nothing(server, tmp_path):
+    server["answers"] = [Dropping(LIST, KeyboardInterrupt())]
+    with pytest.raises(KeyboardInterrupt):
+        net.fetch_new(URL, tmp_path / "list", never_kept)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_new_404_is_none(server, tmp_path):
+    server["answers"] = [http_error(404)]
+    assert net.fetch_new(URL, tmp_path / "list", never_kept) is None

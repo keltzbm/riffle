@@ -211,23 +211,24 @@ def test_the_trickle_job_installs_and_goes_beside_the_sync_job(tmp_path, monkeyp
     assert sched.remove(run=fake, job=sched.TRICKLE) and not path.exists()
 
 
-def test_the_schedule_commands_show_and_manage_the_trickle_job(tmp_path, monkeypatch):
+def _cli(tmp_path, monkeypatch, fake):
+    """`riffle` with the schedule's launchctl faked; returns each command's output."""
     from typer.testing import CliRunner
 
     from riffle.cli import app
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    fake = FakeLaunchctl(print_out=PRINT)
     install, status, remove = sched.install, sched.status, sched.remove
     monkeypatch.setattr(
         sched, "install", lambda times, job: install(times, tmp_path / "riffle", fake, job=job)
     )
     monkeypatch.setattr(sched, "status", lambda job=sched.SYNC: status(fake, job=job))
     monkeypatch.setattr(sched, "remove", lambda job=sched.SYNC: remove(fake, job=job))
+    return lambda *args: CliRunner().invoke(app, list(args)).output
 
-    def run(*args):
-        return CliRunner().invoke(app, list(args)).output
 
+def test_the_schedule_commands_show_and_manage_the_trickle_job(tmp_path, monkeypatch):
+    run = _cli(tmp_path, monkeypatch, FakeLaunchctl(print_out=PRINT))
     shown = run("schedule", "trickle")
     assert "every      10 minutes: riffle mtgo trickle" in shown and "loaded     yes" in shown
     both = run("schedule")
@@ -256,3 +257,47 @@ def test_the_sync_job_shows_its_times_and_next_run_with_the_mac_s_zone(tmp_path,
     shown = CliRunner().invoke(app, ["schedule", "show"]).output
     assert "  times      07:00, 16:00  (24-hour, daily, the Mac's time: MDT)" in shown
     assert "  next run   Mon 2026-09-28 07:00 MDT" in shown
+
+
+# ---- the watch jobs, one per store ------------------------------------------------
+
+
+def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
+    job = sched.watch_job("manapool")
+    d = sched.build([], tmp_path / "riffle", tmp_path / "watch-manapool.log", job)
+    assert (d["Label"], d["StartInterval"]) == ("com.keltzbm.riffle-watch-manapool", 300)
+    assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "watch", "manapool"]
+    assert sched.log_path(job).name == "watch-manapool.log"
+
+
+def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp_path, monkeypatch):
+    run = _cli(tmp_path, monkeypatch, FakeLaunchctl(print_out=PRINT))
+    shown = run("schedule", "watch")
+    assert shown.index("com.keltzbm.riffle-watch-cardkingdom") < shown.index(
+        "com.keltzbm.riffle-watch-manapool"
+    )
+    assert "every      5 minutes: riffle watch manapool" in shown and "loaded     yes" in shown
+    agents = tmp_path / "Library" / "LaunchAgents"
+    assert sorted(p.name for p in agents.iterdir()) == [
+        "com.keltzbm.riffle-watch-cardkingdom.plist",
+        "com.keltzbm.riffle-watch-manapool.plist",
+    ]
+    every = run("schedule")
+    assert (
+        every.index("riffle-mtgo")
+        < every.index("riffle-watch-cardkingdom")
+        < every.index("riffle-watch-manapool")
+    )
+    assert run("schedule", "watch", "--remove") == (
+        "removed com.keltzbm.riffle-watch-cardkingdom\nremoved com.keltzbm.riffle-watch-manapool\n"
+    )
+    assert "no cardkingdom watch job — start one with: riffle schedule watch" in run("schedule")
+    assert run("schedule", "watch", "--remove") == (
+        "no com.keltzbm.riffle-watch-cardkingdom to remove\nno com.keltzbm.riffle-watch-manapool to remove\n"
+    )
+
+
+def test_a_watch_job_launchd_won_t_load_is_an_error(tmp_path, monkeypatch, plain):
+    run = _cli(tmp_path, monkeypatch, FakeLaunchctl(bootstrap_rc=5))
+    said = "but launchctl bootstrap failed: Bootstrap failed: 5: Input/output error"
+    assert said in plain(run("schedule", "watch"))

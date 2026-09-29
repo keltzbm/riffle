@@ -17,20 +17,19 @@ mtgo.com doesn't refuse: it answers with stripped pages. How a run tells those
 apart from missing data is described under the trickle below.
 """
 
-import fcntl
 import gzip
 import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn
 
-from riffle import net, trickle
+from riffle import locks, net, trickle
 from riffle.config import data_dir
 from riffle.progress import SILENT, Tracker
 
@@ -368,18 +367,9 @@ def _canary(exclude: str | None) -> str | None:
     return max(stored)[2] if stored else None
 
 
-@contextmanager
-def _lock() -> Iterator[bool]:
+def _lock() -> AbstractContextManager[bool]:
     """Whether this run holds the trickle: the job and a run by hand never overlap."""
-    path = data_dir() / "mtgo-trickle.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        yield True
+    return locks.held(data_dir() / "mtgo-trickle.lock")
 
 
 @dataclass

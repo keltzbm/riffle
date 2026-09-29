@@ -599,3 +599,10 @@ def test_the_forget_command():
     _owe(OLD)
     assert _cli("mtgo", "forget", OLD).output == f"forgot {OLD}\n"
     assert _cli("mtgo", "forget", OLD).exit_code == 1
+
+
+def test_an_event_file_that_isn_t_json_counts_as_not_stored():
+    path = mtgo.store_dir() / "modern-league-2026-09-2812345.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{cut off")
+    assert not mtgo.is_stored("modern-league-2026-09-2812345")
