@@ -19,7 +19,8 @@ files can stop there instead of waiting out each one.
 
 fetch_new asks for a list that may be one already kept, with one request: it sends the
 last ETag, so a source that keeps them answers 304 and nothing more, asks for gzip, and
-hangs up once the list's first bytes show it's kept.
+hangs up once the list's first bytes show it's kept. What it found carries the answer's ETag
+and Last-Modified.
 """
 
 import http.client
@@ -31,6 +32,8 @@ import urllib.request
 import zlib
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from riffle import __version__
@@ -224,6 +227,16 @@ class Fetched:
     head: bytes  # the list's first bytes, unpacked; none when unchanged
     etag: str | None  # the answer's, or the one sent when unchanged
     size: int = 0  # bytes written
+    modified: datetime | None = None  # the answer's Last-Modified (UTC); none when unchanged
+
+
+def http_time(value: str | None) -> datetime | None:
+    """An HTTP date (a Last-Modified), in UTC; None when there's none that can be read."""
+    try:
+        when = parsedate_to_datetime(value or "")
+    except (TypeError, ValueError):
+        return None
+    return when.replace(tzinfo=when.tzinfo or UTC).astimezone(UTC)
 
 
 def fetch_new(
@@ -248,7 +261,7 @@ def fetch_new(
     if r.status == 304:
         r.close()
         return Fetched("unchanged", b"", etag)
-    tag = r.headers.get("ETag")
+    tag, modified = r.headers.get("ETag"), http_time(r.headers.get("Last-Modified"))
     unpack = zlib.decompressobj(31) if (r.headers.get("Content-Encoding") or "").lower() == "gzip" else None
     length = r.headers.get("Content-Length")
     total = int(length) if length and length.isdigit() else None
@@ -269,7 +282,7 @@ def fetch_new(
             while len(head) < HEAD and (got := more(HEAD)) is not None:
                 head += got
             if known(head[:HEAD]):
-                return Fetched("known", head[:HEAD], tag)
+                return Fetched("known", head[:HEAD], tag, modified=modified)
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tmp.open("wb") as f:
                 f.write(head)
@@ -291,4 +304,4 @@ def fetch_new(
         tmp.unlink(missing_ok=True)
         raise FetchError(f"download cut off after {written:,} bytes")
     tmp.replace(dest)
-    return Fetched("new", head[:HEAD], tag, written)
+    return Fetched("new", head[:HEAD], tag, written, modified)

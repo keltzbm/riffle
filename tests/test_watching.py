@@ -52,3 +52,15 @@ def test_etags_that_cant_be_read_are_none(data):
     assert json.loads((data / "cardmarket" / "watch-etags.json").read_text()) == {"mtg": '"abc"'}
     (data / "cardmarket" / "watch-etags.json").write_text('{"mtg": 5, "fab": "\\"x\\""}')
     assert watching.load_tags("cardmarket") == {"fab": '"x"'}
+
+
+def test_the_days_kept_come_from_the_log_and_one_it_cant_read_is_left_out(data):
+    for day in ("2026-09-28", "2026-09-27", "someday", "2026-09-28"):
+        watching.log("goatbots", {"at": "2026-09-29T031600Z", "list": "prices", "result": "kept", "day": day})
+    watching.log(
+        "goatbots", {"at": "2026-09-29T031600Z", "list": "prices", "result": "failed", "day": "2026-09-26"}
+    )
+    watching.log(
+        "goatbots", {"at": "2026-09-29T031600Z", "list": "other", "result": "kept", "day": "2026-09-25"}
+    )
+    assert [d.isoformat() for d in watching.days("goatbots", "prices")] == ["2026-09-27", "2026-09-28"]

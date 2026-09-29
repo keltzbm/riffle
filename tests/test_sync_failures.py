@@ -107,7 +107,18 @@ def vault(tmp_path, monkeypatch, opened):
 
 
 # What an online sync does, in order: the Scryfall download and catalog load, then each price source.
-ONLINE = ["refresh", "catalog", "mtgjson", "goatbots", "cardmarket", "cardkingdom", "manapool", "tcgcsv"]
+ONLINE = [
+    "refresh",
+    "catalog",
+    "mtgjson",
+    "mtgjson 90 days",
+    "goatbots",
+    "goatbots years",
+    "cardmarket",
+    "cardkingdom",
+    "manapool",
+    "tcgcsv",
+]
 
 
 def online_steps(monkeypatch, calls, refresh_fails=False):
@@ -129,8 +140,10 @@ def online_steps(monkeypatch, calls, refresh_fails=False):
 
     monkeypatch.setattr(scryfall, "refresh", refresh)
     monkeypatch.setattr(scryfall_catalog, "update", lambda tracker, force: calls.append("catalog"))
-    monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson"))
-    monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots"))
+    monkeypatch.setattr(mtgjson, "watch", lambda tracker, always: calls.append("mtgjson"))
+    monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson 90 days"))
+    monkeypatch.setattr(goatbots, "watch", lambda tracker, always: calls.append("goatbots"))
+    monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots years"))
     monkeypatch.setattr(cardmarket, "watch", lambda tracker, always: calls.append("cardmarket"))
     monkeypatch.setattr(pricelists, "watch", lambda lists, tracker: calls.append(lists[0].store))
     monkeypatch.setattr(tcgcsv, "watch", watch)
@@ -229,19 +242,19 @@ def test_a_bug_in_one_source_fails_its_steps_and_the_rest_still_run(vault, monke
     calls: list[str] = []
     online_steps(monkeypatch, calls)
 
-    def mtgjson_snapshot(tracker):
+    def mtgjson_watch(tracker, always):
         calls.append("mtgjson")
-        tracker.step("MTGJSON prices", unit="bytes")
+        tracker.step("MTGJSON prices today", unit="bytes")
         raise ZeroDivisionError("division by zero")
 
-    monkeypatch.setattr(mtgjson, "snapshot", mtgjson_snapshot)
+    monkeypatch.setattr(mtgjson, "watch", mtgjson_watch)
     result = CliRunner().invoke(app, ["sync"])
     assert calls == ONLINE
     log = cli.config.data_dir() / "errors.log"
     why = f"ZeroDivisionError: division by zero (unexpected; details in {log})"
-    assert f"MTGJSON prices: {why}" in result.output
+    assert f"MTGJSON prices today: {why}" in result.output
     assert "Traceback" not in result.output and "Traceback" in log.read_text()
-    assert result.output.rstrip().endswith("1 step failed: MTGJSON prices")
+    assert result.output.rstrip().endswith("1 step failed: MTGJSON prices today")
 
 
 def test_a_bug_in_the_scryfall_price_step_is_reported_the_same_way(vault, monkeypatch):

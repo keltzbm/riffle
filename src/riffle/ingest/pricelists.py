@@ -211,21 +211,9 @@ def fetched(path: Path) -> datetime | None:
     return datetime.fromtimestamp(stamp, UTC) if stamp else None
 
 
-def _aside(plist: PriceList, at: datetime) -> Path:
-    """A free name in the store's aside folder for a list fetched at `at`."""
-    stem = f"{plist.name}-{at.astimezone(UTC):%Y-%m-%dT%H%M%SZ}"
-    folder = data_dir() / plist.store / "aside"
-    dest, n = folder / f"{stem}.json.gz", 1
-    while dest.exists():
-        n += 1
-        dest = folder / f"{stem}-{n}.json.gz"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    return dest
-
-
 def _set_aside(fresh: Path, plist: PriceList, at: datetime) -> Path:
     """Keep a fetched list gzipped in the aside folder, whole or not at all."""
-    dest = _aside(plist, at)
+    dest = watching.aside(plist.store, plist.name, ".json.gz", at)
     part = dest.with_name(dest.name + ".part")
     try:
         with fresh.open("rb") as f, gzip.open(part, "wb") as out:

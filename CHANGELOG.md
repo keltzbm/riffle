@@ -7,6 +7,17 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- MTGJSON and GoatBots are watched too: `riffle watch mtgjson` and `riffle watch goatbots`, each a job of its own
+  under `riffle schedule watch` (six watch jobs), asked when its next list is due, with the ETag of the last file
+  kept. MTGJSON's `AllPricesToday.json.xz` is checked against its `.sha256`, unpacked whole, and kept in runs
+  (`mtgjson/lists/prices-today/`) under its `Last-Modified` (`kept the list built 2026-09-30 06:13 UTC
+  (2026-09-30), 53.3 MB: a difference of 2.3 MB`); one that doesn't match its `.sha256` fails and is asked for
+  again whole. GoatBots' price file is kept in runs (`goatbots/lists/prices/`) as its own bytes, under the zip's
+  `Last-Modified` (`kept 2026-09-29's list, made 2026-09-30 03:15 UTC, 76,070 prices: a difference of 8 KB`); a
+  zip holding more than one price file keeps the newest and is set aside whole. A file with no `Last-Modified`, or
+  a zip with no price file, is set aside in `<store>/aside/` and its step fails. Each check is logged in
+  `<store>/watch.jsonl`, with the served file's SHA-256, size and ETag, and `riffle check` hashes both stores'
+  lists and notes their lateness.
 - tcgcsv and Cardmarket are watched too: `riffle watch tcgcsv` and `riffle watch cardmarket`, each a job of its
   own under `riffle schedule watch`, so a day that fails to fetch is asked for again at the next run, not the next
   sync. Each is asked only when its next list is due, learned from its own lists and checks (`riffle.cadence`):
@@ -147,6 +158,10 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- Every MTGJSON build is kept, even for a day a kept 90-day file covers: the two disagree about the same day in some
+  cards. The sync runs MTGJSON's and GoatBots' watches once each, then keeps what isn't a daily list: MTGJSON's
+  90-day file when a day is missing (counting the days kept in runs), and GoatBots' card definitions (after a new
+  list) and yearly archives.
 - The sync runs tcgcsv's and Cardmarket's watches once each, whether or not a list is due, instead of fetching
   them itself; each takes its store's lock, so a sync and a job never fetch the same store at once. Cardmarket's
   20-hour wait before asking again goes: a guide's ETag says whether it's new.

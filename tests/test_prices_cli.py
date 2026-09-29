@@ -45,11 +45,18 @@ def fake_source(label: str | None, outcome: tuple[str, str] = ("ok", "already ha
     return snapshot
 
 
+def nothing_due(tracker):
+    """A stand-in for what the sync keeps beside a store's watch (MTGJSON's refill, GoatBots'
+    definitions and years) when none of it is due: no step."""
+
+
 @pytest.fixture(autouse=True)
 def quiet_sources(monkeypatch):
     """No test here reaches MTGJSON, GoatBots, Cardmarket, or a store; tests that care replace these."""
-    monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices"))
-    monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices"))
+    monkeypatch.setattr(mtgjson, "watch", fake_source("MTGJSON prices today"))
+    monkeypatch.setattr(mtgjson, "snapshot", nothing_due)
+    monkeypatch.setattr(goatbots, "watch", fake_source("GoatBots prices"))
+    monkeypatch.setattr(goatbots, "snapshot", nothing_due)
     monkeypatch.setattr(cardmarket, "watch", fake_source("Cardmarket mtg"))
     monkeypatch.setattr(pricelists, "watch", fake_source(None))
 
@@ -58,10 +65,10 @@ def test_ingest_prices_reports_every_source(monkeypatch):
     monkeypatch.setattr(
         scryfall, "snapshot_prices", lambda: (Path("/d/scryfall/daily/2026-09-24.jsonl.gz"), True)
     )
-    monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices", ("ok", "kept 2026-09-24, 5.2 MB")))
-    monkeypatch.setattr(
-        goatbots, "snapshot", fake_source("GoatBots prices", ("ok", "kept 2026-09-24, 76,070 prices"))
-    )
+    built = "kept the list built 2026-09-24 06:12 UTC (2026-09-24), 53.3 MB: a difference of 2.3 MB"
+    monkeypatch.setattr(mtgjson, "watch", fake_source("MTGJSON prices today", ("ok", built)))
+    made = "kept 2026-09-23's list, made 2026-09-24 03:15 UTC, 76,070 prices: a difference of 8 KB"
+    monkeypatch.setattr(goatbots, "watch", fake_source("GoatBots prices", ("ok", made)))
     monkeypatch.setattr(
         cardmarket, "watch", fake_source("Cardmarket mtg", ("ok", "kept 2026-09-24, 98,512 products"))
     )
@@ -71,8 +78,8 @@ def test_ingest_prices_reports_every_source(monkeypatch):
     lines = result.output.splitlines()
     assert lines[0].endswith("  riffle ingest prices")
     assert "  Scryfall prices: kept 2026-09-24 (" in lines[1]
-    assert "  MTGJSON prices: kept 2026-09-24, 5.2 MB (" in lines[2]
-    assert "  GoatBots prices: kept 2026-09-24, 76,070 prices (" in lines[3]
+    assert f"  MTGJSON prices today: {built} (" in lines[2]
+    assert f"  GoatBots prices: {made} (" in lines[3]
     assert "  Cardmarket mtg: kept 2026-09-24, 98,512 products (" in lines[4]
     assert "  Card Kingdom singles: already have 2026-09-24 (" in lines[5]
     assert "  Mana Pool singles: already have 2026-09-24 (" in lines[6]
@@ -88,23 +95,25 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
         raise net.FetchError("no answer after 3 tries")
 
     monkeypatch.setattr(scryfall, "snapshot_prices", no_bulk)
-    monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices", ("fail", "Meta.json: HTTP 404")))
-    monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices", ("fail", "HTTP 403")))
+    monkeypatch.setattr(mtgjson, "watch", fake_source("MTGJSON prices today", ("fail", "HTTP 404")))
+    monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON 90 days", ("fail", "Meta.json: HTTP 404")))
+    monkeypatch.setattr(goatbots, "watch", fake_source("GoatBots prices", ("fail", "HTTP 403")))
     monkeypatch.setattr(cardmarket, "watch", fake_source("Cardmarket mtg", ("fail", "HTTP 503")))
     monkeypatch.setattr(pricelists, "watch", fake_source(None, ("fail", "HTTP 502")))
     monkeypatch.setattr(tcgcsv, "watch", down)
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
     assert "! Scryfall prices: no bulk file yet — run: riffle ingest scryfall" in result.output
-    assert "! MTGJSON prices: Meta.json: HTTP 404" in result.output
+    assert "! MTGJSON prices today: HTTP 404" in result.output
+    assert "! MTGJSON 90 days: Meta.json: HTTP 404" in result.output
     assert "! GoatBots prices: HTTP 403" in result.output
     assert "! Cardmarket mtg: HTTP 503" in result.output
     assert "! Card Kingdom singles: HTTP 502" in result.output
     assert "! Mana Pool singles: HTTP 502" in result.output
     assert "! tcgcsv prices: no answer after 3 tries" in result.output
     assert result.output.rstrip().endswith(
-        "7 steps failed: Scryfall prices, MTGJSON prices, GoatBots prices, Cardmarket mtg, "
-        "Card Kingdom singles, Mana Pool singles, tcgcsv prices"
+        "8 steps failed: Scryfall prices, MTGJSON prices today, MTGJSON 90 days, GoatBots prices, "
+        "Cardmarket mtg, Card Kingdom singles, Mana Pool singles, tcgcsv prices"
     )
 
 
@@ -113,15 +122,18 @@ def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypat
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-24.jsonl.gz"), False))
-    monkeypatch.setattr(mtgjson, "snapshot", full)
-    monkeypatch.setattr(goatbots, "snapshot", full)
+    for source in (mtgjson, goatbots):
+        monkeypatch.setattr(source, "watch", full)
+        monkeypatch.setattr(source, "snapshot", full)
     monkeypatch.setattr(cardmarket, "watch", full)
     monkeypatch.setattr(pricelists, "watch", full)
     monkeypatch.setattr(tcgcsv, "watch", fake_snapshot({"mtg": 456}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
     assert "! MTGJSON prices: [Errno 28] No space left on device" in result.output
+    assert "! MTGJSON 90 days: [Errno 28] No space left on device" in result.output
     assert "! GoatBots prices: [Errno 28] No space left on device" in result.output
+    assert "! GoatBots cards and years: [Errno 28] No space left on device" in result.output
     assert "! Cardmarket prices: [Errno 28] No space left on device" in result.output
     assert "! Card Kingdom prices: [Errno 28] No space left on device" in result.output
     assert "! Mana Pool prices: [Errno 28] No space left on device" in result.output

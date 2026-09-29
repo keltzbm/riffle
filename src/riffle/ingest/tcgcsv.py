@@ -54,7 +54,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from riffle import cadence, lateness, net, runs, times, watching
@@ -228,15 +227,6 @@ def _one_line(body: bytes) -> str:
     except UnicodeDecodeError as e:
         raise net.FetchError("not UTF-8") from e
     return text if "\n" not in text and "\r" not in text else json.dumps(doc, separators=(",", ":"))
-
-
-def _modified(reply: net.Reply) -> datetime | None:
-    """A file's Last-Modified (UTC), or None when it has none that can be read."""
-    try:
-        when = parsedate_to_datetime(reply.headers.get("last-modified", ""))
-    except (TypeError, ValueError):
-        return None
-    return when.replace(tzinfo=when.tzinfo or UTC).astimezone(UTC)
 
 
 def _utc(t: datetime) -> str:
@@ -441,7 +431,7 @@ def _sets(game: str, category: int, group_ids: list[int], run: _Run, step: Step)
         except (net.FetchError, OSError) as e:
             tally.failed.append((gid, str(e)))
             continue
-        modified = None if reply is None else _modified(reply)
+        modified = None if reply is None else net.http_time(reply.headers.get("last-modified"))
         tally.unstamped += reply is not None and modified is None
         moved = modified is not None and modified - run.stamp > NEXT_REFRESH and modified.date() > day
         if moved and modified is not None:
@@ -604,7 +594,7 @@ def watch(
             busy = watching.longest(log, DAY, now, lateness.WINDOW)
             res.plan = cadence.plan(made(), watching.checks(log, CHECKED), now, busy)
             if not res.plan.ask:
-                tracker.step("tcgcsv").ok(_waiting(res.plan))
+                tracker.step("tcgcsv").ok(watching.waiting(res.plan, "day"))
                 return res
         res.asked = True
         entry = {"at": watching.at(now), "list": CHECKED}
@@ -643,10 +633,3 @@ def _whole(log: list[dict]) -> str | bool | None:
         elif entry.get("list") == DAY:
             last = entry.get("made") if entry.get("result") == "whole" else False
     return last
-
-
-def _waiting(plan: cadence.Plan) -> str:
-    said = f"next asked {times.shown(plan.next)}"
-    if plan.expected is None:
-        return f"{said}; its next day's time is learned from {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
-    return f"{said}; its next day expected {times.shown(plan.expected)}"

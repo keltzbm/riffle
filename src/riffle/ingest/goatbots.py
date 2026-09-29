@@ -1,31 +1,41 @@
 """MTGO prices from GoatBots, a large MTGO bot chain beside Cardhoarder (whose prices Scryfall
 and MTGJSON carry): each day's, and its yearly archives for the years before.
 
-GoatBots publishes its average sell prices once a day (5:30 AM Central European Time) as
-zipped JSON for anyone's own project, asking only that a website showing them link to
-goatbots.com:
+GoatBots publishes its average sell prices once a day as zipped JSON for anyone's own
+project, asking only that a website showing them link to goatbots.com. The zip of
+2026-09-28's prices was made 03:15:20 UTC on 2026-09-29 (its Last-Modified); the price file
+inside says 05:15:20, Central European local time with no zone.
 
     https://www.goatbots.com/download/prices/price-history.zip         the latest day
     https://www.goatbots.com/download/prices/price-history-<year>.zip  each day of that year
     https://www.goatbots.com/download/prices/card-definitions.zip      the cards it prices
 
-The layout below is the one the open-source clients that read these files expect; nothing
-here has seen a real file, so a zip that doesn't match fails its step and says what it held.
+A zip that doesn't hold what's described below fails its step and says what it held.
 Older clients fetch the same names from /download/; that's tried when /download/prices/
 answers 404. A price file, price-history-<day>.txt, maps each MTGO catalog ID (a foil has
 its own, like Scryfall's mtgo_id and mtgo_foil_id) to its price in tix: {"348": 419.99}.
-card-definitions.txt maps the same IDs to {"name", "cardset", "rarity", "foil"}. Riffle keeps
-the zips as returned:
+card-definitions.txt maps the same IDs to {"name", "cardset", "rarity", "foil"}.
 
-    <data_dir>/goatbots/daily/<day>.zip            the price zip for <day>
+Every day's price file is kept (watch: `riffle watch goatbots`, asked when riffle.cadence
+says the next is due, with the ETag of the last one kept): the file's own bytes, by the run
+rule (riffle.runs), under the zip's Last-Modified. A zip holding more than one price file
+has never been seen: the newest is kept as the list, and the zip is set aside whole. The
+rest are kept as returned, by the sync (snapshot):
+
+    <data_dir>/goatbots/lists/prices/<run>/        the price files, by the run rule
+    <data_dir>/goatbots/watch.jsonl                every check; for a list kept, its day, the
+                                                   price file's name and time, and the zip's
+                                                   SHA-256, size and ETag (riffle.watching)
+    <data_dir>/goatbots/aside/price-history-<UTC time>.zip  a zip with more than one price
+                                                   file, none, or no Last-Modified
+    <data_dir>/goatbots/daily/<day>.zip            the price zip for <day>, as the sync kept it before
     <data_dir>/goatbots/yearly/<year>.zip          a year's archive, fetched once the year was over
     <data_dir>/goatbots/yearly/<year>-partial.zip  this year's, as it stood when first kept
     <data_dir>/goatbots/yearly/<year>-short-<UTC time>.zip  a whole year's that came short, fetched then
     <data_dir>/goatbots/yearly/<year>.none         GoatBots had no archive for the year: the day it said so
     <data_dir>/goatbots/card-definitions.zip       the latest definitions
 
-The daily zip is small, so each run fetches it and keeps it when its day is new. The
-definitions are fetched again whenever they're older than the newest day kept. An empty
+The definitions are fetched again whenever they're older than the newest list kept. An empty
 price file ({}) keeps nothing, and empty definitions don't replace the kept ones; either is
 asked for again next run, and is a warning after seven runs in a row (riffle.ingest.empties).
 The yearly archives are the history before Riffle's own: GoatBots keeps only the last few
@@ -48,13 +58,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import net, times
+from riffle import net, runs, times, watching
 from riffle.config import data_dir
 from riffle.ingest import empties
 from riffle.progress import SILENT, Step, Tracker
 
 BASES = ("https://www.goatbots.com/download/prices", "https://www.goatbots.com/download")
 LATEST = "price-history.zip"
+STORE = "goatbots"
+LIST = "prices"  # the day's price file in the watch log
 DEFINITIONS = "card-definitions.zip"
 FIRST_YEAR = 2012  # GoatBots began trading; no archive can be older
 RETRY_NONE = timedelta(days=7)  # a year GoatBots had no archive for is asked for again this often
@@ -74,11 +86,12 @@ DAMAGED = (
 )
 
 Download = Callable[[str, Path, net.Progress | None], int | None]  # url, dest -> bytes, or None for 404
+Watcher = Callable[..., net.Fetched | None]  # net.fetch_new
 
 
 @dataclass
 class Snapshot:
-    day: date | None = None  # the latest day GoatBots published, if its zip could be read
+    day: date | None = None  # the newest day whose prices are kept
     kept: list[str] = field(default_factory=list)  # files kept this run, relative to goatbots/
 
 
@@ -102,6 +115,10 @@ def yearly_dir() -> Path:
     return goatbots_dir() / "yearly"
 
 
+def lists_dir() -> Path:
+    return goatbots_dir() / "lists" / LIST
+
+
 def _fetch(name: str, dest: Path, download: Download, progress: net.Progress | None) -> bool:
     """name into dest from the first base that has it. False when none does."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -122,16 +139,23 @@ def _held(zf: zipfile.ZipFile) -> str:
     return shown or "nothing"
 
 
-def _json(zf: zipfile.ZipFile, entry: str, name: str) -> object:
-    """A file in the zip, parsed; a FetchError if it's too big to be what it claims, is
-    damaged, or isn't JSON."""
+def _read(zf: zipfile.ZipFile, entry: str, name: str) -> bytes:
+    """A file in the zip; a FetchError if it's too big to be what it claims, or is damaged."""
     size = zf.getinfo(entry).file_size
     if size > MAX_ENTRY:
         raise net.FetchError(f"{name}: {entry} unpacks to {size:,} bytes, too big to be what it claims")
     try:
-        body = zf.read(entry)
+        return zf.read(entry)
     except DAMAGED as e:
         raise net.FetchError(f"{name}: {entry} is damaged") from e
+
+
+def _json(zf: zipfile.ZipFile, entry: str, name: str) -> object:
+    """A file in the zip, parsed; a FetchError if it can't be read (_read) or isn't JSON."""
+    return _parsed(_read(zf, entry, name), entry, name)
+
+
+def _parsed(body: bytes, entry: str, name: str) -> object:
     try:
         return json.loads(body)
     except (ValueError, RecursionError) as e:
@@ -151,52 +175,35 @@ def price_days(zf: zipfile.ZipFile) -> dict[date, str]:
     return days
 
 
-def _prices(path: Path) -> tuple[date, int]:
-    """The day of a latest-prices zip and how many prices it has, checked: a price file of
-    MTGO IDs and prices in tix (the latest, if it holds more than one)."""
-    with _open(path, LATEST) as zf:
-        days = price_days(zf)
-        if not days:
-            raise net.FetchError(f"{LATEST}: no price-history-<day>.txt in it, only {_held(zf)}")
-        day = max(days)
-        doc = _json(zf, days[day], LATEST)
+def _prices(body: bytes, entry: str) -> int:
+    """How many prices a price file has, checked: MTGO IDs and prices in tix."""
+    doc = _parsed(body, entry, LATEST)
     if not isinstance(doc, dict) or not all(
         isinstance(v, int | float) and not isinstance(v, bool) for v in doc.values()
     ):
-        raise net.FetchError(f"{LATEST}: {days[day]} isn't MTGO IDs and prices")
-    return day, len(doc)
-
-
-def _latest(snap: Snapshot, download: Download, step: Step) -> None:
-    """The latest day's prices, kept when the day is new."""
-    fresh = daily_dir() / f"{LATEST}.new"
-    try:
-        if not _fetch(LATEST, fresh, download, step.update):
-            raise net.FetchError(f"{LATEST}: HTTP 404")
-        day, n = _prices(fresh)
-        snap.day = day
-        if not n:
-            empties.report(step, "goatbots/prices", "empty price file")
-            return
-        empties.clear("goatbots/prices")
-        dest = daily_dir() / f"{day.isoformat()}.zip"
-        if dest.exists():
-            step.ok(f"already have {day}")
-            return
-        fresh.replace(dest)
-        snap.kept.append(f"daily/{dest.name}")
-        step.ok(f"kept {day}, {_count(n, 'price')}")
-    finally:
-        fresh.unlink(missing_ok=True)
+        raise net.FetchError(f"{LATEST}: {entry} isn't MTGO IDs and prices")
+    return len(doc)
 
 
 def definitions_due() -> bool:
-    """Whether the card definitions are missing or older than the newest day kept."""
+    """Whether the card definitions are missing or older than the newest list kept: in a run,
+    or a daily zip kept before."""
     defs = goatbots_dir() / DEFINITIONS
-    days = sorted(daily_dir().glob("*.zip"))
+    lists = [*daily_dir().glob("*.zip"), *runs.kept(lists_dir()).values()]
     if not defs.exists():
-        return bool(days)
-    return bool(days) and defs.stat().st_mtime < max(p.stat().st_mtime for p in days)
+        return bool(lists)
+    return bool(lists) and defs.stat().st_mtime < max(p.stat().st_mtime for p in lists)
+
+
+def newest_day() -> date | None:
+    """The newest day whose prices are kept: in a run, or a daily zip kept before."""
+    days = watching.days(STORE, LIST)
+    for path in daily_dir().glob("*.zip"):
+        try:
+            days.append(date.fromisoformat(path.stem))
+        except ValueError:
+            continue
+    return max(days, default=None)
 
 
 def _definitions(snap: Snapshot, download: Download, step: Step) -> None:
@@ -346,16 +353,11 @@ def _years(latest: date, snap: Snapshot, download: Download, tracker: Tracker) -
 def snapshot(
     download: Download = _download, tracker: Tracker = SILENT, today: date | None = None
 ) -> Snapshot:
-    """Keep GoatBots' latest prices, its card definitions after a new day or when missing or
-    behind, and every yearly archive not yet kept. Each is a step on the tracker; a failure is
-    reported on its step and keeps nothing, so the next run tries again. today stands in for
-    the latest day when GoatBots' zip can't be read."""
-    snap = Snapshot()
-    step = tracker.step("GoatBots prices", unit="bytes")
-    try:
-        _latest(snap, download, step)
-    except (net.FetchError, OSError) as e:
-        step.fail(str(e))
+    """Keep GoatBots' card definitions after a new list or when missing or behind, and every
+    yearly archive not yet kept. Each is a step on the tracker; a failure is reported on its step
+    and keeps nothing, so the next run tries again. today stands in for the newest day when no
+    day is kept."""
+    snap = Snapshot(day=newest_day())
     try:
         due = definitions_due()
     except OSError:
@@ -368,3 +370,106 @@ def snapshot(
             cards.fail(str(e))
     _years(snap.day or today or times.today(), snap, download, tracker)
     return snap
+
+
+class NoPriceFile(net.FetchError):
+    """A price zip with no price file in it."""
+
+
+def _newest(path: Path) -> tuple[dict[date, str], bytes, str]:
+    """The price files in a latest-prices zip by day, and the newest one's bytes and time (as
+    the zip says it: Central European local time, no zone)."""
+    with _open(path, LATEST) as zf:
+        days = price_days(zf)
+        if not days:
+            raise NoPriceFile(f"{LATEST}: no price-history-<day>.txt in it, only {_held(zf)}")
+        entry = days[max(days)]
+        return days, _read(zf, entry, LATEST), datetime(*zf.getinfo(entry).date_time).isoformat()
+
+
+def _unknown(head: bytes) -> bool:
+    """A zip's first bytes don't say which day it holds: whether it's kept shows only in its
+    Last-Modified."""
+    return False
+
+
+def _day(fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> dict:
+    """Ask for the latest price zip once, with the ETag of the last one kept, and keep its price
+    file if it's new; end step saying what came. The log entry."""
+    folder = lists_dir()
+    fresh = folder.parent / f"{LIST}.new"
+    try:
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        got = None
+        for base in BASES:
+            got = fetch(
+                f"{base}/{LATEST}",
+                fresh,
+                _unknown,
+                etag=tags.get(LIST),
+                accept="application/zip",
+                progress=step.update,
+            )
+            if got is not None:
+                break
+        if got is None:
+            raise net.FetchError(f"{LATEST}: HTTP 404")
+        if got.status == "unchanged":
+            step.ok("no new list since the last one kept")
+            return {"result": "unchanged"}
+        served = watching.served(fresh, got)
+        try:
+            days, body, written = _newest(fresh)
+        except NoPriceFile as e:
+            raise net.FetchError(f"{e}; set aside as {watching.set_aside(STORE, fresh, LATEST, now)}") from e
+        day = max(days)
+        entry = days[day]
+        n = _prices(body, entry)
+        if not n:
+            empties.report(step, "goatbots/prices", "empty price file", now)
+            return {"result": "empty"}
+        empties.clear("goatbots/prices")
+        if got.modified is None:
+            where = watching.set_aside(STORE, fresh, LATEST, now)
+            raise net.FetchError(f"{LATEST}: no Last-Modified, so no time it was made; set aside as {where}")
+        stamp, made = runs.name(got.modified), times.shown(got.modified)
+        if stamp in runs.kept(folder):
+            if got.etag:
+                tags[LIST] = got.etag
+            step.ok(f"have {day}'s list, made {made}")
+            return {"result": "known", "made": stamp}
+        kept = runs.keep(folder, got.modified, body)
+        if got.etag:
+            tags[LIST] = got.etag
+        facts = {"day": day.isoformat(), "entry": entry, "entry_time": written} | served
+        notes = list(kept.notes)
+        if len(days) > 1:
+            facts |= {
+                "days": sorted(d.isoformat() for d in days),
+                "aside": watching.set_aside(STORE, fresh, LATEST, now),
+            }
+            others = ", ".join(sorted(d.isoformat() for d in days if d != day))
+            notes.append(f"the zip also held {others}; set aside whole as {facts['aside']}")
+        note = f"kept {day}'s list, made {made}, {_count(n, 'price')}: {watching.how(kept)}"
+        if notes:
+            step.warn(f"{note}; {'; '.join(notes)}")
+        else:
+            step.ok(note)
+        return watching.record(kept) | facts
+    finally:
+        fresh.unlink(missing_ok=True)
+
+
+def watch(
+    fetch: Watcher = net.fetch_new,
+    tracker: Tracker = SILENT,
+    clock: Callable[[], datetime] = times.now,
+    always: bool = False,
+) -> watching.Watch:
+    """Ask for the latest price zip when riffle.cadence says GoatBots' next list is due, or
+    always (the sync), and keep its price file when it's new (riffle.watching.one)."""
+
+    def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
+        return _day(fetch, tags, now, step)
+
+    return watching.one(STORE, LIST, "GoatBots prices", ask, lists_dir(), tracker, clock, always)

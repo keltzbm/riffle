@@ -350,8 +350,10 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         return
     # Each source in turn; whatever one raises fails only its own steps (see _failure).
     sources: list[tuple[str, Callable[..., object]]] = [
-        ("MTGJSON prices", mtgjson.snapshot),
-        ("GoatBots prices", goatbots.snapshot),
+        ("MTGJSON prices", partial(mtgjson.watch, always=True)),
+        ("MTGJSON 90 days", mtgjson.snapshot),
+        ("GoatBots prices", partial(goatbots.watch, always=True)),
+        ("GoatBots cards and years", goatbots.snapshot),
         ("Cardmarket prices", partial(cardmarket.watch, always=True)),
         ("Card Kingdom prices", partial(pricelists.watch, pricelists.CARD_KINGDOM)),
         ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),
@@ -385,8 +387,8 @@ def watch_cmd(
 ) -> None:
     """Keep every new list a store publishes: each of its lists asked for once, a new one kept
     whole or as a difference against its run's first. The jobs (riffle schedule watch) run
-    this every 5 minutes; tcgcsv and Cardmarket ask only when their next list is due, as
-    learned from their own lists and checks."""
+    this every 5 minutes; tcgcsv, Cardmarket, MTGJSON and GoatBots ask only when their next
+    list is due, as learned from their own lists and checks."""
     from riffle import watching
 
     if store not in watching.STORES:
@@ -398,13 +400,15 @@ def watch_cmd(
 
 def _watcher(store: str) -> Callable[..., object]:
     """A store's watch, one of watching.STORES."""
-    from riffle.ingest import cardmarket, pricelists, tcgcsv
+    from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, tcgcsv
 
     watchers: dict[str, Callable[..., object]] = {
         "cardkingdom": partial(pricelists.watch, pricelists.CARD_KINGDOM),
         "manapool": partial(pricelists.watch, pricelists.MANA_POOL),
         "cardmarket": cardmarket.watch,
         "tcgcsv": tcgcsv.watch,
+        "mtgjson": mtgjson.watch,
+        "goatbots": goatbots.watch,
     }
     return watchers[store]
 

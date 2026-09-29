@@ -518,3 +518,62 @@ def test_each_cardmarket_game_is_judged_for_lateness_alone(data, monkeypatch):
         " past 1.25 × its longest gap in 30 days (30h 00m)",
         "3 guides judged for lateness",
     ]
+
+
+def one_list(store: str, name: str, folder, days: int, last: datetime, body) -> None:
+    """A list every day, the last made at last, kept in its runs and logged with its day."""
+    for k in reversed(range(days)):
+        made = last - timedelta(days=k)
+        kept = runs.keep(folder, made, body(made))
+        entry = {"at": runs.name(made + timedelta(hours=8)), "list": name} | watching.record(kept)
+        watching.log(store, entry | {"day": made.date().isoformat()})
+
+
+def test_mtgjson_builds_kept_in_runs_are_checked_as_their_log_says(data, monkeypatch):
+    from riffle.ingest import mtgjson
+
+    last = datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)
+    one_list("mtgjson", "prices-today", mtgjson.lists_dir(), 2, last, lambda made: made.isoformat().encode())
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=8))
+    rep = by_source()["MTGJSON"]
+    assert rep.files == 2 and rep.problems == [] and rep.summary() == "2 files: all right"
+    assert rep.notes == ["lateness judged from 14 gaps, 1 so far"]
+    (data / "mtgjson" / "aside").mkdir()
+    (data / "mtgjson" / "aside" / "AllPricesToday-2026-09-29T141000Z.json.xz").write_bytes(b"")
+    watching.log(
+        "mtgjson", {"at": "2026-09-29T141500Z", "list": "prices-today", "result": "kept", "day": "x"}
+    )
+    rep = by_source()["MTGJSON"]
+    assert rep.notes[0] == "1 set aside in mtgjson/aside, not kept as any list"
+    assert rep.problems == [
+        "mtgjson/watch.jsonl: an entry it can't read:"
+        " {'at': '2026-09-29T141500Z', 'list': 'prices-today', 'result': 'kept', 'day': 'x'}"
+    ]
+
+
+def test_goatbots_lists_kept_in_runs_are_checked_and_judged_for_lateness(data, monkeypatch):
+    from riffle.ingest import goatbots
+
+    last = datetime(2026, 9, 29, 3, 15, 20, tzinfo=UTC)
+    one_list(
+        "goatbots",
+        "prices",
+        goatbots.lists_dir(),
+        16,
+        last,
+        lambda made: b'{"348": 1.0}' + made.isoformat().encode(),
+    )
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(days=2))
+    rep = by_source()["GoatBots"]
+    assert rep.files == 16 and rep.problems == []
+    assert rep.notes == [
+        "late: the last was made 2026-09-29 03:15 UTC, 48h 00m ago,"
+        " past 1.25 × its longest gap in 30 days (30h 00m)"
+    ]
+    first = runs.kept(goatbots.lists_dir())[runs.name(last - timedelta(days=15))]
+    first.write_bytes(b"changed")
+    assert (
+        by_source()["GoatBots"]
+        .problems[0]
+        .endswith("; its other copy is whole, and the next list kept writes it again")
+    )
