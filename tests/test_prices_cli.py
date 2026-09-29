@@ -48,7 +48,7 @@ def quiet_sources(monkeypatch):
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices"))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices"))
     monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg"))
-    monkeypatch.setattr(pricelists, "snapshot", fake_source(None))
+    monkeypatch.setattr(pricelists, "watch", fake_source(None))
 
 
 def test_ingest_prices_reports_every_source(monkeypatch):
@@ -88,7 +88,7 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     monkeypatch.setattr(mtgjson, "snapshot", fake_source("MTGJSON prices", ("fail", "Meta.json: HTTP 404")))
     monkeypatch.setattr(goatbots, "snapshot", fake_source("GoatBots prices", ("fail", "HTTP 403")))
     monkeypatch.setattr(cardmarket, "snapshot", fake_source("Cardmarket mtg", ("fail", "HTTP 503")))
-    monkeypatch.setattr(pricelists, "snapshot", fake_source(None, ("fail", "HTTP 502")))
+    monkeypatch.setattr(pricelists, "watch", fake_source(None, ("fail", "HTTP 502")))
     monkeypatch.setattr(tcgcsv, "snapshot", down)
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output
@@ -113,7 +113,7 @@ def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypat
     monkeypatch.setattr(mtgjson, "snapshot", full)
     monkeypatch.setattr(goatbots, "snapshot", full)
     monkeypatch.setattr(cardmarket, "snapshot", full)
-    monkeypatch.setattr(pricelists, "snapshot", full)
+    monkeypatch.setattr(pricelists, "watch", full)
     monkeypatch.setattr(tcgcsv, "snapshot", fake_snapshot({"mtg": 456}))
     result = CliRunner().invoke(app, ["ingest", "prices"])
     assert result.exit_code == 1, result.output

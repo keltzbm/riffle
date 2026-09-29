@@ -1,12 +1,16 @@
 """Checks that every price file Riffle keeps is dated as it should be: under the day its own
-stamp says, and made no later than it was fetched. Read-only and quick: each file's first
-bytes, and when it was fetched (the time in the gzip header of a file Riffle gzipped, the
-file's own time otherwise). `riffle check` runs them all.
+stamp says, and made no later than it was fetched. Read-only: each file's first bytes (every
+byte of a store's watched lists, to hash them), and when it was fetched (the time in the gzip
+header of a file Riffle gzipped, the file's own time otherwise). `riffle check` runs them all.
 
-    Card Kingdom, Mana Pool   each list under the day of its created_at or as_of, made no later
-                              than its fetch. Card Kingdom's created_at names no zone: read as
-                              Pacific time, a list made after its fetch means Card Kingdom's
-                              clock isn't Pacific. The lists set aside are counted.
+    Card Kingdom, Mana Pool   each list kept a day under the day of its created_at or as_of, and
+                              each list kept since (riffle.runs) with the file its log names, by
+                              the file's SHA-256, a base's second copy too; every list made no
+                              later than its fetch. Card Kingdom's created_at names no zone: read
+                              as Pacific time, a list made after its fetch means Card Kingdom's
+                              clock isn't Pacific. The lists set aside are counted, and each list's
+                              usual gap is noted, from its last 14: one three times as long
+                              since its last list is late.
     Cardmarket                each guide under the day of its createdAt, made before its fetch
     MTGJSON                   each file named by the date in its meta, no later than its fetch
     GoatBots                  each day's zip holds that day's price file, no later than its fetch;
@@ -18,6 +22,7 @@ file's own time otherwise). `riffle check` runs them all.
 """
 
 import gzip
+import json
 import lzma
 import re
 import zipfile
@@ -26,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import times
+from riffle import runs, times
 from riffle.config import data_dir
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 from riffle.progress import elapsed
@@ -35,6 +40,8 @@ SLACK = pricelists.SLACK
 MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
 TCGCSV_SET = re.compile(rb'^\{"groupId": (\d+), "fetched": "[^"]*", "lastModified": "([^"]+)"', re.MULTILINE)
 SHOWN = 5  # unfinished games named in a note; the rest are counted
+GAPS = 14  # the gaps between a list's last stamps its usual gap is the median of
+LATE = 3  # a list is late when this many usual gaps have passed since its last
 
 
 @dataclass
@@ -116,10 +123,87 @@ def store(lists: tuple[pricelists.PriceList, ...]) -> Report:
         if len(ages) > 1:
             span += f" to {elapsed(max(ages).total_seconds())}"
         rep.notes.append(f"read as {first.zone_name}, each list was made {span} before it was fetched")
+    _watched(rep, lists)
     aside = sorted((root / "aside").glob("*.json.gz"))
     if aside:
         rep.notes.append(f"{len(aside)} set aside in {first.store}/aside, not as any day's")
     return rep
+
+
+def _kept_entries(rep: Report, store: str) -> list[dict]:
+    """The lists a store's watch log says it kept."""
+    path = pricelists.log_path(store)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    found = []
+    for n, line in enumerate(lines, 1):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            rep.problems.append(f"{_rel(path)}: line {n} isn't JSON")
+            continue
+        if isinstance(entry, dict) and entry.get("result") == "kept":
+            found.append(entry)
+    return found
+
+
+def _hashed(rep: Report, entry: dict) -> None:
+    """Each of a kept list's files hashes as it did when kept."""
+    first = data_dir() / entry["file"]
+    files = [first, runs.copies(first.parent)[1]] if entry["kind"] == "base" else [first]
+    bad = []
+    for path in files:
+        if not path.exists():
+            bad.append(f"{_rel(path)}: missing")
+        elif runs.file_sha256(path) != entry["file_sha256"]:
+            bad.append(f"{_rel(path)}: changed since it was kept")
+    if len(files) == 2 and len(bad) == 1:
+        bad = [f"{bad[0]}; its other copy is whole, and the next list kept writes it again"]
+    rep.problems += bad
+
+
+def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
+    """A store's lists kept since 2026-09-29: each file as kept, each list made before its
+    fetch; and each list's usual gap, and whether it's late."""
+    named = {plist.name: plist for plist in lists}
+    for entry in _kept_entries(rep, lists[0].store):
+        plist = named.get(entry.get("list", ""))
+        made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
+        if plist is None or made is None or got is None or "file" not in entry:
+            rep.problems.append(
+                f"{_rel(pricelists.log_path(lists[0].store))}: an entry it can't read: {entry}"
+            )
+            continue
+        rep.files += 1
+        rep.days.add(pricelists.day_of(made, plist).isoformat())
+        _hashed(rep, entry)
+        if made - got > SLACK:
+            rep.problems.append(
+                f"{entry['file']}: made {times.shown(made)}, after it was fetched at {times.shown(got)}: "
+                f"{rep.source}'s clock isn't {plist.zone_name}"
+            )
+    for plist in lists:
+        _usual_gap(rep, plist)
+
+
+def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
+    """How often a list has come lately, and whether it's late, from its own stamps."""
+    folder = pricelists.lists_dir(plist)
+    made = sorted(filter(None, map(runs.parse, runs.kept(folder))))
+    if len(made) < 2:
+        return
+    recent = made[-GAPS - 1 :]
+    gaps = [b - a for a, b in zip(recent, recent[1:], strict=False)]
+    usual = sorted(gaps)[len(gaps) // 2]
+    since = times.now() - made[-1]
+    every = elapsed(usual.total_seconds())
+    n = len(runs.runs(folder))
+    said = f"{plist.name}: {len(made):,} kept in {n:,} run{'s' * (n != 1)}, one every {every} lately"
+    if len(gaps) >= 3 and since > LATE * usual:
+        said += f"; late: the last was made {times.shown(made[-1])}, {elapsed(since.total_seconds())} ago"
+    rep.notes.append(said)
 
 
 def cardmarket_guides() -> Report:

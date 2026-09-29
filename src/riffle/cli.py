@@ -63,6 +63,12 @@ def _complete_mtgo_format(incomplete: str) -> list[str]:
     return _offer([*mtgo.FORMATS, "all"], incomplete)
 
 
+def _complete_store(incomplete: str) -> list[str]:
+    from riffle.ingest import pricelists
+
+    return _offer(list(pricelists.STORES), incomplete)
+
+
 def _complete_kind(incomplete: str) -> list[str]:
     from riffle.ingest import mtgo
 
@@ -347,8 +353,8 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         ("MTGJSON prices", mtgjson.snapshot),
         ("GoatBots prices", goatbots.snapshot),
         ("Cardmarket prices", cardmarket.snapshot),
-        ("Card Kingdom prices", partial(pricelists.snapshot, pricelists.CARD_KINGDOM)),
-        ("Mana Pool prices", partial(pricelists.snapshot, pricelists.MANA_POOL)),
+        ("Card Kingdom prices", partial(pricelists.watch, pricelists.CARD_KINGDOM)),
+        ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),
     ]
     for label, snapshot in sources:
         with contained(tracker, label, _failure) as scope:
@@ -370,6 +376,27 @@ def _events(fmt: list[str], days: int, kind: list[str] | None):
         )
         raise typer.Exit(1)
     return events
+
+
+prices_app = typer.Typer(help="Price sources kept as they publish.", no_args_is_help=True)
+app.add_typer(prices_app, name="prices")
+
+
+@prices_app.command("watch")
+def prices_watch(
+    store: str = typer.Argument(..., help="The store whose lists to keep", autocompletion=_complete_store),
+) -> None:
+    """Keep every new list a store publishes: each of its lists asked for once, a new one kept
+    whole or as a difference against its run's first. The jobs (riffle schedule watch) run
+    this every 5 minutes."""
+    from riffle.ingest import pricelists
+
+    lists = pricelists.STORES.get(store)
+    if lists is None:
+        stores = ", ".join(pricelists.STORES)
+        raise typer.BadParameter(f"'{store}' has no lists to watch; the stores: {stores}")
+    with _tracked(f"riffle prices watch {store}") as tracker:  # a failed step exits 1 on leaving
+        pricelists.watch(lists, tracker=tracker)
 
 
 @mtgo_app.command("trickle")
@@ -869,27 +896,41 @@ def watch(interval: float = typer.Option(5.0, help="Seconds between checks")) ->
         typer.echo("\nstopped")
 
 
-schedule_app = typer.Typer(help="The launchd jobs (macOS): `riffle sync` daily, and the MTGO trickle.")
+schedule_app = typer.Typer(
+    help="The launchd jobs (macOS): `riffle sync` daily, the MTGO trickle, and each store's watch."
+)
 app.add_typer(schedule_app, name="schedule")
 
 
 def _show_schedule() -> None:
-    _show_sync()
-    typer.echo()
-    _show_trickle()
-
-
-def _show_trickle() -> None:
     from riffle import schedule as sched
 
-    job = sched.TRICKLE
+    _show_sync()
+    typer.echo()
+    _show_every(sched.TRICKLE, "trickle", "riffle schedule trickle")
+    for job in _watch_jobs():
+        typer.echo()
+        _show_every(job, f"{job.args[-1]} watch", "riffle schedule watch")
+
+
+def _watch_jobs() -> list:
+    from riffle import schedule as sched
+    from riffle.ingest import pricelists
+
+    return [sched.watch_job(store) for store in pricelists.STORES]
+
+
+def _show_every(job, what: str, start: str) -> None:
+    """A job that runs every few minutes: whether it's loaded, and how its runs went."""
+    from riffle import schedule as sched
+
     st = sched.status(job=job)
     if not st.installed and not st.loaded:
-        typer.echo("no trickle job — start one with: riffle schedule trickle")
+        typer.echo(f"no {what} job — start one with: {start}")
         return
     typer.echo(job.label)
     typer.echo(f"  every      {(job.interval or 0) // 60} minutes: riffle {' '.join(job.args)}")
-    typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: riffle schedule trickle'}")
+    typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + start}")
     if st.loaded:
         typer.echo(
             f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
@@ -925,7 +966,7 @@ def _show_sync() -> None:
 
 @schedule_app.callback(invoke_without_command=True)
 def schedule_main(ctx: typer.Context) -> None:
-    """Show both jobs (times, next run, last result). Subcommands: set, remove, trickle."""
+    """Show every job (times, next run, last result). Subcommands: set, remove, trickle, watch."""
     if ctx.invoked_subcommand is None:
         _show_schedule()
 
@@ -974,7 +1015,31 @@ def schedule_trickle(
         sched.install([], job=sched.TRICKLE)
     except RuntimeError as e:
         raise typer.BadParameter(str(e)) from e
-    _show_trickle()
+    _show_every(sched.TRICKLE, "trickle", "riffle schedule trickle")
+
+
+@schedule_app.command("watch")
+def schedule_watch(
+    remove: bool = typer.Option(False, "--remove", help="Unload and delete the watch jobs instead"),
+) -> None:
+    """Run `riffle prices watch <store>` every 5 minutes for each store, each its own job, so a long
+    fetch holds up only its own store. Replaces any existing watch jobs."""
+    from riffle import schedule as sched
+
+    jobs = _watch_jobs()
+    if remove:
+        for job in jobs:
+            typer.echo(f"removed {job.label}" if sched.remove(job=job) else f"no {job.label} to remove")
+        return
+    try:
+        for job in jobs:
+            sched.install([], job=job)
+    except RuntimeError as e:
+        raise typer.BadParameter(str(e)) from e
+    for n, job in enumerate(jobs):
+        if n:
+            typer.echo()
+        _show_every(job, f"{job.args[-1]} watch", "riffle schedule watch")
 
 
 db_app = typer.Typer(help="The Postgres database: start it, migrate it, check it.", no_args_is_help=True)

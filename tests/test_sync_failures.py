@@ -131,7 +131,7 @@ def online_steps(monkeypatch, calls, refresh_fails=False):
     monkeypatch.setattr(mtgjson, "snapshot", lambda tracker: calls.append("mtgjson"))
     monkeypatch.setattr(goatbots, "snapshot", lambda tracker: calls.append("goatbots"))
     monkeypatch.setattr(cardmarket, "snapshot", lambda tracker: calls.append("cardmarket"))
-    monkeypatch.setattr(pricelists, "snapshot", lambda lists, tracker: calls.append(lists[0].store))
+    monkeypatch.setattr(pricelists, "watch", lambda lists, tracker: calls.append(lists[0].store))
     monkeypatch.setattr(tcgcsv, "snapshot", snapshot)
 
 

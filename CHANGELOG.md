@@ -7,6 +7,19 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Every list Card Kingdom and Mana Pool publish is kept, not one a day: Card Kingdom makes a new list every few
+  hours and Mana Pool about every half hour. `riffle prices watch <store>` asks for each of the store's lists once
+  and keeps a new one in `<store>/lists/<list>/`, in runs: a run's first list whole, twice, and each later one as a
+  zstd difference against it, never against another difference. How long a run lasts is decided by the lists: a new
+  list is a difference while that's no bigger than the run's average per list so far, and at most 30 days. Every
+  file is read back and its list checked against the list's SHA-256 before it counts; a damaged copy of a base is
+  set aside and written again from the other. Each run says what it kept (`kept the list made 2026-09-29 06:36 MDT,
+  51.7 MB: a difference of 0.5 MB`), and `<store>/watch.jsonl` logs every check.
+- `riffle schedule watch` runs `riffle prices watch <store>` every 5 minutes, a launchd job per store, so a long
+  fetch holds up only its own store; `--remove` takes them out, and `riffle schedule` shows them.
+- `riffle check` hashes every list kept since against the log, names a file that changed or went missing and
+  whether its base's other copy is whole, and notes how often each list has come lately, and when one is late:
+  three of its usual gaps since its last.
 - Every bulk file Scryfall publishes is kept, each time it's published (about twice a day), as served:
   `scryfall/bulk/<type>/<published>.jsonl.gz` for default cards, all cards (every language), oracle cards, unique
   artwork, rulings, and Tagger's oracle and art tags, each on a step of its own (`Scryfall rulings: kept the
@@ -122,6 +135,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The sync's Card Kingdom and Mana Pool steps keep every new list the way `riffle prices watch` does, instead of
+  one a day under `daily/`; the lists already kept there stay. A list is asked for with gzip, about a seventh of its
+  size, and with the ETag of the last one kept, so Mana Pool answers 304 when nothing is new; Card Kingdom, which
+  sends no ETag, is hung up on once the list's first bytes show it's kept. Python 3.12 and 3.13 get zstd from
+  `backports.zstd`; 3.14 has it built in.
 - Riffle writes UTC and prints local time. The job logs (`sync.log`, `mtgo-trickle.log`) give each run's date and
   time in UTC, and their step times are UTC; they were the Mac's time. On a terminal, `riffle mtgo trickle` and
   `riffle mtgo status` show a pause in the Mac's time with its zone, `riffle schedule` says the zone its times are

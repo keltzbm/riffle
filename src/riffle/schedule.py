@@ -1,5 +1,9 @@
-"""The launchd jobs (macOS): `riffle sync` at set times each day, and the MTGO
-trickle every 10 minutes.
+"""The launchd jobs (macOS): `riffle sync` at set times each day, the MTGO trickle
+every 10 minutes, and a watch for each store every 5 minutes.
+
+A store's watch is its own job because launchd never starts a job while that job is
+still running: it skips the firing. One job for every store would stop checking them
+all while any one of them fetched.
 
 One label per job: installing a job again replaces it, it never adds a second
 one. Times are 24-hour HH:MM. Everything that touches launchd goes through `run`
@@ -27,12 +31,21 @@ class Job:
     interval: int | None = None  # seconds between runs; None: at set times of day
 
 
-SYNC = Job("com.keltzbm.riffle-sync", ("sync",), "sync.log")
-TRICKLE = Job("com.keltzbm.riffle-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interval=600)
+PREFIX = "com.keltzbm.riffle"  # every job's label starts with it
+SYNC = Job(f"{PREFIX}-sync", ("sync",), "sync.log")
+TRICKLE = Job(f"{PREFIX}-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interval=600)
 LABEL = SYNC.label
+WATCH_EVERY = 300  # seconds: a Mana Pool list lasts about 30 minutes, so each gets about six tries
 _TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
+
+
+def watch_job(store: str) -> Job:
+    """The job that runs `riffle prices watch <store>`."""
+    return Job(
+        f"{PREFIX}-watch-{store}", ("prices", "watch", store), f"watch-{store}.log", interval=WATCH_EVERY
+    )
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:

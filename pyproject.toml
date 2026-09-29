@@ -11,6 +11,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
     "rich>=13.7",
+    "backports-zstd>=1.7.0 ; python_full_version < '3.14'",
 ]
 
 
