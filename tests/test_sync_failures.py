@@ -370,6 +370,6 @@ def test_watch_says_when_something_changed_in_the_mac_s_time(monkeypatch, denver
     monkeypatch.setattr(cli, "_resync_and_keep_watching", lambda: resyncs.append(1))
     monkeypatch.setattr("time.sleep", nap)
     monkeypatch.setattr(times, "now", lambda: datetime(2026, 9, 28, 9, 41, 7, tzinfo=UTC))
-    output = CliRunner().invoke(app, ["watch"]).output
+    output = CliRunner().invoke(app, ["sync", "--watch"]).output
     assert "\n03:41:07 MDT changed: a.md\n" in output and output.rstrip().endswith("stopped")
     assert len(resyncs) == 2  # once at the start, once for the change

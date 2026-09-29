@@ -185,7 +185,9 @@ day by day. Loading it into a database comes later.
 Every ingest resyncs the vault afterwards (`--no-sync` to skip). Beyond that:
 
 ```bash
-riffle watch                       # resync on every deck-note save or new ManaBox export
+riffle sync --watch                # resync on every deck-note save or new ManaBox export
+riffle watch manapool              # keep any new Mana Pool list (or cardkingdom)
+riffle schedule watch              # that, every 5 minutes, a job per store; --remove to stop them
 riffle schedule set 07:00 19:30    # launchd job at these 24-hour times; replaces any old schedule
 riffle schedule                    # times, next run, last result, log path
 riffle schedule remove

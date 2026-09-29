@@ -378,12 +378,8 @@ def _events(fmt: list[str], days: int, kind: list[str] | None):
     return events
 
 
-prices_app = typer.Typer(help="Price sources kept as they publish.", no_args_is_help=True)
-app.add_typer(prices_app, name="prices")
-
-
-@prices_app.command("watch")
-def prices_watch(
+@app.command("watch")
+def watch_cmd(
     store: str = typer.Argument(..., help="The store whose lists to keep", autocompletion=_complete_store),
 ) -> None:
     """Keep every new list a store publishes: each of its lists asked for once, a new one kept
@@ -395,7 +391,7 @@ def prices_watch(
     if lists is None:
         stores = ", ".join(pricelists.STORES)
         raise typer.BadParameter(f"'{store}' has no lists to watch; the stores: {stores}")
-    with _tracked(f"riffle prices watch {store}") as tracker:  # a failed step exits 1 on leaving
+    with _tracked(f"riffle watch {store}") as tracker:  # a failed step exits 1 on leaving
         pricelists.watch(lists, tracker=tracker)
 
 
@@ -825,8 +821,16 @@ def _resync() -> None:
 @app.command("sync")
 def sync_cmd(
     offline: bool = typer.Option(False, help="Skip the Scryfall refresh and price downloads"),
+    watch: bool = typer.Option(
+        False, "--watch", help="Fetch nothing: resync whenever a deck note is saved or a ManaBox export lands"
+    ),
+    interval: float = typer.Option(5.0, help="Seconds between checks, with --watch"),
 ) -> None:
-    """Refresh card data, keep today's prices, pick up a ManaBox export, rewrite _generated/, append _log/."""
+    """Refresh card data, keep today's prices, pick up a ManaBox export, rewrite _generated/, append _log/.
+    With --watch, resync from what's kept at every change instead, until Ctrl-C."""
+    if watch:
+        _watch_vault(interval)
+        return
     with _run("riffle sync") as tracker:
         _run_sync(tracker, offline=offline)
 
@@ -872,8 +876,7 @@ def check_cmd() -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-def watch(interval: float = typer.Option(5.0, help="Seconds between checks")) -> None:
+def _watch_vault(interval: float) -> None:
     """Resync whenever a deck note is saved or a new ManaBox export lands. Ctrl-C to stop."""
     import time
 
@@ -1022,7 +1025,7 @@ def schedule_trickle(
 def schedule_watch(
     remove: bool = typer.Option(False, "--remove", help="Unload and delete the watch jobs instead"),
 ) -> None:
-    """Run `riffle prices watch <store>` every 5 minutes for each store, each its own job, so a long
+    """Run `riffle watch <store>` every 5 minutes for each store, each its own job, so a long
     fetch holds up only its own store. Replaces any existing watch jobs."""
     from riffle import schedule as sched
 

@@ -8,14 +8,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ### Added
 - Every list Card Kingdom and Mana Pool publish is kept, not one a day: Card Kingdom makes a new list every few
-  hours and Mana Pool about every half hour. `riffle prices watch <store>` asks for each of the store's lists once
+  hours and Mana Pool about every half hour. `riffle watch <store>` asks for each of the store's lists once
   and keeps a new one in `<store>/lists/<list>/`, in runs: a run's first list whole, twice, and each later one as a
   zstd difference against it, never against another difference. How long a run lasts is decided by the lists: a new
   list is a difference while that's no bigger than the run's average per list so far, and at most 30 days. Every
   file is read back and its list checked against the list's SHA-256 before it counts; a damaged copy of a base is
   set aside and written again from the other. Each run says what it kept (`kept the list made 2026-09-29 06:36 MDT,
   51.7 MB: a difference of 0.5 MB`), and `<store>/watch.jsonl` logs every check.
-- `riffle schedule watch` runs `riffle prices watch <store>` every 5 minutes, a launchd job per store, so a long
+- `riffle schedule watch` runs `riffle watch <store>` every 5 minutes, a launchd job per store, so a long
   fetch holds up only its own store; `--remove` takes them out, and `riffle schedule` shows them.
 - `riffle check` hashes every list kept since against the log, names a file that changed or went missing and
   whether its base's other copy is whole, and notes how often each list has come lately, and when one is late:
@@ -135,7 +135,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
-- The sync's Card Kingdom and Mana Pool steps keep every new list the way `riffle prices watch` does, instead of
+- `riffle watch`, which resyncs the vault whenever a deck note is saved or a ManaBox export lands, is now
+  `riffle sync --watch`: `riffle watch <store>` keeps a store's price lists, and 0032 extends it to every source.
+- The sync's Card Kingdom and Mana Pool steps keep every new list the way `riffle watch` does, instead of
   one a day under `daily/`; the lists already kept there stay. A list is asked for with gzip, about a seventh of its
   size, and with the ETag of the last one kept, so Mana Pool answers 304 when nothing is new; Card Kingdom, which
   sends no ETag, is hung up on once the list's first bytes show it's kept. Python 3.12 and 3.13 get zstd from

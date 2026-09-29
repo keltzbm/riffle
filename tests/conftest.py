@@ -1,7 +1,9 @@
 """Shared fixtures: an in-memory Catalog (no database, no download) and a test Postgres."""
 
 import os
+import re
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -250,6 +252,13 @@ class Recorder:
 @pytest.fixture
 def tracker() -> Recorder:
     return Recorder()
+
+
+@pytest.fixture
+def plain() -> Callable[[str], str]:
+    """A command's output as its words alone: CI's terminal gets colour codes, and an error box
+    wraps its text between │ borders at 80 columns, where a long path moves the breaks."""
+    return lambda output: " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
 
 
 # ---- Postgres ------------------------------------------------------------------

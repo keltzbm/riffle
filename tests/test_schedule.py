@@ -266,7 +266,7 @@ def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
     job = sched.watch_job("manapool")
     d = sched.build([], tmp_path / "riffle", tmp_path / "watch-manapool.log", job)
     assert (d["Label"], d["StartInterval"]) == ("com.keltzbm.riffle-watch-manapool", 300)
-    assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "prices", "watch", "manapool"]
+    assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "watch", "manapool"]
     assert sched.log_path(job).name == "watch-manapool.log"
 
 
@@ -276,7 +276,7 @@ def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp
     assert shown.index("com.keltzbm.riffle-watch-cardkingdom") < shown.index(
         "com.keltzbm.riffle-watch-manapool"
     )
-    assert "every      5 minutes: riffle prices watch manapool" in shown and "loaded     yes" in shown
+    assert "every      5 minutes: riffle watch manapool" in shown and "loaded     yes" in shown
     agents = tmp_path / "Library" / "LaunchAgents"
     assert sorted(p.name for p in agents.iterdir()) == [
         "com.keltzbm.riffle-watch-cardkingdom.plist",
@@ -297,6 +297,7 @@ def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp
     )
 
 
-def test_a_watch_job_launchd_won_t_load_is_an_error(tmp_path, monkeypatch):
+def test_a_watch_job_launchd_won_t_load_is_an_error(tmp_path, monkeypatch, plain):
     run = _cli(tmp_path, monkeypatch, FakeLaunchctl(bootstrap_rc=5))
-    assert "bootstrap failed" in run("schedule", "watch")
+    said = "but launchctl bootstrap failed: Bootstrap failed: 5: Input/output error"
+    assert said in plain(run("schedule", "watch"))

@@ -3,7 +3,6 @@ and kept whole or as a difference (riffle.runs), with every check logged."""
 
 import gzip
 import json
-import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -378,7 +377,7 @@ def test_a_file_with_no_gzip_time_has_no_fetch_time(tmp_path):
     assert pricelists.fetched(tmp_path / "plain.json") is None
 
 
-# ---- riffle prices watch <store> ----------------------------------------------------------------------
+# ---- riffle watch <store> ----------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -390,7 +389,7 @@ def cli(data_dir, tmp_path, monkeypatch):
 def test_riffle_watch_keeps_a_store_s_lists(cli, monkeypatch):
     calls = []
     monkeypatch.setattr(pricelists, "watch", lambda lists, tracker: calls.append(lists) or pricelists.Watch())
-    assert cli("prices", "watch", "manapool").exit_code == 0 and calls == [pricelists.MANA_POOL]
+    assert cli("watch", "manapool").exit_code == 0 and calls == [pricelists.MANA_POOL]
 
 
 def test_riffle_watch_exits_1_when_a_list_fails(cli, monkeypatch):
@@ -399,18 +398,14 @@ def test_riffle_watch_exits_1_when_a_list_fails(cli, monkeypatch):
         return pricelists.Watch()
 
     monkeypatch.setattr(pricelists, "watch", failing)
-    result = cli("prices", "watch", "manapool")
+    result = cli("watch", "manapool")
     assert result.exit_code == 1 and "1 step failed: Mana Pool singles" in result.output
 
 
-def test_riffle_watch_names_the_stores_when_given_another(cli):
-    result = cli("prices", "watch", "tcgplayer")
-    # CI's terminal gets colour codes, and the error box wraps at 80 columns: read the words alone
-    said = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", result.output).replace("│", " ").split())
-    assert (
-        result.exit_code == 2
-        and "'tcgplayer' has no lists to watch; the stores: cardkingdom, manapool" in said
-    )
+def test_riffle_watch_names_the_stores_when_given_another(cli, plain):
+    result = cli("watch", "tcgplayer")
+    said = "'tcgplayer' has no lists to watch; the stores: cardkingdom, manapool"
+    assert result.exit_code == 2 and said in plain(result.output)
 
 
 def test_the_stores_tab_complete():

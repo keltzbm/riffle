@@ -310,7 +310,7 @@ def test_riffle_check_names_each_file_dated_wrong_and_exits_1(data):
 
 
 def watched(made: str, fetched: datetime, price: str = "0.39") -> None:
-    """Card Kingdom's singles as `riffle prices watch cardkingdom` keeps them."""
+    """Card Kingdom's singles as `riffle watch cardkingdom` keeps them."""
     rows = [{"id": n, "price_retail": price if n % 5 == 0 else "0.39", "qty_retail": n} for n in range(60)]
     body = json.dumps({"meta": {"created_at": made}, "data": rows}).encode()
 

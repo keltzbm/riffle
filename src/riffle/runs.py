@@ -105,14 +105,14 @@ def runs(folder: Path) -> list[Path]:
 
 
 def kept(folder: Path) -> dict[str, Path]:
-    """Every list kept in folder, by stamp: the file it's rebuilt from."""
+    """Every list kept in folder, by stamp, oldest first: the file it's rebuilt from."""
     found: dict[str, Path] = {}
     for run in runs(folder):
         for path in run.iterdir():
             stamp = stamp_of(path)
             if stamp is not None:
                 found[stamp] = path
-    return found
+    return dict(sorted(found.items()))  # a folder lists its files in any order on Linux
 
 
 def copies(run: Path) -> tuple[Path, Path]:

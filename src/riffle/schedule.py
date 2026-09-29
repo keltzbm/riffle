@@ -42,10 +42,8 @@ Runner = Callable[[list[str]], subprocess.CompletedProcess]
 
 
 def watch_job(store: str) -> Job:
-    """The job that runs `riffle prices watch <store>`."""
-    return Job(
-        f"{PREFIX}-watch-{store}", ("prices", "watch", store), f"watch-{store}.log", interval=WATCH_EVERY
-    )
+    """The job that runs `riffle watch <store>`."""
+    return Job(f"{PREFIX}-watch-{store}", ("watch", store), f"watch-{store}.log", interval=WATCH_EVERY)
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
