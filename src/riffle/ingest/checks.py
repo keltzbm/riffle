@@ -9,8 +9,8 @@ header of a file Riffle gzipped, the file's own time otherwise). `riffle check` 
                               later than its fetch. Card Kingdom's created_at names no zone: read
                               as Pacific time, a list made after its fetch means Card Kingdom's
                               clock isn't Pacific. The lists set aside are counted, and each list's
-                              usual gap is noted, from its last 14: one three times as long
-                              since its last list is late.
+                              usual gap is noted, and whether it's late by its own learned margin
+                              (riffle.lateness).
     Cardmarket                each guide under the day of its createdAt, made before its fetch
     MTGJSON                   each file named by the date in its meta, no later than its fetch
     GoatBots                  each day's zip holds that day's price file, no later than its fetch;
@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import runs, times
+from riffle import lateness, runs, times
 from riffle.config import data_dir
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 from riffle.progress import elapsed
@@ -40,8 +40,6 @@ SLACK = pricelists.SLACK
 MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
 TCGCSV_SET = re.compile(rb'^\{"groupId": (\d+), "fetched": "[^"]*", "lastModified": "([^"]+)"', re.MULTILINE)
 SHOWN = 5  # unfinished games named in a note; the rest are counted
-GAPS = 14  # the gaps between a list's last stamps its usual gap is the median of
-LATE = 3  # a list is late when this many usual gaps have passed since its last
 
 
 @dataclass
@@ -189,20 +187,28 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
 
 
 def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
-    """How often a list has come lately, and whether it's late, from its own stamps."""
+    """How often a list has come lately, and whether it's late (riffle.lateness), from its own stamps."""
     folder = pricelists.lists_dir(plist)
     made = sorted(filter(None, map(runs.parse, runs.kept(folder))))
     if len(made) < 2:
         return
-    recent = made[-GAPS - 1 :]
-    gaps = [b - a for a, b in zip(recent, recent[1:], strict=False)]
-    usual = sorted(gaps)[len(gaps) // 2]
-    since = times.now() - made[-1]
-    every = elapsed(usual.total_seconds())
     n = len(runs.runs(folder))
-    said = f"{plist.name}: {len(made):,} kept in {n:,} run{'s' * (n != 1)}, one every {every} lately"
-    if len(gaps) >= 3 and since > LATE * usual:
-        said += f"; late: the last was made {times.shown(made[-1])}, {elapsed(since.total_seconds())} ago"
+    said = f"{plist.name}: {len(made):,} kept in {n:,} run{'s' * (n != 1)}"
+    verdict = lateness.judge(made, times.now())
+    if verdict is None:
+        gaps = len(made) - 1
+        rep.notes.append(f"{said}; lateness judged from {lateness.LEAST_GAPS} gaps, {gaps} so far")
+        return
+    said += f", one every {elapsed(verdict.usual.total_seconds())} lately"
+    if verdict.margin > lateness.MARGIN:
+        said += f", its margin {verdict.margin:.2f} from its own gaps"
+    if verdict.late:
+        bar = elapsed((verdict.longest * verdict.margin).total_seconds())
+        ago = elapsed(verdict.since.total_seconds())
+        said += (
+            f"; late: the last was made {times.shown(made[-1])}, {ago} ago, "
+            f"past {verdict.margin:.2f} × its longest gap in 30 days ({bar})"
+        )
     rep.notes.append(said)
 
 

@@ -135,6 +135,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- `riffle check` calls a list late once the time since its last list is more than its margin times the longest gap it
+  had in the 30 days before that list. Each list learns its own margin: at least 1.25, raised to the least value that
+  would have raised at most one alarm on its own gaps over the last year, so an irregular list isn't called late for
+  being irregular. Nothing is judged before 14 gaps (`lateness judged from 14 gaps, 3 so far`). It was three times the
+  median of the last 14 gaps, which on GoatBots' 3.7 years of publishes caught neither of its two late ones; the new
+  rule catches both, with no false alarm.
 - `riffle watch`, which resyncs the vault whenever a deck note is saved or a ManaBox export lands, is now
   `riffle sync --watch`: `riffle watch <store>` keeps a store's price lists, and 0032 extends it to every source.
 - The sync's Card Kingdom and Mana Pool steps keep every new list the way `riffle watch` does, instead of
