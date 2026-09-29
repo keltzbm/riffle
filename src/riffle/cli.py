@@ -11,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from riffle import config, net, times, vault
+from riffle import config, disk, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
 from riffle.progress import Tracker, Watched, contained, elapsed, open_tracker
@@ -217,7 +217,7 @@ def init() -> None:
 
 
 def _refresh(tracker: Tracker, force: bool = False) -> None:
-    """Scryfall's bulk file and set list, downloaded and loaded into the card catalog."""
+    """Scryfall's bulk files and set list, downloaded, and default cards loaded into the card catalog."""
     from riffle.ingest import scryfall, scryfall_catalog
 
     scryfall.refresh(force=force, tracker=tracker)
@@ -226,10 +226,10 @@ def _refresh(tracker: Tracker, force: bool = False) -> None:
 
 @ingest_app.command("scryfall")
 def ingest_scryfall(
-    force: bool = typer.Option(False, help="Download and load even if Riffle has Scryfall's newest day"),
+    force: bool = typer.Option(False, help="Download and load default cards even if already kept"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
 ) -> None:
-    """Download Scryfall's bulk card data and set list, and load them."""
+    """Download every Scryfall bulk file not kept yet and the set list, and load the cards."""
     with _run("riffle ingest scryfall") as tracker:
         _refresh(tracker, force=force)
         if no_sync:
@@ -728,6 +728,8 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     if not offline:
         _refresh(tracker)
     _snapshot_prices(tracker, online=not offline)
+    if not offline:
+        disk.check(tracker)
     newest = manabox.newest_export(cfg0.downloads)
     stored = cfg0.collection_csv
     if newest and (not stored.exists() or newest.stat().st_mtime > stored.stat().st_mtime):

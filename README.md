@@ -20,7 +20,7 @@ Postgres holds the card catalog, so set it up first ([Database](#database-postgr
 
 ```bash
 riffle db up && riffle db upgrade
-riffle ingest scryfall                          # ~500 MB download, once per day Scryfall publishes
+riffle ingest scryfall                          # every Scryfall bulk file, ~550 MB each time it publishes
 riffle ingest manabox ~/Downloads/collection.csv
 riffle sync --offline
 ```
@@ -111,8 +111,18 @@ returned it under `~/.local/share/riffle/`:
   naming the sets it never got. Each set goes under the day its own
   `Last-Modified` says. If tcgcsv stops answering, the rest of its games wait
   for the next run.
+- `scryfall/bulk/<type>/<published>.jsonl.gz` — every bulk file Scryfall
+  publishes, about twice a day, as served: default cards (each card in English,
+  or the one language it was printed in), all cards (every language), oracle
+  cards, unique artwork, rulings, and Tagger's oracle and art tags, named by
+  Scryfall's publish time in UTC. A file whose contents are the same as the one
+  kept before it isn't written again; `scryfall/bulk/checks.jsonl` records every
+  publish either way. The catalog is loaded from the newest default-cards file.
+- `scryfall/sets/<fetched>.json` — Scryfall's set list each time it changes,
+  named by fetch time (Scryfall gives it none); `scryfall/sets.json` is the latest.
 - `scryfall/daily/<day>.jsonl.gz` — each Magic printing's prices (USD, EUR,
-  MTGO tix) from the Scryfall bulk file the sync already downloads.
+  MTGO tix) from the day's first default-cards file; the second's are in its
+  kept copy.
 - `mtgjson/daily/<day>.json.xz` — MTGJSON's prices for every Magic printing,
   several stores in one file: Card Kingdom (what it sells for and what it pays),
   TCGplayer, Mana Pool, Cardmarket (EUR), and Cardhoarder (MTGO tix). Each file
