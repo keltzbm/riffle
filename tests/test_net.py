@@ -86,6 +86,18 @@ def test_404_is_an_answer_not_a_failure(server):
     server["answers"] = [http_error(404)]
     assert net.get("https://example.test") is None
     assert server["sleeps"] == []
+    server["answers"] = [http_error(404)]
+    assert net.get_reply("https://example.test") is None
+
+
+def test_a_reply_carries_the_answers_headers_by_lower_case_name(server):
+    answer = Resp(b"ok")
+    answer.headers["Last-Modified"] = "Sun, 27 Sep 2026 20:04:00 GMT"
+    server["answers"] = [answer]
+    reply = net.get_reply("https://example.test")
+    assert reply == net.Reply(
+        b"ok", {"content-length": "2", "last-modified": "Sun, 27 Sep 2026 20:04:00 GMT"}
+    )
 
 
 def test_get_text_treats_404_as_an_error(server):

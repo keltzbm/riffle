@@ -20,7 +20,8 @@ the zips as returned:
     <data_dir>/goatbots/daily/<day>.zip            the price zip for <day>
     <data_dir>/goatbots/yearly/<year>.zip          a year's archive, fetched once the year was over
     <data_dir>/goatbots/yearly/<year>-partial.zip  this year's, as it stood when first kept
-    <data_dir>/goatbots/yearly/<year>.none         GoatBots had no archive for the year
+    <data_dir>/goatbots/yearly/<year>-short-<UTC time>.zip  a whole year's that came short, fetched then
+    <data_dir>/goatbots/yearly/<year>.none         GoatBots had no archive for the year: the day it said so
     <data_dir>/goatbots/card-definitions.zip       the latest definitions
 
 The daily zip is small, so each run fetches it and keeps it when its day is new. The
@@ -29,9 +30,12 @@ price file ({}) keeps nothing, and empty definitions don't replace the kept ones
 asked for again next run, and is a warning after seven runs in a row (riffle.ingest.empties).
 The yearly archives are the history before Riffle's own: GoatBots keeps only the last few
 years, so every year it still has is kept once, newest first, until a year it has none for,
-which is noted so it isn't asked for again. The current year's is kept as it stands, and
-again whole once the year is over. Nothing here reads the prices back: the price loader
-does. Headers, retries, and 429 handling: riffle.net.
+which is asked for again a week later. The current year's is kept as it stands, and again
+whole once the year is over: as the year's only if the whole one runs to Dec 31 and holds
+every day of the partial, which stays beside it. One short of that is asked for again next
+run, a warning after seven runs in a row, and kept beside the partial when it has a day no
+archive of the year kept has, so nothing is lost if the whole one never comes. Nothing here
+reads the prices back: the price loader does. Headers, retries, and 429 handling: riffle.net.
 """
 
 import json
@@ -41,7 +45,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from riffle import net, times
@@ -53,6 +57,7 @@ BASES = ("https://www.goatbots.com/download/prices", "https://www.goatbots.com/d
 LATEST = "price-history.zip"
 DEFINITIONS = "card-definitions.zip"
 FIRST_YEAR = 2012  # GoatBots began trading; no archive can be older
+RETRY_NONE = timedelta(days=7)  # a year GoatBots had no archive for is asked for again this often
 MAX_ENTRY = 256 << 20  # bytes a file in a zip may unpack to; a price file is about 2 MB
 PRICE_FILE = re.compile(r"price-history-(\d{4}-\d{2}-\d{2})\.txt")
 # What reading a corrupt or unexpected zip raises: bad structure, bad data, an entry cut
@@ -219,61 +224,115 @@ def _definitions(snap: Snapshot, download: Download, step: Step) -> None:
         fresh.unlink(missing_ok=True)
 
 
-def _archive(year: int, dest: Path, download: Download, step: Step) -> int | None:
-    """A year's archive into dest, checked: a zip whose files are that year's days, each intact.
-    How many days it has, or None when GoatBots has no archive for the year."""
+def _archive(year: int, fresh: Path, download: Download, step: Step) -> set[date] | None:
+    """A year's archive into fresh, checked: a zip whose files are that year's days, each
+    intact. Its days, or None when GoatBots has no archive for the year."""
     name = f"price-history-{year}.zip"
-    fresh = dest.with_name(f"{dest.name}.new")
-    try:
-        if not _fetch(name, fresh, download, step.update):
-            return None
-        with _open(fresh, name) as zf:
-            days = [day for day in price_days(zf) if day.year == year]
-            if not days:
-                raise net.FetchError(
-                    f"{name}: no price-history-{year}-<month>-<day>.txt in it, only {_held(zf)}"
-                )
-            try:
-                broken = zf.testzip()
-            except DAMAGED as e:
-                raise net.FetchError(f"{name}: damaged ({type(e).__name__})") from e
-            if broken is not None:
-                raise net.FetchError(f"{name}: {broken} is damaged")
+    if not _fetch(name, fresh, download, step.update):
+        return None
+    with _open(fresh, name) as zf:
+        days = {day for day in price_days(zf) if day.year == year}
+        if not days:
+            raise net.FetchError(f"{name}: no price-history-{year}-<month>-<day>.txt in it, only {_held(zf)}")
+        try:
+            broken = zf.testzip()
+        except DAMAGED as e:
+            raise net.FetchError(f"{name}: damaged ({type(e).__name__})") from e
+        if broken is not None:
+            raise net.FetchError(f"{name}: {broken} is damaged")
+    return days
+
+
+def _lacks(year: int, days: set[date], partial: Path) -> list[date]:
+    """What a whole year's archive lacks: Dec 31, and any day of the partial one kept."""
+    wanted = {date(year, 12, 31)}
+    if partial.exists():
+        with _open(partial, partial.name) as zf:
+            wanted |= {day for day in price_days(zf) if day.year == year}
+    return sorted(wanted - days)
+
+
+def _year_days(year: int) -> set[date]:
+    """Every day of year its kept partial and short archives hold."""
+    days: set[date] = set()
+    for path in yearly_dir().glob(f"{year}-*.zip"):
+        with _open(path, path.name) as zf:
+            days |= {day for day in price_days(zf) if day.year == year}
+    return days
+
+
+def _short(year: int, days: set[date], lacks: list[date], fresh: Path, snap: Snapshot, step: Step) -> None:
+    """A whole year that lacks days isn't the year's: it's asked for again next run, a warning
+    after empties.WARN_AFTER runs in a row. When it has a day no kept archive of the year has,
+    it's kept beside them, named by its fetch time, so nothing is lost if the whole one never
+    comes."""
+    shown = ", ".join(day.isoformat() for day in lacks[:3])
+    if len(lacks) > 3:
+        shown += f", and {_count(len(lacks) - 3, 'more day')}"
+    new = days - _year_days(year)
+    if new:
+        dest = yearly_dir() / f"{year}-short-{times.now().astimezone(UTC):%Y-%m-%dT%H%M%SZ}.zip"
         fresh.replace(dest)
-        return len(days)
-    finally:
-        fresh.unlink(missing_ok=True)
+        snap.kept.append(f"yearly/{dest.name}")
+        kept = f"kept as {dest.name} for {_count(len(new), 'day')} not kept before"
+    else:
+        kept = "no day in it not kept before"
+    note = f"lacks {shown}; {kept}; the whole year asked again next run"
+    seen = empties.record(f"goatbots/{year}", "short")
+    if seen.runs < empties.WARN_AFTER:
+        step.ok(note)
+    else:
+        step.warn(f"{note} ({seen.runs} runs in a row, since {seen.first.date()})")
+
+
+def _none_since(path: Path) -> date:
+    """The day GoatBots last had no archive for a year, as its .none file says; the file's own
+    day (UTC) for one written before the day was."""
+    try:
+        return date.fromisoformat(path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC).date()
 
 
 def _year(year: int, latest: date, snap: Snapshot, download: Download, step: Step) -> bool:
     """One year's archive as its own step. Whether the walk goes on to older years."""
-    whole, partial = yearly_dir() / f"{year}.zip", yearly_dir() / f"{year}-partial.zip"
+    whole, partial, none = (yearly_dir() / f"{year}{end}" for end in (".zip", "-partial.zip", ".none"))
     dest = partial if year == latest.year else whole
-    days = _archive(year, dest, download, step)
-    if days is None:
-        if year == latest.year:  # early January: nothing archived yet this year
-            step.drop()
+    fresh = dest.with_name(f"{dest.name}.new")
+    try:
+        days = _archive(year, fresh, download, step)
+        if days is None:
+            if year == latest.year:  # early January: nothing archived yet this year
+                step.drop()
+                return True
+            if partial.exists():  # it had one when this year was the current one
+                raise net.FetchError(f"price-history-{year}.zip: HTTP 404, though a partial one is kept")
+            today = times.today()
+            none.write_text(f"{today}\n", encoding="utf-8")
+            step.ok(f"none from GoatBots; asked again from {today + RETRY_NONE}")
+            return False
+        if dest == whole and (lacks := _lacks(year, days, partial)):
+            _short(year, days, lacks, fresh, snap, step)
             return True
-        if partial.exists():  # it had one when this year was the current one
-            raise net.FetchError(f"price-history-{year}.zip: HTTP 404, though a partial one is kept")
-        (yearly_dir() / f"{year}.none").touch()
-        step.ok("none from GoatBots; not asked again")
-        return False
-    if dest == whole:
-        partial.unlink(missing_ok=True)
+        fresh.replace(dest)
+    finally:
+        fresh.unlink(missing_ok=True)
+    empties.clear(f"goatbots/{year}")
+    none.unlink(missing_ok=True)
     snap.kept.append(f"yearly/{dest.name}")
-    step.ok(f"kept {_count(days, 'day')}, {dest.stat().st_size / 1e6:,.1f} MB")
+    step.ok(f"kept {_count(len(days), 'day')}, {dest.stat().st_size / 1e6:,.1f} MB")
     return True
 
 
 def _years(latest: date, snap: Snapshot, download: Download, tracker: Tracker) -> None:
     """Every yearly archive GoatBots still has and Riffle doesn't, newest first, each its own
-    step. A failed one stops the walk; the next run starts again from it."""
+    step. A failed one stops the walk; the next run starts again from it. So does a year
+    GoatBots had none for, until it's asked for again a week later."""
     for year in range(latest.year, FIRST_YEAR - 1, -1):
-        whole, partial = yearly_dir() / f"{year}.zip", yearly_dir() / f"{year}-partial.zip"
+        whole, partial, none = (yearly_dir() / f"{year}{end}" for end in (".zip", "-partial.zip", ".none"))
         if whole.exists() or (year == latest.year and partial.exists()):
             continue
-        if (yearly_dir() / f"{year}.none").exists():
+        if none.exists() and times.today() < _none_since(none) + RETRY_NONE:
             return
         step = tracker.step(f"GoatBots {year}", unit="bytes")
         try:

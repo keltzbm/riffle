@@ -104,7 +104,13 @@ returned it under `~/.local/share/riffle/`:
 - `tcgcsv/daily/<day>/<game>/` — every set's TCGplayer price file from
   tcgcsv.com for everything it carries except comics (card games, miniatures,
   board games, and supplies), fetched one file at a time, once per day (tcgcsv's
-  own rule since it took its bulk archive down).
+  own rule since it took its bulk archive down). Each set is kept as it
+  arrives, so a set that fails is the only one the next run asks for; tcgcsv's
+  day (it publishes at about 20:05 UTC) spans both daily syncs. A game left
+  unfinished when tcgcsv moves on is kept as it stood, with `missing.txt`
+  naming the sets it never got. Each set goes under the day its own
+  `Last-Modified` says. If tcgcsv stops answering, the rest of its games wait
+  for the next run.
 - `scryfall/daily/<day>.jsonl.gz` — each Magic printing's prices (USD, EUR,
   MTGO tix) from the Scryfall bulk file the sync already downloads.
 - `mtgjson/daily/<day>.json.xz` — MTGJSON's prices for every Magic printing,
@@ -122,8 +128,12 @@ returned it under `~/.local/share/riffle/`:
 - `goatbots/yearly/<year>.zip` — GoatBots' archive of every day in a year, or
   `<year>-partial.zip` for this year, as it stood when first kept. GoatBots
   keeps only the last few years, so the first sync keeps every one it still
-  has, and this year's again, whole, once the year is over; `<year>.none`
-  marks the year before the oldest it has, so it isn't asked for again.
+  has, and this year's again, whole, once the year is over: only once it runs
+  to Dec 31 and holds every day of the partial, which stays beside it. One
+  that comes short is asked for again, and kept as `<year>-short-<time>.zip`
+  when it has days nothing else kept.
+  `<year>.none` marks the year before the oldest it has, with the day GoatBots
+  said so; it's asked for again a week later.
 - `cardmarket/daily/<day>/<game>.json.gz` — Cardmarket's price guide for every
   game it sells, and its accessories, in euros: each product's low, average, and
   trend prices, and its averages over 1, 7, and 30 days, foils too. A guide under
@@ -153,7 +163,8 @@ is asked for again every run; `empty-answers.json` notes since when, and after
 seven runs in a row the sync warns.
 
 ```bash
-riffle check                                # every kept file under its own day, made before it was fetched
+riffle check                                # every kept file under its own day, made before it was fetched;
+                                            # GoatBots' whole years to Dec 31; tcgcsv's unfinished games
 ```
 
 `riffle sync` does this on its own, so the scheduled job builds the history

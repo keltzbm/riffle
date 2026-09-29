@@ -176,6 +176,76 @@ def test_goatbots_days(data):
     ]
 
 
+def test_goatbots_whole_years_run_to_dec_31(data):
+    yearly = data / "goatbots" / "yearly"
+    yearly.mkdir(parents=True)
+    for name, body in [
+        ("2021", zipped("price-history-2020-12-31.txt")),
+        ("2022", b"not a zip"),
+        ("2023", zipped("price-history-2023-12-31.txt")),
+        ("2024", zipped("price-history-2024-01-03.txt")),
+        ("2026-partial", zipped("price-history-2026-01-03.txt")),  # a partial year runs short
+    ]:
+        (yearly / f"{name}.zip").write_bytes(body)
+    assert by_source()["GoatBots"].problems == [
+        "goatbots/yearly/2021.zip: runs to no day of the year, short of Dec 31",
+        "goatbots/yearly/2022.zip: not a zip",
+        "goatbots/yearly/2024.zip: runs to 2024-01-03, short of Dec 31",
+    ]
+
+
+def price_lines(*sets: tuple[int, str | None]) -> bytes:
+    """A tcgcsv price file's lines, as Riffle writes them: (set, Last-Modified)."""
+    return b"".join(
+        json.dumps(
+            {"groupId": g, "fetched": "2026-09-28T22:00:00+00:00", "lastModified": m, "response": None}
+        ).encode()
+        + b"\n"
+        for g, m in sets
+    )
+
+
+def test_tcgcsv_sets_from_a_later_refresh_and_games_unfinished(data):
+    day = data / "tcgcsv" / "daily" / "2026-09-27"
+    day.mkdir(parents=True)
+    (day / "last-updated.txt").write_text("2026-09-27T20:04:59+0000")
+    at(day / "last-updated.txt", FETCHED)
+    late = price_lines(
+        (1, "2026-09-27T20:04:00+00:00"),  # the day's
+        (2, None),  # no Last-Modified: can't tell
+        (3, "2026-09-27T21:30:00+00:00"),  # late, but still the day's own date
+        (4, "2026-09-28T20:04:30+00:00"),
+        (5, "2026-09-28T20:05:00+00:00"),
+    )
+    gz(day / "mtg" / "prices.jsonl.gz", late)
+    (day / "fab").mkdir()
+    (day / "fab" / "prices.jsonl.part").write_bytes(price_lines((6, "2026-09-28T20:04:00+00:00")))
+    gz(day / "op" / "prices.jsonl.gz", price_lines((7, "2026-09-27T20:04:00+00:00")))
+    (day / "op" / "missing.txt").write_text("8\n9\n")
+    gz(day / "yugioh" / "prices.jsonl.gz", b"")
+    (day / "yugioh" / "missing.txt").write_text("unknown: the day's set list wasn't kept\n")
+    (day / "lorcana").mkdir()
+    (day / "lorcana" / "prices.jsonl.gz").write_bytes(b"not gzip")
+    for game in ("pokemon", "starwars", "zombie-world-order-tcg"):
+        (day / game).mkdir()
+        (day / game / "groups.json").write_text("{}")
+    unstamped = data / "tcgcsv" / "daily" / "2026-09-29" / "mtg"
+    gz(unstamped / "prices.jsonl.gz", late)  # no stamp for the day: sets can't be checked
+    rep = by_source()["tcgcsv"]
+    assert rep.problems == [
+        "tcgcsv/daily/2026-09-27/fab/prices.jsonl.part: set 6 is from a later refresh, 2026-09-28 20:04 UTC",
+        "tcgcsv/daily/2026-09-27/lorcana/prices.jsonl.gz: unreadable (Not a gzipped file (b'no'))",
+        "tcgcsv/daily/2026-09-27/mtg/prices.jsonl.gz: set 4 is from a later refresh, 2026-09-28 20:04 UTC,"
+        " and 1 more",
+        "tcgcsv/daily/2026-09-29/last-updated.txt: missing or unreadable",
+    ]
+    assert rep.notes == [
+        "6 games unfinished: 2026-09-27 fab (being fetched), 2026-09-27 op (2 sets never fetched),"
+        " 2026-09-27 pokemon (no prices kept), 2026-09-27 starwars (no prices kept),"
+        " 2026-09-27 yugioh (which unknown), and 1 more"
+    ]
+
+
 def test_tcgcsv_days(data):
     daily = data / "tcgcsv" / "daily"
     for name, stamp, fetched in [

@@ -9,11 +9,15 @@ file's own time otherwise). `riffle check` runs them all.
                               clock isn't Pacific. The lists set aside are counted.
     Cardmarket                each guide under the day of its createdAt, made before its fetch
     MTGJSON                   each file named by the date in its meta, no later than its fetch
-    GoatBots                  each day's zip holds that day's price file, no later than its fetch
-    tcgcsv                    each day's last-updated.txt is that day's, from before its fetch
+    GoatBots                  each day's zip holds that day's price file, no later than its fetch;
+                              each whole year's archive runs to Dec 31
+    tcgcsv                    each day's last-updated.txt is that day's, from before its fetch, and
+                              no set under it from a later refresh (by its Last-Modified). Games
+                              not finished are noted: tcgcsv's day passed, or it's being fetched.
     Scryfall                  no day's prices kept before that day began (UTC)
 """
 
+import gzip
 import lzma
 import re
 import zipfile
@@ -29,6 +33,8 @@ from riffle.progress import elapsed
 
 SLACK = pricelists.SLACK
 MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
+TCGCSV_SET = re.compile(rb'^\{"groupId": (\d+), "fetched": "[^"]*", "lastModified": "([^"]+)"', re.MULTILINE)
+SHOWN = 5  # unfinished games named in a note; the rest are counted
 
 
 @dataclass
@@ -176,26 +182,82 @@ def goatbots_days() -> Report:
             rep.problems.append(f"{_rel(path)}: holds {newest or 'no price file'}")
         elif newest > _file_time(path).date() + timedelta(days=1):  # GoatBots' day is Central European
             rep.problems.append(f"{_rel(path)}: dated after it was fetched, {times.shown(_file_time(path))}")
+    for path in sorted(goatbots.yearly_dir().glob("[0-9][0-9][0-9][0-9].zip")):
+        year = int(path.stem)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                last = max((day for day in goatbots.price_days(zf) if day.year == year), default=None)
+        except goatbots.DAMAGED:
+            rep.problems.append(f"{_rel(path)}: not a zip")
+            continue
+        if last != date(year, 12, 31):
+            rep.problems.append(f"{_rel(path)}: runs to {last or 'no day of the year'}, short of Dec 31")
     return rep
 
 
+def _set_times(path: Path) -> list[tuple[int, datetime]]:
+    """Each set in a tcgcsv price file (kept or being fetched) with its Last-Modified, if it has one."""
+    with gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb") as f:
+        body = f.read()
+    return [(int(m[1]), datetime.fromisoformat(m[2].decode())) for m in TCGCSV_SET.finditer(body)]
+
+
+def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: list[str]) -> None:
+    """A game's sets, each from no later refresh than its day's; and whether it's finished."""
+    day = date.fromisoformat(game.parent.name)
+    kept, part, missing = (game / name for name in (tcgcsv.PRICES, tcgcsv.PART, tcgcsv.MISSING))
+    for path in (kept, part):
+        if stamp is None or not path.exists():
+            continue
+        try:
+            late = [
+                (gid, when)
+                for gid, when in _set_times(path)
+                if when - stamp > tcgcsv.NEXT_REFRESH and when.astimezone(UTC).date() > day
+            ]
+        except (OSError, EOFError) as e:
+            rep.problems.append(f"{_rel(path)}: unreadable ({e})")
+            continue
+        if late:
+            gid, when = late[0]
+            more = f", and {len(late) - 1} more" if len(late) > 1 else ""
+            rep.problems.append(f"{_rel(path)}: set {gid} is from a later refresh, {times.shown(when)}{more}")
+    if part.exists():
+        unfinished.append(f"{day} {game.name} (being fetched)")
+    elif missing.exists():
+        never = missing.read_text(encoding="utf-8").split()
+        count = f"{len(never):,} sets never fetched" if all(n.isdigit() for n in never) else "which unknown"
+        unfinished.append(f"{day} {game.name} ({count})")
+    elif not kept.exists():
+        unfinished.append(f"{day} {game.name} (no prices kept)")
+
+
 def tcgcsv_days() -> Report:
-    """Each day's last-updated.txt says that day, from before it was fetched."""
+    """Each day's last-updated.txt says that day, from before it was fetched; no set under the
+    day from a later refresh; and the games not finished, noted."""
     rep = Report("tcgcsv", "day")
     root = tcgcsv.daily_dir()
+    unfinished: list[str] = []
     for folder in sorted(root.iterdir() if root.is_dir() else []):
         if not folder.is_dir() or _day(folder.name) is None:
             continue
         rep.files += 1
         stamp = folder / "last-updated.txt"
+        made: datetime | None = None
         try:
             made = datetime.strptime(stamp.read_text().strip(), "%Y-%m-%dT%H:%M:%S%z")
         except (OSError, ValueError):
             rep.problems.append(f"{_rel(stamp)}: missing or unreadable")
-            continue
-        if made.astimezone(UTC).date().isoformat() != folder.name:
-            rep.problems.append(f"{_rel(stamp)}: says {made.astimezone(UTC).date()}")
-        _made_late(rep, stamp, made, _file_time(stamp))
+        if made is not None:
+            if made.astimezone(UTC).date().isoformat() != folder.name:
+                rep.problems.append(f"{_rel(stamp)}: says {made.astimezone(UTC).date()}")
+            _made_late(rep, stamp, made, _file_time(stamp))
+        for game in sorted(p for p in folder.iterdir() if p.is_dir()):
+            _tcgcsv_game(rep, game, made, unfinished)
+    if unfinished:
+        more = f", and {len(unfinished) - SHOWN:,} more" if len(unfinished) > SHOWN else ""
+        games = f"{len(unfinished):,} game{'s' * (len(unfinished) != 1)}"
+        rep.notes.append(f"{games} unfinished: {', '.join(unfinished[:SHOWN])}{more}")
     return rep
 
 

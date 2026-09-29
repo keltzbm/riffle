@@ -3,8 +3,9 @@ archive GoatBots still has."""
 
 import io
 import json
+import os
 import zipfile
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -33,8 +34,12 @@ def definitions(cards: dict | None = None) -> bytes:
     return zipped({"card-definitions.txt": json.dumps(DEFS if cards is None else cards).encode()})
 
 
-def archive(year: int, days: int = 3) -> bytes:
-    return zipped({f"price-history-{year}-01-{n:02d}.txt": b'{"348": 400.0}' for n in range(1, days + 1)})
+def archive(year: int, days: int = 3, whole: bool = True) -> bytes:
+    """A year's archive: its first days, and Dec 31 when it's whole."""
+    names = [f"price-history-{year}-01-{n:02d}.txt" for n in range(1, days + 1)]
+    return zipped(
+        {name: b'{"348": 400.0}' for name in [*names, *[f"price-history-{year}-12-31.txt"] * whole]}
+    )
 
 
 class Source:
@@ -62,7 +67,7 @@ def answers(day: date = DAY, **overrides):
     found: dict[str, bytes | None | Exception] = {
         f"{NEW}/{goatbots.LATEST}": latest(day),
         f"{NEW}/{goatbots.DEFINITIONS}": definitions(),
-        f"{NEW}/price-history-2026.zip": archive(2026, days=5),
+        f"{NEW}/price-history-2026.zip": archive(2026, days=5, whole=False),
         f"{NEW}/price-history-2025.zip": archive(2025),
         f"{NEW}/price-history-2024.zip": archive(2024),
     }
@@ -76,9 +81,14 @@ def run(source: Source, tracker=None, today: date | None = None) -> goatbots.Sna
     return goatbots.snapshot(download=source.download, tracker=tracker, today=today)
 
 
+TODAY = date(2026, 9, 28)  # UTC
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(goatbots.times, "today", lambda: TODAY)
+    monkeypatch.setattr(goatbots.times, "now", lambda: datetime(2026, 9, 28, 13, 0, tzinfo=UTC))
     return tmp_path / "riffle" / "goatbots"
 
 
@@ -96,12 +106,12 @@ def test_the_first_run_keeps_the_day_the_cards_and_every_year_goatbots_has(data_
     assert (data_dir / "daily" / "2026-09-27.zip").read_bytes() == latest()  # as returned
     assert (data_dir / "card-definitions.zip").read_bytes() == definitions()
     assert (data_dir / "yearly" / "2025.zip").read_bytes() == archive(2025)
-    assert (data_dir / "yearly" / "2023.none").exists()  # GoatBots had nothing older
+    assert (data_dir / "yearly" / "2023.none").read_text() == "2026-09-28\n"  # GoatBots had nothing older
     outcomes = tracker.outcomes()
     assert outcomes["GoatBots prices"] == ("ok", "kept 2026-09-27, 2 prices")
     assert outcomes["GoatBots cards"] == ("ok", "1 card")
     assert outcomes["GoatBots 2026"][1].startswith("kept 5 days, ")
-    assert outcomes["GoatBots 2023"] == ("ok", "none from GoatBots; not asked again")
+    assert outcomes["GoatBots 2023"] == ("ok", "none from GoatBots; asked again from 2026-10-05")
     assert tracker.steps[0].updates  # the download's progress reached the step
     assert not [p for p in data_dir.rglob("*") if p.name.endswith((".new", ".part"))]
 
@@ -153,13 +163,13 @@ def test_empty_card_definitions_dont_replace_the_kept_ones(data_dir, tracker):
     assert snap.kept == ["card-definitions.zip"]
 
 
-def test_once_a_year_is_over_its_whole_archive_replaces_the_partial_one(data_dir):
+def test_once_a_year_is_over_its_whole_archive_is_kept_beside_the_partial_one(data_dir):
     run(Source(answers()))
     january = date(2027, 1, 2)
     source = Source(answers(january, **{f"{NEW}/price-history-2026.zip": archive(2026, days=31)}))
     snap = run(source)
     assert "yearly/2026.zip" in snap.kept
-    assert not (data_dir / "yearly" / "2026-partial.zip").exists()
+    assert (data_dir / "yearly" / "2026-partial.zip").read_bytes() == archive(2026, days=5, whole=False)
     assert f"{NEW}/price-history-2027.zip" in source.asked  # asked, not there yet
     assert not (data_dir / "yearly" / "2027.none").exists()  # so asked again next run
     assert f"{NEW}/price-history-2025.zip" not in source.asked
@@ -247,7 +257,7 @@ def damage(body: bytes, at: int) -> bytes:
 
 
 def test_an_archive_of_another_year_is_not_kept(data_dir, tracker):
-    source = Source(answers(**{f"{NEW}/price-history-2026.zip": archive(2025)}))
+    source = Source(answers(**{f"{NEW}/price-history-2026.zip": archive(2025, whole=False)}))
     run(source, tracker)
     assert tracker.outcomes()["GoatBots 2026"] == (
         "fail",
@@ -260,7 +270,10 @@ def test_an_archive_of_another_year_is_not_kept(data_dir, tracker):
 
 @pytest.mark.parametrize("at", range(8))
 def test_a_damaged_archive_is_not_kept(data_dir, tracker, at):
-    run(Source(answers(**{f"{NEW}/price-history-2025.zip": damage(archive(2025, days=1), at)})), tracker)
+    run(
+        Source(answers(**{f"{NEW}/price-history-2025.zip": damage(archive(2025, days=1, whole=False), at)})),
+        tracker,
+    )
     outcome = tracker.outcomes()["GoatBots 2025"]
     assert outcome is not None and outcome[0] == "fail" and "damaged" in outcome[1]
     assert not (data_dir / "yearly" / "2025.zip").exists()
@@ -315,7 +328,7 @@ def test_a_zip_zipfile_cant_read_fails_cleanly_everywhere(data_dir, tracker, fie
         answers(
             **{
                 f"{NEW}/{goatbots.LATEST}": recorded(latest(), **fields),
-                f"{NEW}/price-history-2026.zip": recorded(archive(2026), **fields),
+                f"{NEW}/price-history-2026.zip": recorded(archive(2026, whole=False), **fields),
             }
         )
     )
@@ -378,10 +391,86 @@ def test_a_404_for_a_year_partly_kept_fails_and_is_retried(data_dir, tracker):
     assert not (data_dir / "yearly" / "2026.none").exists()
     assert (data_dir / "yearly" / "2026-partial.zip").exists()
     snap = run(Source(answers(january, **{f"{NEW}/price-history-2026.zip": archive(2026, days=31)})))
-    assert "yearly/2026.zip" in snap.kept and not (data_dir / "yearly" / "2026-partial.zip").exists()
+    assert "yearly/2026.zip" in snap.kept and (data_dir / "yearly" / "2026-partial.zip").exists()
 
 
 def test_a_failed_year_leaves_no_download_behind(data_dir):
     run(Source(answers(**{f"{NEW}/price-history-2025.zip": b"not a zip"})))
     assert not [p for p in (data_dir / "yearly").iterdir() if p.name.endswith((".new", ".part"))]
     assert not (data_dir / "yearly" / "2025.zip").exists()
+
+
+# ---- whole years, and years GoatBots has none for ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("whole_year", "lacks", "new"),
+    [
+        (archive(2026, days=31, whole=False), "2026-12-31", "26 days"),  # Jan 6-31
+        (
+            archive(2026, days=0),
+            "2026-01-01, 2026-01-02, 2026-01-03, and 2 more days",
+            "1 day",
+        ),  # the partial's
+    ],
+)
+def test_a_whole_year_that_came_short_is_kept_beside_the_partial_not_as_the_year(
+    data_dir, tracker, whole_year, lacks, new
+):
+    run(Source(answers()))  # 2026's partial archive: Jan 1-5
+    january = date(2027, 1, 2)
+    snap = run(Source(answers(january, **{f"{NEW}/price-history-2026.zip": whole_year})), tracker)
+    short = "2026-short-2026-09-28T130000Z.zip"
+    assert tracker.outcomes()["GoatBots 2026"] == (
+        "ok",
+        f"lacks {lacks}; kept as {short} for {new} not kept before; the whole year asked again next run",
+    )
+    assert f"yearly/{short}" in snap.kept and (data_dir / "yearly" / short).read_bytes() == whole_year
+    assert (
+        not (data_dir / "yearly" / "2026.zip").exists()
+        and (data_dir / "yearly" / "2026-partial.zip").exists()
+    )
+    assert not [p for p in (data_dir / "yearly").iterdir() if p.name.endswith(".new")]
+
+
+def test_a_whole_year_short_seven_runs_in_a_row_warns_until_it_comes_whole(data_dir, tracker):
+    run(Source(answers()))
+    january = date(2027, 1, 2)
+    short = Source(answers(january, **{f"{NEW}/price-history-2026.zip": archive(2026, days=31, whole=False)}))
+    for _ in range(7):
+        run(short, tracker)
+    assert (
+        len(list((data_dir / "yearly").glob("2026-short-*.zip"))) == 1
+    )  # kept once: the same days again add nothing
+    assert tracker.steps[-1].outcome == (
+        "warn",
+        "lacks 2026-12-31; no day in it not kept before; the whole year asked again next run"
+        " (7 runs in a row, since 2026-09-28)",
+    )
+    whole = Source(answers(january, **{f"{NEW}/price-history-2026.zip": archive(2026, days=31)}))
+    assert "yearly/2026.zip" in run(whole).kept
+    assert len(list((data_dir / "yearly").glob("2026-*.zip"))) == 2  # the partial and the short one stay
+    assert "goatbots/2026" not in json.loads((data_dir.parent / "empty-answers.json").read_text())
+
+
+def test_a_year_goatbots_had_none_for_is_asked_again_a_week_later(data_dir, monkeypatch):
+    run(Source(answers()))  # 2023.none, 2026-09-28
+    monkeypatch.setattr(goatbots.times, "today", lambda: date(2026, 10, 4))
+    source = Source(answers())
+    run(source)
+    assert f"{NEW}/price-history-2023.zip" not in source.asked
+    monkeypatch.setattr(goatbots.times, "today", lambda: date(2026, 10, 5))
+    source = Source(answers(**{f"{NEW}/price-history-2023.zip": archive(2023)}))
+    snap = run(source)
+    assert f"{NEW}/price-history-2023.zip" in source.asked and "yearly/2023.zip" in snap.kept
+    assert not (data_dir / "yearly" / "2023.none").exists()
+    assert (data_dir / "yearly" / "2022.none").read_text() == "2026-10-05\n"  # the walk goes on to the next
+
+
+def test_a_none_file_written_before_its_day_was_goes_by_its_own_time(data_dir):
+    yearly = data_dir / "yearly"
+    run(Source(answers()))
+    (yearly / "2023.none").write_text("")
+    seen = datetime(2026, 9, 27, 20, 51, tzinfo=UTC).timestamp()
+    os.utime(yearly / "2023.none", (seen, seen))
+    assert goatbots._none_since(yearly / "2023.none") == date(2026, 9, 27)  # asked again from 2026-10-04
