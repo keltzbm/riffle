@@ -190,6 +190,25 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- tcgcsv keeps each set's price file as it arrives. One set that failed voided its whole game, and the next run
+  asked for every set again, against tcgcsv's rule of never fetching a file twice; now the game's step fails
+  naming how many it lacks (`451 of 452 sets kept; set 23 failed (HTTP 500), asked again next run`), and the next
+  run of the same tcgcsv day asks only for those. tcgcsv publishes about 20:05 UTC, so its day spans both daily
+  syncs. A game with every set is gzipped, sorted by set; one tcgcsv's day passed before it was whole is gzipped
+  as it stood, with `missing.txt` naming the sets it never got. Each line gains the set's fetch time and its
+  file's `Last-Modified` (UTC). A set whose file is from tcgcsv's next refresh goes under that day, and the run
+  carries on under it, warning what the old day lacks; one with no `Last-Modified` goes under the run's day, and
+  the step says so. Once tcgcsv gives no answer, the rest of its games fail at once (`not asked: tcgcsv gave no
+  answer`) instead of each waiting out its retries, up to about 4¾ hours. A game that fails any other way, a
+  disk error included, no longer skips the games after it.
+- GoatBots' whole archive for a year that's over is kept as the year's only if it runs to Dec 31 and holds every
+  day of the partial archive kept during the year. One short of that says what it lacks and is asked for again
+  next run, a warning after seven runs in a row; it's kept too, as `<year>-short-<UTC time>.zip`, when it has a
+  day no archive of the year kept has, so nothing is lost if the whole one never comes. The partial archive is
+  kept beside the whole one, not deleted. A year GoatBots had no archive for is asked for again a week after it
+  said so, not never; `<year>.none` holds the day.
+- `riffle check` also names tcgcsv sets kept under a day from a later refresh, notes the games not finished, and
+  names GoatBots whole-year archives short of Dec 31.
 - The MTGO trickle waits up to 60 seconds for a month's index, as it does for an event page, not 20. An old
   month's index runs to about 300 KB and took up to 15 seconds to come back; 16 of the first 58 reads ran past
   20, and each one ended its run with nothing else asked.

@@ -102,16 +102,29 @@ def wait_online(*hosts: str, timeout: float = 120.0, pause: float = 5.0, port: i
         time.sleep(pause)
 
 
-def get(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) -> bytes | None:
-    """The whole body, or None for 404."""
+@dataclass
+class Reply:
+    body: bytes
+    headers: dict[str, str]  # names lower-cased: "last-modified"
+
+
+def get_reply(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) -> Reply | None:
+    """The whole body and the answer's headers, or None for 404."""
     r = _open(url, accept, timeout, retries)
     if r is None:
         return None
     with r:
         try:
-            return r.read()  # a short Content-Length body raises IncompleteRead here
+            body = r.read()  # a short Content-Length body raises IncompleteRead here
         except (OSError, http.client.HTTPException) as e:
             raise FetchError(f"answer broke off while reading ({_why(e)})") from e
+        return Reply(body, {name.lower(): value for name, value in r.headers.items()})
+
+
+def get(url: str, accept: str = "*/*", timeout: float = 60, retries: int = 2) -> bytes | None:
+    """The whole body, or None for 404."""
+    reply = get_reply(url, accept, timeout, retries)
+    return None if reply is None else reply.body
 
 
 @dataclass
