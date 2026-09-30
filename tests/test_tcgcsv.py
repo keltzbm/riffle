@@ -191,8 +191,12 @@ def test_unknown_category_is_reported_without_guessing(data_dir, sleeps):
 def test_an_unexpected_page_fails_the_game_cleanly(data_dir, sleeps):
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/groups": b"<html>maintenance</html>"}))
     snap = tcgcsv.snapshot(FAB, fetch=fetch)
-    assert snap.failed == [("fab", "groups: not the expected JSON")]
+    aside = "tcgcsv/aside/fab-groups-2026-09-24T220000Z.json"
+    assert snap.failed == [
+        ("fab", f"groups: not the expected JSON; set aside as {aside}, asked again next run")
+    ]
     assert not (tcgcsv.day_dir(DAY, "fab") / "groups.json").exists()
+    assert (data_dir / aside).read_bytes() == b"<html>maintenance</html>"
 
 
 def test_a_set_list_with_no_sets_is_a_finished_game(data_dir, sleeps, tracker):
@@ -369,24 +373,63 @@ def test_a_game_the_budget_has_no_room_for_isn_t_started(data_dir, sleeps, monke
     assert snap.failed == [("fab", tcgcsv.OVER_BUDGET)] and len(asked) == 2
 
 
-def test_a_last_updated_that_isnt_utf8_is_a_fetch_error():
-    fetch, _ = fake_fetch({f"{B}/last-updated.txt": "2026-09-24T20:05:50+0000".encode("utf-16")})
-    with pytest.raises(net.FetchError, match="last-updated"):
+def test_a_last_updated_that_isnt_utf8_is_set_aside(data_dir):
+    utf16 = "2026-09-24T20:05:50+0000".encode("utf-16")
+    fetch, _ = fake_fetch({f"{B}/last-updated.txt": utf16})
+    with pytest.raises(
+        net.FetchError, match="unexpected last-updated.txt: .*; set aside as tcgcsv/aside/last-updated-"
+    ):
         tcgcsv.last_updated(fetch)
+    (aside,) = (data_dir / "tcgcsv" / "aside").iterdir()
+    assert aside.read_bytes() == utf16 and logged(data_dir)[-1]["list"] == "last-updated.txt"
 
 
 def test_a_group_without_a_whole_number_group_id_fails_its_game_not_the_run(data_dir, sleeps):
     bad = json.dumps({"success": True, "errors": [], "results": [{"groupId": "x1", "name": "g"}]}).encode()
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/groups": bad}))
     snap = tcgcsv.snapshot(FAB, fetch=fetch)
-    assert snap.failed == [("fab", "groups: a group without a whole-number groupId")]
+    aside = "tcgcsv/aside/fab-groups-2026-09-24T220000Z.json"
+    why = f"groups: a group without a whole-number groupId; set aside as {aside}, asked again next run"
+    assert snap.failed == [("fab", why)]
 
 
 def test_a_price_file_that_isnt_utf8_fails_its_game_not_the_run(data_dir, sleeps):
     utf16 = prices(1, 2).decode().encode("utf-16")  # json.loads reads it; the file must be UTF-8
     fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": utf16}))
     snap = tcgcsv.snapshot(FAB, fetch=fetch)
-    assert snap.failed == [("fab", "1 of 2 sets kept; set 100 failed (not UTF-8), asked again next run")]
+    aside = "tcgcsv/aside/fab-100-2026-09-24T220000Z.json"
+    why = f"1 of 2 sets kept; set 100 failed (not UTF-8; set aside as {aside}), asked again next run"
+    assert snap.failed == [("fab", why)] and (data_dir / aside).read_bytes() == utf16
+
+
+def test_a_price_file_served_broken_again_is_set_aside_once_a_publish(data_dir, sleeps):
+    for body in (b'{"results": [', b'{"results": [{'):  # two broken copies, one Last-Modified
+        fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": body}))
+        snap = tcgcsv.snapshot(FAB, fetch=fetch)
+    aside = "tcgcsv/aside/fab-100-2026-09-24T220000Z.json"
+    why = f"not the expected JSON; a copy of this publish is set aside already as {aside}"
+    assert snap.failed == [("fab", f"1 of 2 sets kept; set 100 failed ({why}), asked again next run")]
+    assert [p.name for p in (data_dir / "tcgcsv" / "aside").iterdir()] == ["fab-100-2026-09-24T220000Z.json"]
+    first, again = [entry for entry in logged(data_dir) if entry["list"] == "fab/100.json"]
+    assert first["aside"] == aside and again["not_kept"] is True
+    assert first["publish"] == again["publish"] == runs.name(net.http_time(MODIFIED))
+
+
+def test_a_set_with_no_last_modified_is_named_by_its_etag(data_dir, sleeps):
+    for n in (1, 2):
+        broken = net.Reply(b"<html>%d</html>" % n, {"etag": '"e1"'})
+        fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": broken}))
+        tcgcsv.snapshot(FAB, fetch=fetch)
+    assert len(list((data_dir / "tcgcsv" / "aside").iterdir())) == 1
+    assert [entry["publish"] for entry in logged(data_dir) if entry["list"] == "fab/100.json"] == ['"e1"'] * 2
+
+
+def test_a_category_list_that_isnt_json_is_set_aside(data_dir, sleeps):
+    fetch, _ = fake_fetch(fab_answers(**{f"{B}/tcgplayer/categories": b"<html>busy</html>"}))
+    with pytest.raises(
+        net.FetchError, match="categories: not the expected JSON; set aside as tcgcsv/aside/categories-"
+    ):
+        tcgcsv.snapshot(FAB, fetch=fetch)
 
 
 # ---- resuming, no answer, and tcgcsv's next day ------------------------------------------

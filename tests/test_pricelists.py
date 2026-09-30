@@ -2,6 +2,7 @@
 and kept whole or as a difference (riffle.runs), with every check logged."""
 
 import gzip
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -227,25 +228,69 @@ def test_a_list_empty_seven_runs_in_a_row_is_a_warning_and_still_asked(data_dir,
     assert "cardkingdom/singles" not in json.loads(empties.path().read_text())  # rows again: forgotten
 
 
-def test_a_list_with_no_stamp_is_set_aside_and_fails(data_dir, tracker):
+def test_a_list_with_no_stamp_is_set_aside_once_and_fails(data_dir, tracker):
     unstamped = ck(made=None)
     res = run(Store(answers(**{SINGLES.url: unstamped})), tracker)
-    why = "pricelist: no created_at in it; kept aside as cardkingdom/aside/singles-2026-09-27T205150Z.json.gz"
-    assert res.failed == [("Card Kingdom singles", why)] and res.kept == ["Card Kingdom sealed"]
     aside = data_dir / "cardkingdom" / "aside"
+    name = "cardkingdom/aside/singles-2026-09-27T205150Z.json.gz"
+    why = f"pricelist: no created_at in it; set aside as {name}, asked again next run"
+    assert res.failed == [("Card Kingdom singles", why)] and res.kept == ["Card Kingdom sealed"]
     assert gzip.decompress((aside / "singles-2026-09-27T205150Z.json.gz").read_bytes()) == unstamped
-    run(Store(answers(**{SINGLES.url: ck(made="whenever")})))  # a stamp that isn't a time: the same
-    assert sorted(p.name for p in aside.iterdir()) == [
-        "singles-2026-09-27T205150Z-2.json.gz",
-        "singles-2026-09-27T205150Z.json.gz",
-    ]
-    assert run(Store(answers())).kept == ["Card Kingdom singles"]
     assert logged(data_dir)[0] == {
         "at": "2026-09-27T205150Z",
         "list": "singles",
         "result": "failed",
         "why": why,
+        "publish": None,
+        "served_sha256": hashlib.sha256(unstamped).hexdigest(),
+        "served_size": len(unstamped),
+        "aside": name,
     }
+    run(Store(answers(**{SINGLES.url: unstamped})), tracker, at=AT + timedelta(minutes=5))
+    said = f"pricelist: no created_at in it; a copy of this publish is set aside already as {name}"
+    outcome = tracker.outcomes()["Card Kingdom singles"]  # no ETag: the same bytes aren't kept twice
+    assert outcome == ("fail", f"{said}, asked again next run")
+    run(Store(answers(**{SINGLES.url: ck(made="whenever")})))  # a stamp that isn't a time, other bytes: kept
+    assert sorted(p.name for p in aside.iterdir()) == [
+        "singles-2026-09-27T205150Z-2.json.gz",
+        "singles-2026-09-27T205150Z.json.gz",
+    ]
+    assert run(Store(answers())).kept == ["Card Kingdom singles"]
+
+
+def test_a_list_that_isnt_whole_is_set_aside_once_a_publish(data_dir, tracker):
+    whole = ck()
+    res = run(Store(answers(**{SINGLES.url: whole[:-200]})), tracker)
+    name = "cardkingdom/aside/singles-2026-09-27T205150Z.json.gz"
+    why = "pricelist: not the expected JSON"
+    assert res.failed == [("Card Kingdom singles", f"{why}; set aside as {name}, asked again next run")]
+    assert gzip.decompress((data_dir / name).read_bytes()) == whole[:-200]
+    run(Store(answers(**{SINGLES.url: whole[:-300]})), tracker, at=AT + timedelta(minutes=5))
+    said = f"{why}; a copy of this publish is set aside already as {name}, asked again next run"
+    assert tracker.outcomes()["Card Kingdom singles"] == ("fail", said)  # its stamp names the publish
+    assert len(list((data_dir / "cardkingdom" / "aside").iterdir())) == 1
+    last = [entry for entry in logged(data_dir) if entry["list"] == "singles"][-1]
+    assert last["not_kept"] is True and last["publish"] == "2026-09-27T200838Z" and "aside" not in last
+    assert run(Store(answers()), at=AT + timedelta(minutes=10)).kept == ["Card Kingdom singles"]
+
+
+def test_a_list_with_no_stamp_is_named_by_its_etag(data_dir, tracker):
+    url = pricelists.MANA_POOL[0].url
+    unstamped = json.dumps({"meta": {}, "data": [{"scryfall_id": "s1", "price_cents": 180}]}).encode()
+    urls = {plist.url: mp() for plist in pricelists.MANA_POOL}
+    for minutes, body in ((0, unstamped), (5, unstamped.replace(b"180", b"181"))):
+        run(
+            Store(urls | {url: body}, {url: '"v1"'}),
+            tracker,
+            at=AT + timedelta(minutes=minutes),
+            lists=pricelists.MANA_POOL,
+        )
+    assert len(list((data_dir / "manapool" / "aside").iterdir())) == 1  # other bytes, the same ETag
+    last = [entry for entry in logged(data_dir, "manapool") if entry["list"] == pricelists.MANA_POOL[0].name][
+        -1
+    ]
+    assert last["publish"] == '"v1"' and last["not_kept"] is True
+    assert watching.load_tags("manapool").get(pricelists.MANA_POOL[0].name) is None  # asked for whole again
 
 
 def test_a_list_made_after_it_was_fetched_warns_that_the_zone_is_wrong(data_dir, tracker):
@@ -309,10 +354,13 @@ def test_a_list_wrapped_in_html_is_kept_wrapped(data_dir):
         b"",
     ],
 )
-def test_a_body_that_isnt_a_whole_list_keeps_nothing(data_dir, tracker, body):
+def test_a_body_that_isnt_a_whole_list_is_set_aside_and_no_list_kept(data_dir, tracker, body):
     res = run(Store(answers(**{SINGLES.url: body})), tracker)
-    assert res.failed == [("Card Kingdom singles", "pricelist: not the expected JSON")]
+    name = "cardkingdom/aside/singles-2026-09-27T205150Z.json.gz"
+    why = f"pricelist: not the expected JSON; set aside as {name}, asked again next run"
+    assert res.failed == [("Card Kingdom singles", why)]
     assert res.kept == ["Card Kingdom sealed"] and kept(data_dir) == {}
+    assert gzip.decompress((data_dir / name).read_bytes()) == body
     assert sorted(p.name for p in (data_dir / "cardkingdom" / "lists").iterdir()) == ["sealed"]
 
 

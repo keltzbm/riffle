@@ -223,7 +223,8 @@ def _head(path: Path, name: str) -> bytes:
 
 def _keep(name: str, folder: Path, fetch: Fetch, download: Download, step: Step) -> tuple[date, bool]:
     """Download name, check it against its .sha256, and keep it in folder as <day>.json.xz,
-    <day> being the date inside. Returns that day, and whether the file is new."""
+    <day> being the date inside; a copy that fails is set aside once its bytes
+    (riffle.watching.broken_logged: the sync keeps no ETag). Returns that day, and whether the file is new."""
     url = f"{BASE}/{name}"
     expected = _expected(fetch, name)
     folder.mkdir(parents=True, exist_ok=True)
@@ -231,9 +232,12 @@ def _keep(name: str, folder: Path, fetch: Fetch, download: Download, step: Step)
     try:
         if download(url, fresh, step.update) is None:
             raise net.FetchError(f"{name}: HTTP 404")
-        if runs.file_sha256(fresh) != expected:
-            raise net.FetchError(f"{name} doesn't match its .sha256; MTGJSON may be mid-update")
-        day, _ = _meta(_head(fresh, name), name)
+        try:
+            if runs.file_sha256(fresh) != expected:
+                raise net.FetchError(f"{name} doesn't match its .sha256; MTGJSON may be mid-update")
+            day, _ = _meta(_head(fresh, name), name)
+        except net.FetchError as e:
+            raise watching.broken_logged(STORE, name, None, fresh, name, times.now(), str(e)) from e
         dest = folder / f"{day.isoformat()}.json.xz"
         if dest.exists():
             return day, False
@@ -337,10 +341,8 @@ def _file(file: File, fetch: Watcher, get: Fetch, tags: dict[str, str], now: dat
         served = watching.served(fresh, got)
         data = _checked(file, fresh, got, get, now)
         if got.modified is None:
-            where = watching.set_aside(STORE, fresh, file.served, now)
-            raise net.FetchError(
-                f"{file.path}: no Last-Modified, so no time it was built; set aside as {where}"
-            )
+            why = f"{file.path}: no Last-Modified, so no time it was built"
+            raise watching.broken(STORE, file.list, got.etag, fresh, file.served, now, why)
         day, version = got.modified.date(), None  # a file with no meta: the day it was built, UTC
         if META.match(data[:512]):
             day, version = _meta(data[:512], file.path)

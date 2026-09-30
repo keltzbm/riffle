@@ -182,6 +182,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- Every other download that isn't whole is set aside in `<store>/aside/` once a publish, not dropped, and asked
+  for again: Card Kingdom's and Mana Pool's lists (gzipped, as before), Cardmarket's guides, GoatBots' prices and
+  yearly archives, tcgcsv's price files, set lists, categories and `last-updated.txt`, and MTGJSON's 90-day file.
+  A publish is named by its stamp, else its ETag; with neither (Card Kingdom sends no ETag, and a sync keeps
+  none), a copy the same byte for byte as one set aside isn't kept again. `tcgcsv mtg: 451 of 452 sets kept; set
+  23 failed (not the expected JSON; set aside as tcgcsv/aside/mtg-23-<UTC time>.json), asked again next run`.
 - GoatBots' card definitions are kept by the watch, every publish, instead of by the sync replacing
   `goatbots/card-definitions.zip`, which stays as it was; the sync's step is `GoatBots years`.
 - A file of MTGJSON's (AllPricesToday included), a set of GoatBots' definitions or a Cardmarket product list that
@@ -295,6 +301,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A file with no stamp (no `Last-Modified`, or none in a list's first bytes) is set aside once a publish, named by
+  its ETag, instead of at every firing with its ETag never saved: had MTGJSON stopped sending `Last-Modified`, its
+  catalogs would have put a whole build in `mtgjson/aside/` every 5 minutes, up to about 124 GB a day.
 - A Scryfall bulk file served broken at every refresh is set aside once a publish, not at every try (twice a day):
   a later broken copy is recorded in `scryfall/bulk/checks.jsonl`, with its SHA-256, size and why, and deleted.
 - Cardmarket's Cyberpunk (game 23, from 2026-08-27) and Gundam (24, from 2026-09-01) guides were never kept:
