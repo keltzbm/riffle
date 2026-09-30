@@ -224,6 +224,24 @@ def _set_aside(fresh: Path, plist: PriceList, at: datetime) -> Path:
     return dest
 
 
+def _broken(
+    plist: PriceList, fresh: Path, got: net.Fetched, at: datetime | None, now: datetime, why: str
+) -> watching.Broken:
+    """A list fetched whole that can't be kept, set aside gzipped once a publish
+    (riffle.watching.broken): named by its stamp when its first bytes hold one, else its ETag."""
+    publish = runs.name(at) if at else got.etag
+    return watching.broken(
+        plist.store,
+        plist.name,
+        publish,
+        fresh,
+        plist.name,
+        now,
+        why,
+        lambda: _shown(_set_aside(fresh, plist, now)),
+    )
+
+
 def _one(plist: PriceList, fetch: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
     """Ask for one list and keep it if it's new; end step saying what came. The log entry."""
     what = plist.url.rsplit("/", 1)[-1]
@@ -267,7 +285,10 @@ def _keep(
 ) -> dict:
     """Keep a list fetched whole, as a difference or a new run's base."""
     what = plist.url.rsplit("/", 1)[-1]
-    head = check(fresh, what)
+    try:
+        head = check(fresh, what)
+    except net.FetchError as e:
+        raise _broken(plist, fresh, got, made(_edge(fresh, HEAD, end=False), plist), now, str(e)) from e
     key = f"{plist.store}/{plist.name}"
     if EMPTY.search(head):
         empties.report(step, key, "empty list", now)
@@ -275,8 +296,7 @@ def _keep(
     empties.clear(key)
     at = made(head, plist)
     if at is None:
-        dest = _set_aside(fresh, plist, now)
-        raise net.FetchError(f"{what}: no {plist.stamp} in it; kept aside as {_shown(dest)}")
+        raise _broken(plist, fresh, got, None, now, f"{what}: no {plist.stamp} in it")
     try:
         kept = runs.keep(lists_dir(plist), at, fresh.read_bytes())
     except runs.Unverified as e:
@@ -301,8 +321,9 @@ def watch(
     clock: Callable[[], datetime] = times.now,
 ) -> Watch:
     """Ask for each of a store's lists once and keep each new one, each its own step. A list
-    that fails keeps nothing and is asked for again next run; after one gets no answer at all,
-    the rest fail without asking. A run that finds the store's lock held asks nothing."""
+    that fails keeps nothing and is asked for again next run, a copy fetched whole set aside
+    once a publish (_broken); after one gets no answer at all, the rest fail without asking. A
+    run that finds the store's lock held asks nothing."""
     store = lists[0].store
     res = Watch()
     with watching.held(store) as mine:
@@ -328,7 +349,7 @@ def watch(
                 answering = not isinstance(e, net.NoAnswer)
                 res.failed.append((plist.label, str(e)))
                 step.fail(str(e))
-                entry |= {"result": "failed", "why": str(e)}
+                entry |= {"result": "failed", "why": str(e)} | getattr(e, "facts", {})
             else:
                 sort = {"kept": res.kept, "empty": res.empty}.get(entry["result"], res.same)
                 sort.append(plist.label)

@@ -271,12 +271,20 @@ def _none_since(path: Path) -> date:
 
 
 def _year(year: int, latest: date, snap: Snapshot, download: Download, step: Step) -> bool:
-    """One year's archive as its own step. Whether the walk goes on to older years."""
+    """One year's archive as its own step; a copy fetched whole that fails its check is set
+    aside once its bytes (riffle.watching.broken_logged: the sync keeps no ETag). Whether the
+    walk goes on to older years."""
     whole, partial, none = (yearly_dir() / f"{year}{end}" for end in (".zip", "-partial.zip", ".none"))
     dest = partial if year == latest.year else whole
     fresh = dest.with_name(f"{dest.name}.new")
     try:
-        days = _archive(year, fresh, download, step)
+        try:
+            days = _archive(year, fresh, download, step)
+        except net.FetchError as e:
+            if not fresh.exists():  # not fetched whole: nothing to set aside
+                raise
+            name = f"price-history-{year}.zip"
+            raise watching.broken_logged(STORE, name, None, fresh, name, times.now(), str(e)) from e
         if days is None:
             if year == latest.year:  # early January: nothing archived yet this year
                 step.drop()
@@ -330,17 +338,13 @@ def snapshot(
     return snap
 
 
-class NoPriceFile(net.FetchError):
-    """A price zip with no price file in it."""
-
-
 def _newest(path: Path) -> tuple[dict[date, str], bytes, str]:
     """The price files in a latest-prices zip by day, and the newest one's bytes and time (as
     the zip says it: Central European local time, no zone)."""
     with _open(path, LATEST) as zf:
         days = price_days(zf)
         if not days:
-            raise NoPriceFile(f"{LATEST}: no price-history-<day>.txt in it, only {_held(zf)}")
+            raise net.FetchError(f"{LATEST}: no price-history-<day>.txt in it, only {_held(zf)}")
         entry = days[max(days)]
         return days, _read(zf, entry, LATEST), datetime(*zf.getinfo(entry).date_time).isoformat()
 
@@ -382,18 +386,18 @@ def _day(fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> dic
         served = watching.served(fresh, got)
         try:
             days, body, written = _newest(fresh)
-        except NoPriceFile as e:
-            raise net.FetchError(f"{e}; set aside as {watching.set_aside(STORE, fresh, LATEST, now)}") from e
-        day = max(days)
-        entry = days[day]
-        n = _prices(body, entry)
+            day = max(days)
+            entry = days[day]
+            n = _prices(body, entry)
+        except net.FetchError as e:
+            raise watching.broken(STORE, LIST, _publish(got), fresh, LATEST, now, str(e)) from e
         if not n:
             empties.report(step, "goatbots/prices", "empty price file", now)
             return {"result": "empty"}
         empties.clear("goatbots/prices")
         if got.modified is None:
-            where = watching.set_aside(STORE, fresh, LATEST, now)
-            raise net.FetchError(f"{LATEST}: no Last-Modified, so no time it was made; set aside as {where}")
+            why = f"{LATEST}: no Last-Modified, so no time it was made"
+            raise watching.broken(STORE, LIST, _publish(got), fresh, LATEST, now, why)
         stamp, made = runs.name(got.modified), times.shown(got.modified)
         if stamp in runs.kept(folder):
             if got.etag:
@@ -462,10 +466,8 @@ def _cards(fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> d
             return {"result": "empty"}
         empties.clear("goatbots/cards")
         if got.modified is None:
-            where = watching.set_aside(STORE, fresh, DEFINITIONS, now)
-            raise net.FetchError(
-                f"{DEFINITIONS}: no Last-Modified, so no time they were made; set aside as {where}"
-            )
+            why = f"{DEFINITIONS}: no Last-Modified, so no time they were made"
+            raise watching.broken(STORE, CARDS, _publish(got), fresh, DEFINITIONS, now, why)
         stamp, made = runs.name(got.modified), times.shown(got.modified)
         facts = {"day": got.modified.date().isoformat()} | served
         if stamp in runs.kept(folder):

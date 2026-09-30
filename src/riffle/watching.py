@@ -259,25 +259,41 @@ class Broken(net.FetchError):
 
 
 def broken(
+    store: str,
+    name: str,
+    publish: str | None,
+    fresh: Path,
+    served: str,
+    now: datetime,
+    why: str,
+    put: Callable[[], str] | None = None,
+) -> Broken:
+    """A download that can't be kept as a list, set aside in the store's aside folder (by put,
+    or set_aside named by served) unless a copy of the same publish is set aside already, or one
+    the same byte for byte, so a file served broken for days is kept once. publish names it: its
+    stamp, or its ETag; with neither, only a copy the same byte for byte isn't set aside again.
+    The error to raise, its facts for the log (publish, and aside or not_kept)."""
+    sha256 = runs.file_sha256(fresh)
+    facts: dict = {"publish": publish, "served_sha256": sha256, "served_size": fresh.stat().st_size}
+    for entry in reversed(entries(store)):
+        if entry.get("list") != name or not entry.get("aside"):
+            continue
+        if entry.get("served_sha256") == sha256 or (publish is not None and entry.get("publish") == publish):
+            was = entry["aside"]
+            said = f"{why}; a copy of this publish is set aside already as {was}, asked again next run"
+            return Broken(said, facts | {"not_kept": True})
+    where = put() if put is not None else set_aside(store, fresh, served, now)
+    return Broken(f"{why}; set aside as {where}, asked again next run", facts | {"aside": where})
+
+
+def broken_logged(
     store: str, name: str, publish: str | None, fresh: Path, served: str, now: datetime, why: str
 ) -> Broken:
-    """A download that isn't whole, set aside in the store's aside folder (set_aside, named by
-    served) unless a copy of the same publish is set aside already, so a file served broken for
-    days is kept once. publish names it: its stamp, or its ETag; with neither it's always set
-    aside. The error to raise, its facts for the log (publish, and aside or not_kept)."""
-    facts: dict = {
-        "publish": publish,
-        "served_sha256": runs.file_sha256(fresh),
-        "served_size": fresh.stat().st_size,
-    }
-    if publish is not None:
-        for entry in reversed(entries(store)):
-            if entry.get("list") == name and entry.get("publish") == publish and entry.get("aside"):
-                was = entry["aside"]
-                said = f"{why}; a copy of this publish is set aside already as {was}, asked again next run"
-                return Broken(said, facts | {"not_kept": True})
-    where = set_aside(store, fresh, served, now)
-    return Broken(f"{why}; set aside as {where}, asked again next run", facts | {"aside": where})
+    """broken(), for a file fetched outside a watch of lists (Pass), which logs each check: its
+    own entry logged under name, so the next copy of the publish finds it."""
+    e = broken(store, name, publish, fresh, served, now, why)
+    log(store, {"at": at(now), "list": name, "result": "failed", "why": str(e)} | e.facts)
+    return e
 
 
 Ask = Callable[[dict[str, str], datetime, Step], dict]  # (ETags, now, step) -> the check's log entry

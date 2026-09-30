@@ -353,7 +353,11 @@ def _guide(game: str, ref: int | str, fetch: Fetch, tags: dict[str, str], now: d
                 raise TypeError("priceGuides")
             at = created_at(doc["createdAt"])
         except (ValueError, KeyError, TypeError, RecursionError) as e:
-            raise net.FetchError(f"{name}: not the expected JSON") from e
+            made = _created(body[: net.HEAD])
+            publish = runs.name(made) if made else got.etag
+            raise watching.broken(
+                STORE, game, publish, fresh, name, now, f"{name}: not the expected JSON"
+            ) from e
         if not rows:
             empties.report(step, key, "empty guide", now)
             return {"result": "empty"}

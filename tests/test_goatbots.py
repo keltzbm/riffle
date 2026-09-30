@@ -299,10 +299,16 @@ def test_missing_everywhere_fails_the_day(data_dir, tracker):
         (latest(prices={"348": True}), "price-history-2026-09-27.txt isn't MTGO IDs and prices"),
     ],
 )
-def test_a_zip_that_isnt_a_price_file_keeps_nothing(data_dir, tracker, body, why):
+def test_a_zip_that_isnt_a_price_file_is_set_aside_once_a_publish(data_dir, tracker, body, why):
     watch(Source(answers(**{f"{NEW}/{goatbots.LATEST}": body})), tracker)
-    assert tracker.outcomes()["GoatBots prices"] == ("fail", f"{goatbots.LATEST}: {why}")
+    aside = "goatbots/aside/price-history-2026-09-28T130000Z.zip"
+    said = f"{goatbots.LATEST}: {why}; set aside as {aside}, asked again next run"
+    assert tracker.outcomes()["GoatBots prices"] == ("fail", said)
+    assert (data_dir.parent / aside).read_bytes() == body
     assert not kept(data_dir) and watching.load_tags("goatbots") == {}
+    watch(Source(answers(**{f"{NEW}/{goatbots.LATEST}": body})), tracker, now=NOW + timedelta(minutes=5))
+    assert "a copy of this publish is set aside already" in tracker.outcomes()["GoatBots prices"][1]
+    assert len(list((data_dir / "aside").iterdir())) == 1
 
 
 def test_a_zip_with_no_price_file_is_set_aside_and_fails(data_dir, tracker):
@@ -311,7 +317,8 @@ def test_a_zip_with_no_price_file_is_set_aside_and_fails(data_dir, tracker):
     aside = "goatbots/aside/price-history-2026-09-28T130000Z.zip"
     assert tracker.outcomes()["GoatBots prices"] == (
         "fail",
-        f"{goatbots.LATEST}: no price-history-<day>.txt in it, only readme.txt; set aside as {aside}",
+        f"{goatbots.LATEST}: no price-history-<day>.txt in it, only readme.txt"
+        f"; set aside as {aside}, asked again next run",
     )
     assert (data_dir.parent / aside).read_bytes() == body and not kept(data_dir)
 
@@ -321,12 +328,14 @@ def test_a_zip_with_no_last_modified_is_set_aside_and_fails(data_dir, tracker):
     aside = "goatbots/aside/price-history-2026-09-28T130000Z.zip"
     assert tracker.outcomes()["GoatBots prices"] == (
         "fail",
-        f"{goatbots.LATEST}: no Last-Modified, so no time it was made; set aside as {aside}",
+        f"{goatbots.LATEST}: no Last-Modified, so no time it was made"
+        f"; set aside as {aside}, asked again next run",
     )
     assert (data_dir.parent / aside).read_bytes() == latest()
     assert not kept(data_dir) and watching.load_tags("goatbots") == {}
-    watch(Source(answers(), modified=None))  # set aside again: never over the first
-    assert (data_dir / "aside" / "price-history-2026-09-28T130000Z-2.zip").exists()
+    watch(Source(answers(), modified=None), tracker, now=NOW + timedelta(minutes=5))  # once a publish
+    assert "a copy of this publish is set aside already" in tracker.outcomes()["GoatBots prices"][1]
+    assert len(list((data_dir / "aside").iterdir())) == 1
 
 
 def test_a_list_kept_already_is_had_not_kept_again(data_dir, tracker):
@@ -421,12 +430,19 @@ def damage(body: bytes, at: int) -> bytes:
 def test_an_archive_of_another_year_is_not_kept(data_dir, tracker):
     source = Source(answers(**{f"{NEW}/price-history-2026.zip": archive(2025, whole=False)}))
     run(source, tracker)
+    (aside,) = (data_dir / "aside").iterdir()  # named by when the sync ran
     assert tracker.outcomes()["GoatBots 2026"] == (
         "fail",
         "price-history-2026.zip: no price-history-2026-<month>-<day>.txt in it, only "
-        "price-history-2025-01-01.txt, price-history-2025-01-02.txt, price-history-2025-01-03.txt",
+        "price-history-2025-01-01.txt, price-history-2025-01-02.txt, price-history-2025-01-03.txt"
+        f"; set aside as goatbots/aside/{aside.name}, asked again next run",
     )
+    assert aside.read_bytes() == archive(2025, whole=False)
     assert not (data_dir / "yearly" / "2026-partial.zip").exists()
+    run(Source(answers(**{f"{NEW}/price-history-2026.zip": archive(2025, whole=False)})), tracker)
+    assert "a copy of this publish is set aside already" in tracker.outcomes()["GoatBots 2026"][1]
+    assert len(list((data_dir / "aside").iterdir())) == 1  # the same bytes: kept once
+    assert logged(data_dir)[-1]["list"] == "price-history-2026.zip" and logged(data_dir)[-1]["not_kept"]
     assert f"{NEW}/price-history-2025.zip" not in source.asked  # the walk stopped
 
 
@@ -454,7 +470,8 @@ def test_an_oversized_price_file_is_refused(data_dir, tracker, monkeypatch):
     watch(Source(answers()), tracker)
     assert tracker.outcomes()["GoatBots prices"] == (
         "fail",
-        f"{goatbots.LATEST}: price-history-2026-09-27.txt unpacks to 30 bytes, too big to be what it claims",
+        f"{goatbots.LATEST}: price-history-2026-09-27.txt unpacks to 30 bytes, too big to be what it claims"
+        "; set aside as goatbots/aside/price-history-2026-09-28T130000Z.zip, asked again next run",
     )
 
 
@@ -716,7 +733,8 @@ def test_definitions_with_no_last_modified_are_set_aside_and_fail(with_cards, tr
     aside = "goatbots/aside/card-definitions-2026-09-28T130000Z.zip"
     assert tracker.outcomes()["GoatBots cards"] == (
         "fail",
-        f"{goatbots.DEFINITIONS}: no Last-Modified, so no time they were made; set aside as {aside}",
+        f"{goatbots.DEFINITIONS}: no Last-Modified, so no time they were made"
+        f"; set aside as {aside}, asked again next run",
     )
     assert (data_dir.parent / aside).read_bytes() == definitions()
 

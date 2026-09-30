@@ -193,7 +193,23 @@ def last_updated(fetch: Fetch = _get) -> datetime:
     try:
         return datetime.strptime(text, STAMP)
     except ValueError as e:
-        raise net.FetchError(f"unexpected last-updated.txt: {text[:40]!r}") from e
+        raise _broken("last-updated.txt", reply, f"unexpected last-updated.txt: {text[:40]!r}") from e
+
+
+def _broken(served: str, reply: net.Reply, why: str) -> watching.Broken:
+    """A file tcgcsv served whole that isn't what it should be, set aside once a publish
+    (riffle.watching.broken_logged, logged under served): named by its Last-Modified, else its
+    ETag."""
+    modified = net.http_time(reply.headers.get("last-modified"))
+    publish = runs.name(modified) if modified else reply.headers.get("etag")
+    named = served.replace("/", "-")  # mtg/23.json is set aside as mtg-23-<UTC time>.json
+    fresh = data_dir() / STORE / f"{named}.new"
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    fresh.write_bytes(reply.body)
+    try:
+        return watching.broken_logged(STORE, served, publish, fresh, named, times.now(), why)
+    finally:
+        fresh.unlink(missing_ok=True)
 
 
 def _parse(body: bytes, what: str) -> dict:
@@ -276,7 +292,10 @@ def _categories(snap: Snapshot, fetch: Fetch) -> list[dict]:
     snap.requests += 1
     if reply is None:
         raise net.FetchError("categories: HTTP 404")
-    cats = _results(reply.body, "categories")
+    try:
+        cats = _results(reply.body, "categories")
+    except net.FetchError as e:
+        raise _broken("categories.json", reply, str(e)) from e
     _write(path, reply.body)
     return cats
 
@@ -292,7 +311,10 @@ def _groups(category: int, game_dir: Path, run: _Run) -> list[int] | None:
     reply = run.fetch(f"{BASE}/tcgplayer/{category}/groups")
     if reply is None:
         return None
-    group_ids = _set_ids(reply.body)
+    try:
+        group_ids = _set_ids(reply.body)
+    except net.FetchError as e:
+        raise _broken(f"{game_dir.name}/groups.json", reply, str(e)) from e
     _write(path, reply.body)
     return group_ids
 
@@ -404,7 +426,8 @@ def _refresh(run: _Run, modified: datetime) -> None:
 
 def _sets(game: str, category: int, group_ids: list[int], run: _Run, step: Step) -> _Tally:
     """The day's sets not yet kept, each appended to the game's part file as it arrives. A set
-    that fails isn't written, and no answer at all stops the game. A set from the next
+    that fails isn't written (one served broken is set aside once a publish, _broken), and no
+    answer at all stops the game. A set from the next
     refresh goes under its own day, and ends this one: the run moves on to that day."""
     day = run.day
     have = _kept_sets(day_dir(day, game) / PART)
@@ -419,12 +442,18 @@ def _sets(game: str, category: int, group_ids: list[int], run: _Run, step: Step)
         fetched = times.now()
         try:
             reply = run.fetch(f"{BASE}/tcgplayer/{category}/{gid}/prices")
-            response = "null" if reply is None else _one_line(reply.body)  # null: no price file (404)
         except net.NoAnswer as e:
             tally.silent = str(e)
             break
         except (net.FetchError, OSError) as e:
             tally.failed.append((gid, str(e)))
+            continue
+        try:
+            response = "null" if reply is None else _one_line(reply.body)  # null: no price file (404)
+        except net.FetchError as e:
+            assert reply is not None  # _one_line read it
+            aside = _broken(f"{game}/{gid}.json", reply, str(e))
+            tally.failed.append((gid, str(aside).removesuffix(", asked again next run")))  # the line says it
             continue
         modified = None if reply is None else net.http_time(reply.headers.get("last-modified"))
         tally.unstamped += reply is not None and modified is None

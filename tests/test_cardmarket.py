@@ -293,11 +293,29 @@ def test_a_game_that_fails_keeps_nothing_and_the_rest_carry_on(data_dir, few, tr
         b"[" * 100_000,
     ],
 )
-def test_a_file_that_isnt_a_price_guide_fails_cleanly(data_dir, few, tracker, body):
+def test_a_file_that_isnt_a_price_guide_is_set_aside_and_fails(data_dir, few, tracker, body):
     res = run(Source(every(**{url(1): body})), tracker)
-    assert res.failed == [("Cardmarket mtg", "price_guide_1.json: not the expected JSON")]
+    aside = "cardmarket/aside/price_guide_1-2026-09-27T130000Z.json"
+    why = f"price_guide_1.json: not the expected JSON; set aside as {aside}, asked again next run"
+    assert res.failed == [("Cardmarket mtg", why)]
+    assert (data_dir / "aside" / "price_guide_1-2026-09-27T130000Z.json").read_bytes() == body
     assert cardmarket.made("mtg") == []
     assert not [p for p in data_dir.rglob("*") if p.name.endswith((".new", ".part"))]
+
+
+def test_a_guide_that_isnt_whole_is_set_aside_once_a_publish(data_dir, few, tracker):
+    whole = guide()
+    run(Source(every(**{url(1): whole[:-10]})), tracker)
+    run(Source(every(**{url(1): whole[:-20]})), tracker, now=NOW + timedelta(minutes=5))
+    aside = "cardmarket/aside/price_guide_1-2026-09-27T130000Z.json"
+    said = (
+        f"price_guide_1.json: not the expected JSON; a copy of this publish is set aside already as {aside}"
+    )
+    assert tracker.outcomes()["Cardmarket mtg"] == ("fail", f"{said}, asked again next run")
+    assert [p.name for p in (data_dir / "aside").iterdir()] == ["price_guide_1-2026-09-27T130000Z.json"]
+    last = [entry for entry in logged(data_dir) if entry["list"] == "mtg"][-1]
+    assert last["not_kept"] is True and last["publish"] == runs.name(cardmarket._created(whole))
+    assert run(Source(every()), now=NOW + timedelta(minutes=10)).kept[0] == "Cardmarket mtg"
 
 
 def test_a_createdat_that_isnt_a_time_is_not_a_guide_kept(data_dir):

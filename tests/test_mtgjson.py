@@ -368,10 +368,14 @@ def test_a_build_with_no_last_modified_is_set_aside_and_fails(data_dir, tracker)
     aside = "mtgjson/aside/AllPricesToday-2026-09-27T130000Z.json.xz"
     assert tracker.outcomes()["MTGJSON prices today"] == (
         "fail",
-        f"{mtgjson.TODAY}: no Last-Modified, so no time it was built; set aside as {aside}",
+        f"{mtgjson.TODAY}: no Last-Modified, so no time it was built"
+        f"; set aside as {aside}, asked again next run",
     )
     assert (data_dir / aside).read_bytes() == prices(DAY)
     assert not kept(data_dir) and watching.load_tags("mtgjson") == {}
+    watch(Source(answers(), modified=None), tracker, now=NOW + timedelta(minutes=5))  # once a publish
+    assert "a copy of this publish is set aside already" in tracker.outcomes()["MTGJSON prices today"][1]
+    assert len(list((data_dir / "mtgjson" / "aside").iterdir())) == 1
 
 
 def test_a_busy_store_asks_nothing(data_dir, tracker):
@@ -437,8 +441,14 @@ def test_a_90_day_file_already_kept_is_left_alone(data_dir, tracker):
 def test_a_file_cut_off_before_its_end_is_not_kept(data_dir, tracker):
     body = prices(DAY, days=90)[:-20]  # matches its .sha256, but it's not the whole stream
     run(Source(answers(history=body)), tracker)
-    assert tracker.outcomes()["MTGJSON 90 days"] == ("fail", f"{mtgjson.HISTORY}: cut off before its end")
+    outcome, said = tracker.outcomes()["MTGJSON 90 days"]
+    assert outcome == "fail" and said.startswith(f"{mtgjson.HISTORY}: cut off before its end; set aside as ")
     assert mtgjson.kept_days(mtgjson.history_dir()) == []
+    (aside,) = (data_dir / "mtgjson" / "aside").iterdir()
+    assert aside.read_bytes() == body and aside.name.startswith("AllPrices-")
+    run(Source(answers(history=body)), tracker)
+    assert "a copy of this publish is set aside already" in tracker.outcomes()["MTGJSON 90 days"][1]
+    assert len(list((data_dir / "mtgjson" / "aside").iterdir())) == 1  # the same bytes: kept once
 
 
 def test_a_full_disk_fails_the_step_and_the_90_days_still_run(data_dir, tracker):
@@ -565,7 +575,9 @@ def test_damage_found_while_keeping_is_a_warning(data_dir, tracker, monkeypatch)
 )
 def test_a_90_day_file_missing_or_not_matching_is_not_kept(data_dir, tracker, overrides, why):
     refill(Source(answers(**overrides)), tracker)
-    assert tracker.outcomes() == {"MTGJSON 90 days": ("fail", why)}
+    outcome, said = tracker.outcomes()["MTGJSON 90 days"]
+    assert outcome == "fail" and said.split("; set aside as ")[0] == why
+    assert ("set aside" in said) == ("sha256" in why)  # a copy fetched whole is set aside
     assert mtgjson.kept_days(mtgjson.history_dir()) == []
 
 
@@ -652,18 +664,21 @@ def test_a_manifest_that_isnt_json_is_set_aside(every_file, tracker):
     )
 
 
-def test_a_file_with_no_etag_or_time_is_set_aside_every_time(every_file, tracker):
-    """With nothing to say which publish a broken copy is, each is kept: nothing is lost."""
-    broken = b"<html>busy</html>"
-    overrides = {f"{B}/AllPrintings.json.xz": broken, f"{B}/AllPrintings.json.xz.sha256": sha(broken)}
-    for minutes in (0, 5):
+def test_a_file_with_no_etag_or_time_is_set_aside_once_its_bytes(every_file, tracker):
+    """With nothing to say which publish a broken copy is, a copy the same byte for byte isn't
+    kept again, and any other is: nothing is lost."""
+    for minutes, body in ((0, b"<html>busy</html>"), (5, b"<html>busy</html>"), (10, b"<html>down</html>")):
+        overrides = {f"{B}/AllPrintings.json.xz": body, f"{B}/AllPrintings.json.xz.sha256": sha(body)}
         watch(
             Source(catalogs(**overrides), modified=None, tagged=False), now=NOW + timedelta(minutes=minutes)
         )
-    assert (
-        len([p for p in (every_file / "mtgjson" / "aside").iterdir() if p.name.startswith("AllPrintings")])
-        == 2
-    )
+    names = [
+        p.name for p in (every_file / "mtgjson" / "aside").iterdir() if p.name.startswith("AllPrintings")
+    ]
+    assert sorted(names) == [
+        "AllPrintings-2026-09-27T130000Z.json.xz",
+        "AllPrintings-2026-09-27T131000Z.json.xz",
+    ]
 
 
 def test_lists_not_due_share_one_line_naming_the_next(every_file, tracker):
