@@ -219,8 +219,8 @@ def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
 
 
 def cardmarket_guides() -> Report:
-    """Each guide under its createdAt day, made before its fetch."""
-    rep = Report("Cardmarket", "guide")
+    """Each guide and product list under its createdAt day, made before its fetch."""
+    rep = Report("Cardmarket", "list")
     for path in sorted(cardmarket.daily_dir().glob("*/*.json.gz")):
         rep.files += 1
         rep.days.add(path.parent.name)
@@ -233,6 +233,12 @@ def cardmarket_guides() -> Report:
         _made_late(rep, path, made, pricelists.fetched(path))
     _logged(rep, cardmarket.STORE, lambda entry, made: made.date())
     _lateness(rep, {game: cardmarket.made(game) for game in cardmarket.games()}, "guide")
+    products = {
+        f"{game} {kind}": watching.made(cardmarket.products_dir(game, kind))
+        for game in cardmarket.games()
+        for kind in cardmarket.KINDS
+    }
+    _lateness(rep, {name: kept for name, kept in products.items() if kept}, "product list")
     return rep
 
 
@@ -251,14 +257,15 @@ def _logged(rep: Report, store: str, day: Callable[[dict, datetime], date | None
         _made_late(rep, data_dir() / entry["file"], made, got)
 
 
-def _one_list(rep: Report, store: str, name: str, folder: Path) -> None:
-    """A store watched for one list (riffle.watching.one): each kept under the day its log
-    names, the files set aside, and whether the list is late."""
+def _lists(rep: Report, store: str, folders: dict[str, Path]) -> None:
+    """A store watched for its lists (riffle.watching.many), each kept in its folder: each list
+    kept under the day its log names, the files set aside, and whether each list is late."""
     _logged(rep, store, lambda entry, made: _day(str(entry.get("day", ""))))
     aside = [path for path in (data_dir() / store / "aside").glob("*") if path.is_file()]
     if aside:
         rep.notes.append(f"{len(aside)} set aside in {store}/aside, not kept as any list")
-    _lateness(rep, {name: watching.made(folder)}, "list")
+    made = {name: watching.made(folder) for name, folder in folders.items()}
+    _lateness(rep, {name: kept for name, kept in made.items() if kept}, "list")
 
 
 def _lateness(rep: Report, lists: dict[str, list[datetime]], what: str) -> None:
@@ -283,7 +290,7 @@ def _lateness(rep: Report, lists: dict[str, list[datetime]], what: str) -> None:
             )
     if waiting:
         fewest = f"{min(waiting)} so far" + (" at the fewest" if len(waiting) > 1 else "")
-        many = f"{len(waiting)} {what}s: " if len(lists) > 1 else ""
+        many = f"{len(waiting)} {what}{'s' * (len(waiting) != 1)}: " if len(lists) > 1 else ""
         rep.notes.append(f"{many}lateness judged from {lateness.LEAST_GAPS} gaps, {fewest}")
     if len(lists) > 1 and judged:
         rep.notes.append(f"{len(judged)} {what}{'s' * (len(judged) != 1)} judged for lateness")
@@ -315,7 +322,7 @@ def mtgjson_files() -> Report:
                 rep.problems.append(
                     f"{_rel(path)}: dated after it was fetched, {times.shown(_file_time(path))}"
                 )
-    _one_list(rep, mtgjson.STORE, mtgjson.LIST, mtgjson.lists_dir())
+    _lists(rep, mtgjson.STORE, {file.list: mtgjson.lists_dir(file.list) for file in mtgjson.FILES})
     return rep
 
 
@@ -346,7 +353,7 @@ def goatbots_days() -> Report:
             continue
         if last != date(year, 12, 31):
             rep.problems.append(f"{_rel(path)}: runs to {last or 'no day of the year'}, short of Dec 31")
-    _one_list(rep, goatbots.STORE, goatbots.LIST, goatbots.lists_dir())
+    _lists(rep, goatbots.STORE, {name: goatbots.lists_dir(name) for name in goatbots.LISTS})
     return rep
 
 

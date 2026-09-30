@@ -1,40 +1,35 @@
 """Daily Magic prices from MTGJSON: Card Kingdom, TCGplayer, Mana Pool, Cardmarket, and
-Cardhoarder in one file, with the past 90 days to start from.
+Cardhoarder in one file, with the past 90 days to start from; and every file of its card
+catalog, each build.
 
 MTGJSON builds its files once a day, about 06:12 UTC by their Last-Modified, and serves them
 hours later: the syncs at 13:00 UTC on 2026-09-28 and 2026-09-29 still found the day before's.
-Its watch learns when a build goes online from its own checks (riffle.cadence), and asks from then.
-It serves them without a key, each beside a .sha256 of itself:
+Its watch learns when each file goes online from its own checks (riffle.cadence), and asks from
+then. It serves them without a key, most beside a .sha256 of themselves:
 
     https://mtgjson.com/api/v5/Meta.json               the latest build's date and version
     https://mtgjson.com/api/v5/AllPricesToday.json.xz  every printing's prices that day
     https://mtgjson.com/api/v5/AllPrices.json.xz       the same for each of the past 90 days
+    https://mtgjson.com/api/v5/AllPrintings.json.xz    every set and card, and the rest of FILES
 
-Both price files are one JSON object, meta first:
+Every build of each file in FILES is kept (watch: `riffle watch mtgjson`, each asked when
+riffle.cadence says its next is due, with the ETag of the last one kept): checked against its
+.sha256, unpacked whole, its meta read when it has one, and kept by the run rule (riffle.runs)
+under its Last-Modified, each file a list of its own. A file that isn't whole (not xz, not the
+.sha256's, not JSON) is set aside once a build, and asked for again. Meta.json doesn't say when
+a build is new: it's written seconds before the file (the .sha256 too), so a check in between
+would find a new Meta.json beside the old file. A build is kept even for a day an AllPrices file
+covers: the two disagree about the same day in some cards.
 
-    {"meta": {"date": "2026-09-27", "version": "5.3.0+20260927"},
-     "data": {<uuid>: {"paper" | "mtgo": {<provider>: {"retail" | "buylist":
-              {"normal" | "foil" | "etched": {<day>: <price>}}, "currency": "USD"}}}}}
-
-Paper prices come from cardkingdom (retail and buylist, each only while Card Kingdom has
-copies to sell or wants to buy them), tcgplayer, manapool, and cardmarket (in EUR); MTGO's
-from cardhoarder, in tix, though MTGJSON labels them "USD". A uuid is MTGJSON's ID for one
-face of a printing, usually derived from its Scryfall ID and side (older printings keep a
-legacy one), so the loader maps it with MTGJSON's cardIdentifiers file.
-
-Every build of AllPricesToday is kept (watch: `riffle watch mtgjson`, asked when
-riffle.cadence says the next is due, with the ETag of the last one kept): checked against its
-.sha256, unpacked whole, its meta read, and kept by the run rule (riffle.runs) under its
-Last-Modified. Meta.json doesn't say when a build is new: it's written seconds before the
-file (the .sha256 too), so a check in between would find a new Meta.json beside the old file.
-A build is kept even for a day an AllPrices file covers: the two disagree about the same day
-in some cards.
-
-    <data_dir>/mtgjson/lists/prices-today/<run>/   AllPricesToday's lists, by the run rule
-    <data_dir>/mtgjson/watch.jsonl                 every check; for a build kept, its meta's
-                                                   date and version, and the xz's SHA-256,
+    <data_dir>/mtgjson/lists/<list>/<run>/         each file's lists, by the run rule:
+                                                   prices-today, all-printings, and the rest
+    <data_dir>/mtgjson/watch.jsonl                 every check; for a file kept, its day (its
+                                                   meta's date, or the day it was built), its
+                                                   version, and the served file's SHA-256,
                                                    size and ETag (riffle.watching)
-    <data_dir>/mtgjson/aside/AllPricesToday-<UTC time>.json.xz  one with no Last-Modified
+    <data_dir>/mtgjson/aside/<name>-<UTC time>.<suffix>  one with no Last-Modified, one that
+                                                   isn't whole, or a copy of a build kept that
+                                                   isn't the one kept
     <data_dir>/mtgjson/daily/<day>.json.xz         AllPricesToday as the sync kept it before
     <data_dir>/mtgjson/90-days/<day>.json.xz       AllPrices: <day> and the 90 days before it
 
@@ -47,6 +42,7 @@ Nothing here reads the files back: the price loader does. Headers, retries, and 
 riffle.net.
 """
 
+import hashlib
 import json
 import lzma
 import re
@@ -70,7 +66,52 @@ WINDOW = 90  # days an AllPrices file counts as covering: its date and the 89 be
 REFILL = 30  # days at least between AllPrices downloads that fill a missing day
 CHUNK = 1 << 20
 MAX_LIST = 1 << 30  # bytes AllPricesToday may unpack to; it's about 53 MB
+# Bytes any other file may unpack to. Not learned: it only stops a file that unpacks without end
+# being read into memory. The biggest, AllDeckFiles' tar, was about 0.87 GB on 2026-09-29.
+MAX_FILE = 4 << 30
 META = re.compile(rb'\A\s*\{\s*"meta"\s*:\s*(\{[^{}]*\})')  # the file's first object
+
+
+@dataclass(frozen=True)
+class File:
+    """One file of MTGJSON's build, kept as a list of its own."""
+
+    list: str  # its name in the watch log, and its folder in lists/
+    path: str  # under BASE
+    label: str  # its step: MTGJSON <label>
+    meta: bool = False  # must start with its meta, as a price file does
+    sha256: bool = True  # MTGJSON serves a .sha256 beside it
+    most: int = MAX_FILE  # bytes it may unpack to
+
+    @property
+    def served(self) -> str:
+        """Its name as served, for a copy set aside: AllPrintings.json.xz."""
+        return self.path.rsplit("/", 1)[-1]
+
+
+# Every file of the build that's kept, AllPricesToday first so the rest never hold it up.
+# Checked 2026-09-29 against its BuildManifest.json. Not kept: the same build as CSV (but
+# cardIdentifiers, the uuid-to-IDs file), Parquet, SQL and SQLite; the per-set and per-format
+# files, which hold nothing AllPrintings and AtomicCards lack (checked 2026-09-30); AllPrices,
+# which snapshot() keeps.
+FILES = (
+    File(LIST, TODAY, "prices today", meta=True, most=MAX_LIST),
+    File("all-printings", "AllPrintings.json.xz", "AllPrintings", meta=True),
+    File("all-identifiers", "AllIdentifiers.json.xz", "AllIdentifiers", meta=True),
+    File("tcgplayer-skus", "TcgplayerSkus.json.xz", "TcgplayerSkus", meta=True),
+    File("atomic-cards", "AtomicCards.json.xz", "AtomicCards", meta=True),
+    File("all-deck-files", "AllDeckFiles.tar.xz", "AllDeckFiles"),
+    File("card-identifiers", "csv/cardIdentifiers.csv.xz", "cardIdentifiers"),
+    File("cardmarket-identifiers", "CardmarketIdentifiers.json.xz", "CardmarketIdentifiers", meta=True),
+    File("set-list", "SetList.json.xz", "SetList", meta=True),
+    File("deck-list", "DeckList.json.xz", "DeckList", meta=True),
+    File("keywords", "Keywords.json.xz", "Keywords", meta=True),
+    File("card-types", "CardTypes.json.xz", "CardTypes", meta=True),
+    File("enum-values", "EnumValues.json.xz", "EnumValues", meta=True),
+    File("compiled-list", "CompiledList.json.xz", "CompiledList", meta=True),
+    File("meta", "Meta.json.xz", "Meta", meta=True),
+    File("build-manifest", "BuildManifest.json", "BuildManifest", meta=True, sha256=False),
+)
 
 Fetch = Callable[[str], bytes | None]  # url -> body, or None for 404
 Download = Callable[[str, Path, net.Progress | None], int | None]  # url, dest -> bytes, or None for 404
@@ -99,8 +140,9 @@ def history_dir() -> Path:
     return data_dir() / "mtgjson" / "90-days"
 
 
-def lists_dir() -> Path:
-    return data_dir() / STORE / "lists" / LIST
+def lists_dir(name: str = LIST) -> Path:
+    """Where one file's lists are kept: AllPricesToday's by default."""
+    return data_dir() / STORE / "lists" / name
 
 
 def kept_days(folder: Path) -> list[date]:
@@ -179,15 +221,6 @@ def _head(path: Path, name: str) -> bytes:
     return head
 
 
-def _whole(path: Path, name: str) -> bytes:
-    """An xz file unpacked whole, up to MAX_LIST bytes."""
-    with _xz(path, name) as f:
-        data = f.read(MAX_LIST + 1)
-    if len(data) > MAX_LIST:
-        raise net.FetchError(f"{name}: unpacks to more than {MAX_LIST:,} bytes, too big to be what it claims")
-    return data
-
-
 def _keep(name: str, folder: Path, fetch: Fetch, download: Download, step: Step) -> tuple[date, bool]:
     """Download name, check it against its .sha256, and keep it in folder as <day>.json.xz,
     <day> being the date inside. Returns that day, and whether the file is new."""
@@ -252,42 +285,87 @@ def _unknown(head: bytes) -> bool:
     return False
 
 
-def _today(fetch: Watcher, get: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
-    """Ask for AllPricesToday once, with the ETag of the last build kept, and keep it if it's
-    new; end step saying what came. The log entry."""
-    folder = lists_dir()
-    fresh = folder.parent / f"{LIST}.new"
+def _unpacked(file: File, fresh: Path) -> bytes:
+    """A file as its list is kept: unpacked whole when it's xz, up to its most."""
+    if not file.path.endswith(".xz"):
+        return fresh.read_bytes()
+    with _xz(fresh, file.path) as f:
+        data = f.read(file.most + 1)
+    if len(data) > file.most:
+        raise net.FetchError(
+            f"{file.path}: unpacks to more than {file.most:,} bytes, too big to be what it claims"
+        )
+    return data
+
+
+def _checked(file: File, fresh: Path, got: net.Fetched, get: Fetch, now: datetime) -> bytes:
+    """A file fetched whole, checked: against its .sha256, unpacked to its end, and its meta
+    read when it has one (JSON starting with its meta). Its list; watching.Broken when it isn't
+    what it should be, set aside once per build."""
+    publish = runs.name(got.modified) if got.modified else got.etag
+    why = ""
+    if file.sha256 and runs.file_sha256(fresh) != _expected(get, file.path):
+        why = f"{file.path} doesn't match its .sha256; MTGJSON may be mid-update"
+    else:
+        try:
+            data = _unpacked(file, fresh)
+            if file.path.endswith(".json"):
+                json.loads(data)
+            if file.meta:
+                _meta(data[:512], file.path)
+            return data
+        except net.FetchError as e:
+            why = str(e)
+        except (ValueError, RecursionError):
+            why = f"{file.path}: not the expected JSON"
+    raise watching.broken(STORE, file.list, publish, fresh, file.served, now, why)
+
+
+def _file(file: File, fetch: Watcher, get: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
+    """Ask for one file of the build once, with the ETag of the last one kept, and keep its list
+    if it's new; end step saying what came. The log entry."""
+    folder = lists_dir(file.list)
+    fresh = folder.parent / f"{file.list}.new"
     try:
         fresh.parent.mkdir(parents=True, exist_ok=True)
-        got = fetch(f"{BASE}/{TODAY}", fresh, _unknown, etag=tags.get(LIST), progress=step.update)
+        got = fetch(f"{BASE}/{file.path}", fresh, _unknown, etag=tags.get(file.list), progress=step.update)
         if got is None:
-            raise net.FetchError(f"{TODAY}: HTTP 404")
+            raise net.FetchError(f"{file.path}: HTTP 404")
         if got.status == "unchanged":
             step.ok("no new build since the last one kept")
             return {"result": "unchanged"}
         served = watching.served(fresh, got)
-        if served["served_sha256"] != _expected(get, TODAY):
-            raise net.FetchError(f"{TODAY} doesn't match its .sha256; MTGJSON may be mid-update")
-        data = _whole(fresh, TODAY)
-        day, version = _meta(data[:512], TODAY)
+        data = _checked(file, fresh, got, get, now)
         if got.modified is None:
-            where = watching.set_aside(STORE, fresh, TODAY, now)
-            raise net.FetchError(f"{TODAY}: no Last-Modified, so no time it was built; set aside as {where}")
+            where = watching.set_aside(STORE, fresh, file.served, now)
+            raise net.FetchError(
+                f"{file.path}: no Last-Modified, so no time it was built; set aside as {where}"
+            )
+        day, version = got.modified.date(), None  # a file with no meta: the day it was built, UTC
+        if META.match(data[:512]):
+            day, version = _meta(data[:512], file.path)
+        facts = {"day": day.isoformat()} | ({"version": version} if version else {}) | served
         stamp, built = runs.name(got.modified), times.shown(got.modified)
         if stamp in runs.kept(folder):
             if got.etag:
-                tags[LIST] = got.etag
-            step.ok(f"have the build made {built} ({day})")
-            return {"result": "known", "made": stamp}
+                tags[file.list] = got.etag
+            sha256 = hashlib.sha256(data).hexdigest()
+            more, said = watching.again(STORE, folder, stamp, sha256, fresh, file.served, now)
+            note = f"have the build made {built} ({day}); {said}"
+            if more["same"]:
+                step.ok(note)
+            else:
+                step.warn(note)
+            return {"result": "known", "made": stamp} | more | facts
         kept = runs.keep(folder, got.modified, data)
         if got.etag:
-            tags[LIST] = got.etag
+            tags[file.list] = got.etag
         note = f"kept the list built {built} ({day}), {watching.size(len(data))}: {watching.how(kept)}"
         if kept.notes:
             step.warn(f"{note}; {'; '.join(kept.notes)}")
         else:
             step.ok(note)
-        return watching.record(kept) | {"day": day.isoformat(), "version": version} | served
+        return watching.record(kept) | facts
     finally:
         fresh.unlink(missing_ok=True)
 
@@ -299,10 +377,13 @@ def watch(
     clock: Callable[[], datetime] = times.now,
     always: bool = False,
 ) -> watching.Watch:
-    """Ask for AllPricesToday when riffle.cadence says MTGJSON's next build is due, or always
-    (the sync), and keep it when it's new (riffle.watching.one)."""
+    """Ask for each file of the build (FILES) when riffle.cadence says its next is due, or
+    always (the sync), and keep each that's new (riffle.watching.many)."""
 
-    def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
-        return _today(fetch, get, tags, now, step)
+    def listed(file: File) -> watching.Listed:
+        def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
+            return _file(file, fetch, get, tags, now, step)
 
-    return watching.one(STORE, LIST, "MTGJSON prices today", ask, lists_dir(), tracker, clock, always)
+        return watching.Listed(file.list, f"MTGJSON {file.label}", lists_dir(file.list), ask)
+
+    return watching.many(STORE, "MTGJSON", [listed(file) for file in FILES], tracker, clock, always)

@@ -1,6 +1,7 @@
 """Cardmarket price guides: every guide each game publishes, kept by the run rule under its
 createdAt, each asked for when its next is due (riffle.cadence)."""
 
+import dataclasses
 import gzip
 import json
 from datetime import UTC, datetime, timedelta
@@ -71,13 +72,14 @@ def every(stamp: str = STAMP, **overrides) -> dict[str, bytes | None | Exception
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(cardmarket, "KINDS", ())  # the product lists' tests set them back
     return tmp_path / "riffle" / "cardmarket"
 
 
 @pytest.fixture
 def no_look(monkeypatch):
     """No looking for new games: the tests of looking are below."""
-    monkeypatch.setattr(cardmarket, "_looked", lambda fetch, tracker, now: {})
+    monkeypatch.setattr(cardmarket, "_looked", lambda fetch, tracker, now: None)
 
 
 @pytest.fixture
@@ -181,9 +183,18 @@ def test_a_guide_not_due_is_not_asked_and_they_share_a_line(data_dir, few, track
     run(Source(every()))  # one check each: with no gaps yet, every firing asks
     source = Source(every())
     res = run(source, tracker, now=NOW + timedelta(minutes=2), always=False)
-    assert source.asked == [] and res.waiting == ["mtg", "fab", "pokemon", "yugioh"]
+    assert source.asked == [] and res.waiting == [
+        "Cardmarket mtg",
+        "Cardmarket fab",
+        "Cardmarket pokemon",
+        "Cardmarket yugioh",
+    ]
     assert tracker.outcomes() == {
-        "Cardmarket 4 guides": ("ok", "none due; the next asked 2026-09-27 13:05 UTC")
+        "Cardmarket 4 guides": (
+            "ok",
+            "none due; mtg next asked 2026-09-27 13:05 UTC"
+            "; its next guide's time is learned from 14 gaps, 0 so far",
+        )
     }
     run(source, now=NOW + timedelta(minutes=5), always=False)
     assert len(source.asked) == 4
@@ -209,7 +220,10 @@ def test_a_guide_learned_daily_is_asked_from_its_expected_time(data_dir, monkeyp
     source = Source({url(1): guide(later)})
     run(source, tracker, now=expected - timedelta(minutes=1), always=False)
     assert source.asked == []
-    assert tracker.outcomes()["Cardmarket 1 guide"] == ("ok", "none due; the next asked 2026-09-16 00:45 UTC")
+    assert tracker.outcomes()["Cardmarket 1 guide"] == (
+        "ok",
+        "none due; mtg next asked 2026-09-16 00:45 UTC; its next guide expected 2026-09-16 00:45 UTC",
+    )
     res = run(source, now=expected + timedelta(seconds=30), always=False)
     assert len(source.asked) == 1 and res.kept == ["Cardmarket mtg"]
 
@@ -310,7 +324,7 @@ def test_a_run_that_finds_the_lock_held_asks_nothing(data_dir, few, tracker):
     with locks.held(data_dir / "watch.lock"):
         res = run(source, tracker)
     assert res.busy and source.asked == []
-    assert tracker.outcomes() == {"Cardmarket guides": ("ok", "another run is asking for them")}
+    assert tracker.outcomes() == {"Cardmarket": ("ok", "another run is asking for its lists")}
 
 
 def test_a_list_that_doesnt_read_back_fails_its_game(data_dir, few, tracker, monkeypatch):
@@ -526,3 +540,184 @@ def test_a_games_file_that_cant_be_read_is_set_aside_and_its_games_learned_again
     assert list(saved(data_dir)["games"]) == ["cyberpunk"]
     assert tracker.outcomes()["Cardmarket cyberpunk"] == ("ok", "no new guide since the last one kept")
     assert res.same[-1] == "Cardmarket cyberpunk"
+
+
+P = cardmarket.PRODUCTS
+MADE = "2026-09-27T13:27:51+0200"  # 11:27 UTC, hours after the guides
+
+
+def product_list(stamp: str = MADE, n: int = 2) -> bytes:
+    rows = [
+        {"idProduct": k, "name": f"Card {k}", "idCategory": 1, "categoryName": "Magic Single"}
+        for k in range(n)
+    ]
+    return json.dumps({"version": 1, "createdAt": stamp, "products": rows}).encode()
+
+
+def listed_url(gid: int | str, kind: str = "singles") -> str:
+    return f"{P}/products_{kind}_{gid}.json"
+
+
+@pytest.fixture
+def lists(data_dir, monkeypatch, no_look):
+    """Magic played and Pokémon not, each with its product lists."""
+    monkeypatch.setattr(cardmarket, "KINDS", ("singles", "nonsingles"))
+    monkeypatch.setattr(cardmarket, "GAMES", {"mtg": 1})
+    monkeypatch.setattr(cardmarket, "OTHERS", {"pokemon": 6})
+    return data_dir
+
+
+def with_products(stamp: str = MADE, **overrides) -> dict:
+    found = every() | {
+        listed_url(gid, kind): product_list(stamp) for gid in (1, 6) for kind in cardmarket.KINDS
+    }
+    found.update(overrides)
+    return found
+
+
+def test_each_product_list_is_kept_by_the_run_rule_under_its_created_time(lists, tracker):
+    res = run(Source(with_products()), tracker)
+    labels = [
+        "Cardmarket mtg singles",
+        "Cardmarket mtg nonsingles",
+        "Cardmarket pokemon singles",
+        "Cardmarket pokemon nonsingles",
+    ]
+    assert res.kept == ["Cardmarket mtg", "Cardmarket pokemon", *labels] and not res.failed
+    found = runs.kept(cardmarket.products_dir("mtg", "singles"))
+    assert list(found) == ["2026-09-27T112751Z"]
+    assert runs.rebuild(found["2026-09-27T112751Z"]) == product_list()  # as returned
+    size = watching.size(found["2026-09-27T112751Z"].stat().st_size)
+    assert tracker.outcomes()["Cardmarket mtg singles"] == (
+        "ok",
+        f"kept the product list made 2026-09-27 11:27 UTC, 2 products: a new run, {size} kept twice",
+    )
+    assert watching.load_tags("cardmarket")["mtg singles"] == f'"{hash(product_list())}"'
+
+
+def test_a_product_list_not_new_costs_a_304_and_one_kept_is_known_by_its_first_bytes(lists, tracker):
+    run(Source(with_products()))
+    source = Source(with_products())
+    run(source, tracker)
+    assert tracker.outcomes()["Cardmarket mtg singles"] == (
+        "ok",
+        "no new product list since the last one kept",
+    )
+    (lists / "watch-etags.json").unlink()
+    run(Source(with_products()), tracker)
+    assert tracker.outcomes()["Cardmarket mtg singles"] == (
+        "ok",
+        "have the product list made 2026-09-27 11:27 UTC",
+    )
+
+
+def test_a_product_list_never_served_is_asked_again_only_at_the_look(lists, tracker, monkeypatch):
+    answers = with_products(**{listed_url(6, "nonsingles"): None})
+    run(Source(answers), tracker)
+    assert tracker.outcomes()["Cardmarket pokemon nonsingles"] == (
+        "ok",
+        "Cardmarket serves none yet; asked again once a Cardmarket day",
+    )
+    source = Source(answers)
+    run(source, now=NOW + timedelta(minutes=5))
+    assert listed_url(6, "nonsingles") not in source.urls()  # not at every run
+    monkeypatch.setattr(cardmarket, "_looked", lambda fetch, tracker, now: {})  # a new Cardmarket day
+    source = Source(with_products())
+    res = run(source, now=NOW + timedelta(minutes=10))
+    assert listed_url(6, "nonsingles") in source.urls() and "Cardmarket pokemon nonsingles" in res.kept
+
+
+def test_a_product_list_that_stops_is_noted_and_fails_a_played_game(lists, tracker):
+    run(Source(with_products()))
+    run(
+        Source(with_products(**{listed_url(1): None, listed_url(6): None})),
+        tracker,
+        now=NOW + timedelta(days=1),
+    )
+    assert tracker.outcomes()["Cardmarket mtg singles"] == (
+        "fail",
+        "Cardmarket has no singles product list for game 1",
+    )
+    assert tracker.outcomes()["Cardmarket pokemon singles"] == (
+        "ok",
+        "no singles product list, nothing kept; asked again next run",
+    )
+
+
+def test_a_product_list_that_isnt_json_is_set_aside_once_and_an_empty_one_kept_nowhere(lists, tracker):
+    bad = b'{"version":1,"createdAt":"2026-09-27T13:27:51+0200","products":[{"idProduct"'
+    answers = with_products(**{listed_url(1): bad, listed_url(6): product_list(n=0)})
+    run(Source(answers), tracker)
+    aside = "cardmarket/aside/products_singles_1-2026-09-27T130000Z.json"
+    assert tracker.outcomes()["Cardmarket mtg singles"] == (
+        "fail",
+        f"products_singles_1.json: not the expected JSON; set aside as {aside}, asked again next run",
+    )
+    assert logged(lists)[-4]["publish"] == "2026-09-27T112751Z"
+    assert tracker.outcomes()["Cardmarket pokemon singles"] == (
+        "ok",
+        "empty product list, nothing kept; asked again next run",
+    )
+    run(Source(answers), tracker, now=NOW + timedelta(minutes=5))
+    assert "set aside already" in tracker.outcomes()["Cardmarket mtg singles"][1]
+    assert len(list((lists / "aside").iterdir())) == 1
+
+
+def test_a_game_found_by_a_look_gets_its_product_lists_at_once(data_dir, two, monkeypatch, tracker):
+    monkeypatch.setattr(cardmarket, "KINDS", ("singles",))
+    monkeypatch.setattr(cardmarket, "_looked", lambda fetch, tracker, now: {"cyberpunk": 23})
+    source = Source(
+        every()
+        | {
+            url(23): guide(),
+            listed_url(23): product_list(),
+            listed_url(1): product_list(),
+            listed_url(3): product_list(),
+        }
+    )
+    res = run(source, tracker)
+    assert "Cardmarket cyberpunk" in res.kept and "Cardmarket cyberpunk singles" in res.kept
+    assert runs.kept(cardmarket.products_dir("cyberpunk", "singles"))
+
+
+def test_the_guides_kept_a_day_before_count_toward_a_guide_s_schedule(data_dir, few):
+    """A guide's cadence counts the guides kept a day before 2026-09-29, not only its runs."""
+    for game in ("mtg", "fab", "pokemon", "yugioh"):
+        folder = data_dir / "daily" / "2026-09-26"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{game}.json.gz").write_bytes(gzip.compress(guide("2026-09-26T02:45:12+0200")))
+    run(Source(every()))
+    assert len(cardmarket.made("mtg")) == 2
+
+
+def test_a_product_list_s_etag_is_saved_when_cardmarket_sends_one(lists):
+    run(Source(with_products()))
+    (lists / "watch-etags.json").unlink()
+    source = Source(with_products())
+    source.tag_known = True
+    run(source)
+    assert watching.load_tags("cardmarket")["mtg singles"] == f'"{hash(product_list())}"'
+    source = Source(with_products(MADE.replace("13:27", "14:27")))
+    source.tag_new = False
+    run(source, now=NOW + timedelta(hours=2))
+    assert len(runs.kept(cardmarket.products_dir("mtg", "singles"))) == 2  # kept, its ETag left as it was
+
+
+def test_a_product_list_whose_products_arent_a_list_is_set_aside(lists, tracker):
+    odd = json.dumps({"version": 1, "createdAt": MADE, "products": {}}).encode()
+    run(Source(with_products(**{listed_url(1): odd})), tracker)
+    assert tracker.outcomes()["Cardmarket mtg singles"][1].startswith(
+        "products_singles_1.json: not the expected JSON"
+    )
+
+
+def test_damage_found_keeping_a_product_list_is_a_warning(lists, tracker, monkeypatch):
+    keep = runs.keep
+
+    def keep_and_repair(folder, at, data):
+        return dataclasses.replace(keep(folder, at, data), notes=("a copy was damaged",))
+
+    monkeypatch.setattr(cardmarket.runs, "keep", keep_and_repair)
+    run(Source(with_products()), tracker)
+    assert tracker.outcomes()["Cardmarket mtg singles"][0] == "warn"
+    assert tracker.outcomes()["Cardmarket mtg singles"][1].endswith("; a copy was damaged")

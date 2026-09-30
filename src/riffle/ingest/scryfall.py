@@ -13,8 +13,11 @@ then kept as served in
 
 unless its contents, uncompressed, are byte for byte those of the newest file kept of its
 type: then checks.jsonl records the publish, same_as that file, and nothing else is written.
-A download that isn't whole gzip is set aside beside the kept files as <name>.bad, never
-deleted, and the next refresh downloads the file again. Nothing kept is ever removed.
+A download that isn't whole gzip is set aside beside the kept files as
+<published>-<fetched>.jsonl.gz.bad, never deleted, and the next refresh downloads the file
+again. Only the first broken copy of a publish is set aside: a later one goes in checks.jsonl
+(its SHA-256, size and why, not_kept) and is deleted, so a file served broken for days is kept
+once, not twice a day. Nothing kept is ever removed.
 
 The newest default-cards file is the bulk file: the card catalog in Postgres is loaded from it
 by riffle.ingest.scryfall_catalog. After each new one, one more API request fetches the set
@@ -49,7 +52,7 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from riffle import net, times
+from riffle import net, runs, times
 from riffle.config import data_dir
 from riffle.progress import SILENT, Step, Tracker
 
@@ -301,11 +304,19 @@ def download(info: dict, progress: net.Progress | None = None) -> tuple[Path, bo
             raise gzip.BadGzipFile("isn't gzip — Scryfall's format may have changed again")
         sha = _digest(fresh, gzipped=suffix.endswith(".gz"))
     except (OSError, EOFError, zlib.error) as e:
-        aside = fresh.with_name(f"{_stamp(published)}-{_stamp(fetched)}{suffix}{BAD}")
-        fresh.replace(aside)
         why = f"is cut short or corrupt ({e or type(e).__name__})"
         if suffix.endswith(".gz") and not gz:
             why = str(e)
+        earlier = sorted(bulk_dir(kind).glob(f"{_stamp(published)}*{BAD}"))
+        if earlier:  # a file served broken for days is kept once, not at every refresh
+            line: dict = {"type": kind, "stamp": _stamp(published), "fetched": _stamp(fetched)}
+            line |= {"size": fresh.stat().st_size, "served_sha256": runs.file_sha256(fresh), "bad": why}
+            fresh.unlink()
+            _append(checks_path(), line | {"not_kept": True, "aside": earlier[0].name})
+            said = f"a copy of this publish is set aside already as {earlier[0].name}"
+            raise RuntimeError(f"the {kind} file {why}; {said}, asked again next run") from e
+        aside = fresh.with_name(f"{_stamp(published)}-{_stamp(fetched)}{suffix}{BAD}")
+        fresh.replace(aside)
         raise RuntimeError(f"the {kind} file {why}; set aside as {aside.name}, asked again next run") from e
     line = {
         "type": kind,

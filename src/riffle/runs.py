@@ -252,14 +252,19 @@ def keep(folder: Path, at: datetime, data: bytes) -> Kept:
     return Kept(stamp, first, "base", len(data), 2 * len(whole), sha256, file_sha256(first), tuple(notes))
 
 
+def matches(path: Path, sha256: str) -> bool:
+    """Whether a kept list's file rebuilds as the list with this SHA-256; False when it can't be
+    read."""
+    try:
+        return hashlib.sha256(rebuild(path)).hexdigest() == sha256
+    except (OSError, zstd.ZstdError):
+        return False
+
+
 def _again(path: Path, sha256: str, size: int) -> Kept:
     """A list kept already, as it was kept: a run cut off after keeping a list and before saying
     so keeps it again. Taken when the file under its stamp is another list, or can't be read."""
-    try:
-        same = hashlib.sha256(rebuild(path)).hexdigest() == sha256
-    except (OSError, zstd.ZstdError):
-        same = False
-    if not same:
+    if not matches(path, sha256):
         raise Taken(f"{path.name}: another list is kept under the time this one was made")
     stamp = stamp_of(path)
     assert stamp is not None  # kept() named it
