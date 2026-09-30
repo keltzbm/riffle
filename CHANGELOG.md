@@ -7,6 +7,21 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Every publish of each source's catalog is kept, by the run rule, each file a list of its own asked when its own
+  next is due (`riffle.cadence`) with the ETag of the last one kept. MTGJSON: every file of each build, in
+  `mtgjson/lists/<list>/` under its `Last-Modified` (AllPrintings, AllIdentifiers, TcgplayerSkus, AtomicCards,
+  AllDeckFiles, cardIdentifiers.csv, CardmarketIdentifiers, SetList, DeckList, Keywords, CardTypes, EnumValues,
+  CompiledList, Meta and BuildManifest), unpacked whole and checked against its `.sha256`; the per-set and
+  per-format files hold nothing AllPrintings and AtomicCards lack (checked 2026-09-30) and aren't kept.
+  Cardmarket: every game's singles and non-singles product lists, in `cardmarket/products/<game>/<kind>/` under
+  their `createdAt`; one Cardmarket has never served (accessories') is asked for again once a Cardmarket day, at
+  the look, so it's kept from the first day it answers. GoatBots: the card definitions, in `goatbots/lists/cards/`
+  under the zip's `Last-Modified`. `riffle check` hashes the new lists and notes their lateness (Cardmarket's line counts lists: its guides and product lists). Lists not due
+  share one line naming the next (`MTGJSON 16 lists: none due; prices today next asked …`).
+- A list fetched whole under a time already kept (its ETag lost or changed) is compared with the one kept, for
+  MTGJSON's files and GoatBots' prices and definitions: `have …; the same as the one kept`, or, when it isn't,
+  the copy is set aside in `<store>/aside/` with a warning, since it may be the only one of what the source
+  served.
 - Cardmarket games are learned, not only listed: once a Cardmarket day (the first run after a guide made since
   the last look), `riffle watch cardmarket` and the sync ask for the guide of every game ID not known, from 1 to
   five past the highest known, by its first bytes (`Cardmarket new games: no new game; asked 4, 14, 25-29`).
@@ -167,6 +182,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- GoatBots' card definitions are kept by the watch, every publish, instead of by the sync replacing
+  `goatbots/card-definitions.zip`, which stays as it was; the sync's step is `GoatBots years`.
+- A file of MTGJSON's (AllPricesToday included), a set of GoatBots' definitions or a Cardmarket product list that
+  isn't whole (not xz, not its `.sha256`'s, not the JSON it should be, not a zip) is set aside in `<store>/aside/`
+  once a publish, not dropped, and asked for again: `…; set aside as mtgjson/aside/AllPrintings-<UTC time>.json.xz,
+  asked again next run`, then `…; a copy of this publish is set aside already as …`.
 - A watch asks for a list from when it goes online, not from when it's made: each list's lead is measured to the
   earliest it could have been online, the last check that didn't get it, and goes below zero when its lists go
   online after they're expected. MTGJSON makes each build about 06:12 UTC and serves it after 13:00, so from its
@@ -274,6 +295,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A Scryfall bulk file served broken at every refresh is set aside once a publish, not at every try (twice a day):
+  a later broken copy is recorded in `scryfall/bulk/checks.jsonl`, with its SHA-256, size and why, and deleted.
 - Cardmarket's Cyberpunk (game 23, from 2026-08-27) and Gundam (24, from 2026-09-01) guides were never kept:
   Riffle's Cardmarket games were a list written before Cardmarket added them. The first look finds both.
 - A list under 512 bytes couldn't be kept as a difference: zstd refused the window asked for. A difference's window

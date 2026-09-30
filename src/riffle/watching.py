@@ -1,5 +1,6 @@
 """What every store's watch shares: its lock, its log, the ETags it last kept, how a list
-kept in a run (riffle.runs) is logged and said, and the watch of a store with one list.
+kept in a run (riffle.runs) is logged and said, what's set aside, and the watch of a store's
+lists, each asked when it's due.
 
     <data_dir>/<store>/watch.lock          one run at a time a store
     <data_dir>/<store>/watch.jsonl         every check: when, which list, what came; for a list
@@ -13,7 +14,7 @@ kept in a run (riffle.runs) is logged and said, and the watch of a store with on
 import json
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -236,49 +237,166 @@ def made(folder: Path) -> list[datetime]:
     return sorted(filter(None, map(runs.parse, runs.kept(folder))))
 
 
+def again(
+    store: str, folder: Path, stamp: str, sha256: str, fresh: Path, name: str, now: datetime
+) -> tuple[dict, str]:
+    """A list fetched whole under a stamp already kept (its ETag lost, or changed with the list
+    the same age): compared with the one kept. The same: nothing more is kept. Different, or the
+    kept one can't be read: the file as served is set aside (set_aside), since it may be the
+    only copy of what the source served. The log entry's facts, and what the step adds."""
+    if runs.matches(runs.kept(folder)[stamp], sha256):
+        return {"same": True}, "the same as the one kept"
+    where = set_aside(store, fresh, name, now)
+    return {"same": False, "aside": where}, f"this copy isn't the one kept: set aside as {where}"
+
+
+class Broken(net.FetchError):
+    """A file served whole that isn't what it should be. facts go in the check's log entry."""
+
+    def __init__(self, why: str, facts: dict):
+        super().__init__(why)
+        self.facts = facts
+
+
+def broken(
+    store: str, name: str, publish: str | None, fresh: Path, served: str, now: datetime, why: str
+) -> Broken:
+    """A download that isn't whole, set aside in the store's aside folder (set_aside, named by
+    served) unless a copy of the same publish is set aside already, so a file served broken for
+    days is kept once. publish names it: its stamp, or its ETag; with neither it's always set
+    aside. The error to raise, its facts for the log (publish, and aside or not_kept)."""
+    facts: dict = {
+        "publish": publish,
+        "served_sha256": runs.file_sha256(fresh),
+        "served_size": fresh.stat().st_size,
+    }
+    if publish is not None:
+        for entry in reversed(entries(store)):
+            if entry.get("list") == name and entry.get("publish") == publish and entry.get("aside"):
+                was = entry["aside"]
+                said = f"{why}; a copy of this publish is set aside already as {was}, asked again next run"
+                return Broken(said, facts | {"not_kept": True})
+    where = set_aside(store, fresh, served, now)
+    return Broken(f"{why}; set aside as {where}, asked again next run", facts | {"aside": where})
+
+
 Ask = Callable[[dict[str, str], datetime, Step], dict]  # (ETags, now, step) -> the check's log entry
 
 
-def one(
+@dataclass(frozen=True)
+class Listed:
+    """One list a store's watch asks for. ask gets the ETags, the time and the step, ends the
+    step, and returns the check's log entry; one that fails raises, and the step fails."""
+
+    name: str  # in the log, and the ETag it's saved under
+    label: str  # its step
+    folder: Path  # where its lists are kept, by the run rule
+    ask: Ask
+    noun: str = "list"  # what the line of lists not due counts
+    history: Callable[[], list[datetime]] | None = None  # when each was made, if more than folder holds
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
+
+
+class Pass:
+    """One run of a store's watch over its lists, holding the store's lock: each list asked
+    when riffle.cadence says it's due (from when its lists kept were made, its checks, and
+    when each went online), or always (the sync), and each check logged. Once the source
+    gives no answer at all, the lists after it fail without asking."""
+
+    def __init__(
+        self, store: str, source: str, tracker: Tracker, clock: Callable[[], datetime], always: bool
+    ):
+        self.store, self.source, self.tracker, self.clock, self.always = store, source, tracker, clock, always
+        self.res = Watch()
+        self.tags = load_tags(store)
+        self.log = entries(store)
+        self.answering = True
+        self._waiting: list[tuple[cadence.Plan, Listed]] = []
+
+    def due(self, item: Listed) -> bool:
+        """Whether a list is due; one that isn't waits for the line of lists not due."""
+        if self.always:
+            return True
+        now = self.clock()
+        busy = longest(self.log, item.name, now, lateness.WINDOW)
+        found = self.log
+        kept = item.history() if item.history else made(item.folder)
+        plan = cadence.plan(kept, checks(found, item.name), now, busy, online(found, item.name))
+        if not plan.ask:
+            self.res.waiting.append(item.label)
+            self._waiting.append((plan, item))
+        return plan.ask
+
+    def ask(self, item: Listed) -> dict:
+        """Ask for a list once, on its own step, and log the check. Its log entry."""
+        now = self.clock()
+        entry: dict = {"at": at(now), "list": item.name}
+        if not self.answering:
+            why = f"not asked: {self.source} gave no answer"
+            self.res.failed.append((item.label, why))
+            self.tracker.step(item.label).fail(why)
+            log(self.store, entry | {"result": "failed", "why": why})
+            return entry | {"result": "failed"}
+        step = self.tracker.step(item.label, unit="bytes")
+        started = time.monotonic()
+        try:
+            entry |= item.ask(self.tags, now, step)
+        except (net.FetchError, OSError) as e:
+            self.answering = not isinstance(e, net.NoAnswer)
+            self.res.failed.append((item.label, str(e)))
+            step.fail(str(e))
+            entry |= {"result": "failed", "why": str(e)} | getattr(e, "facts", {})
+        else:
+            if "why" in entry:
+                self.res.failed.append((item.label, entry["why"]))
+            sorts = {"kept": self.res.kept, "empty": self.res.empty, "missing": self.res.empty}
+            sorts.get(entry["result"], self.res.same).append(item.label)
+        entry["seconds"] = round(time.monotonic() - started, 1)
+        log(self.store, entry)
+        self.log.append(entry)
+        return entry
+
+    def each(self, lists: Iterable[Listed]) -> None:
+        for item in lists:
+            if self.due(item):
+                self.ask(item)
+
+    def said_waiting(self) -> None:
+        """The lists not due, on one line: how many, and the next asked, with its schedule."""
+        if not self._waiting:
+            return
+        nouns: dict[str, int] = {}
+        for _, item in self._waiting:
+            nouns[item.noun] = nouns.get(item.noun, 0) + 1
+        plan, item = min(self._waiting, key=lambda waited: waited[0].next)
+        counted = " and ".join(_count(n, noun) for noun, n in nouns.items())
+        which = item.label.removeprefix(f"{self.source} ")
+        self.tracker.step(f"{self.source} {counted}").ok(f"none due; {which} {waiting(plan, item.noun)}")
+
+
+def many(
     store: str,
-    name: str,
-    label: str,
-    ask: Ask,
-    folder: Path,
+    source: str,
+    lists: Iterable[Listed],
     tracker: Tracker,
     clock: Callable[[], datetime] = times.now,
     always: bool = False,
+    then: Callable[[Pass], None] | None = None,
 ) -> Watch:
-    """The watch of a store with one list, kept in folder: ask for it when riffle.cadence says
-    it's due (from when its lists kept were made and its checks), or always (the sync), and log
-    the check. ask gets the ETags, the time and the step, ends the step, and returns the log
-    entry's result; one that fails raises, and the step fails. A run that finds the store's
-    lock held asks nothing."""
-    res = Watch()
+    """The watch of a store's lists (Pass), the lists not due on one line; then, still holding
+    the lock, whatever else the store asks once a run. A run that finds the store's lock held
+    asks nothing."""
     with held(store) as mine:
         if not mine:
-            res.busy = True
-            tracker.step(label).ok("another run is asking for it")
-            return res
-        tags, found, now = load_tags(store), entries(store), clock()
-        if not always:
-            busy = longest(found, name, now, lateness.WINDOW)
-            plan = cadence.plan(made(folder), checks(found, name), now, busy, online(found, name))
-            if not plan.ask:
-                res.waiting.append(label)
-                tracker.step(label).ok(waiting(plan, "list"))
-                return res
-        step = tracker.step(label, unit="bytes")
-        entry: dict = {"at": at(now), "list": name}
-        started = time.monotonic()
-        try:
-            entry |= ask(tags, now, step)
-        except (net.FetchError, OSError) as e:
-            res.failed.append((label, str(e)))
-            step.fail(str(e))
-            entry |= {"result": "failed", "why": str(e)}
-        else:
-            {"kept": res.kept, "empty": res.empty}.get(entry["result"], res.same).append(label)
-        log(store, entry | {"seconds": round(time.monotonic() - started, 1)})
-        save_tags(store, tags)
-    return res
+            tracker.step(source).ok("another run is asking for its lists")
+            return Watch(busy=True)
+        run = Pass(store, source, tracker, clock, always)
+        run.each(lists)
+        run.said_waiting()
+        if then is not None and run.answering:
+            then(run)
+        save_tags(store, run.tags)
+    return run.res

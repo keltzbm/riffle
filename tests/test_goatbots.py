@@ -1,6 +1,8 @@
 """GoatBots MTGO prices: every day's price file kept by the run rule, asked for when the next
-is due (riffle.cadence); card definitions after it, and every yearly archive GoatBots still has."""
+is due (riffle.cadence), the card definitions the same way, and every yearly archive GoatBots
+still has."""
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -128,7 +130,7 @@ def watch(source: Source, tracker=None, now: datetime = NOW, always: bool = True
 
 
 def run(source: Source, tracker=None, today: date | None = None) -> goatbots.Snapshot:
-    """What the sync does: the watch once, then the definitions and the years."""
+    """What the sync does: the watch once, then the years."""
     watch(source, tracker)
     if tracker is None:
         return goatbots.snapshot(download=source.download, today=today)
@@ -137,6 +139,10 @@ def run(source: Source, tracker=None, today: date | None = None) -> goatbots.Sna
 
 def kept(data_dir) -> dict:
     return runs.kept(data_dir / "lists" / "prices")
+
+
+def cards(data_dir) -> dict:
+    return runs.kept(data_dir / "lists" / "cards")
 
 
 def logged(data_dir) -> list[dict]:
@@ -151,15 +157,15 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(goatbots.times, "today", lambda: TODAY)
     monkeypatch.setattr(goatbots.times, "now", lambda: NOW)
+    monkeypatch.setattr(goatbots, "LISTS", (goatbots.LIST,))  # the cards' tests set them back
     return tmp_path / "riffle" / "goatbots"
 
 
-def test_the_first_run_keeps_the_day_the_cards_and_every_year_goatbots_has(data_dir, tracker):
+def test_the_first_run_keeps_the_day_and_every_year_goatbots_has(data_dir, tracker):
     source = Source(answers())
     snap = run(source, tracker)
     assert snap.day == DAY
     assert snap.kept == [
-        "card-definitions.zip",
         "yearly/2026-partial.zip",
         "yearly/2025.zip",
         "yearly/2024.zip",
@@ -167,7 +173,6 @@ def test_the_first_run_keeps_the_day_the_cards_and_every_year_goatbots_has(data_
     lists = kept(data_dir)
     assert list(lists) == ["2026-09-28T031520Z"]  # the zip's Last-Modified
     assert runs.rebuild(lists["2026-09-28T031520Z"]) == price_file()  # the price file's own bytes
-    assert (data_dir / "card-definitions.zip").read_bytes() == definitions()
     assert (data_dir / "yearly" / "2025.zip").read_bytes() == archive(2025)
     assert (data_dir / "yearly" / "2023.none").read_text() == "2026-09-28\n"  # GoatBots had nothing older
     outcomes = tracker.outcomes()
@@ -176,7 +181,6 @@ def test_the_first_run_keeps_the_day_the_cards_and_every_year_goatbots_has(data_
         "ok",
         f"kept 2026-09-27's list, made 2026-09-28 03:15 UTC, 2 prices: a new run, {size} kept twice",
     )
-    assert outcomes["GoatBots cards"] == ("ok", "1 card")
     assert outcomes["GoatBots 2026"][1].startswith("kept 5 days, ")
     assert outcomes["GoatBots 2023"] == ("ok", "none from GoatBots; asked again from 2026-10-05")
     assert tracker.steps[0].unit == "bytes" and tracker.steps[0].updates  # the download's progress
@@ -227,18 +231,6 @@ def test_the_next_day_is_kept_as_a_difference(data_dir, tracker):
     assert goatbots.newest_day() == nxt
 
 
-def test_a_new_day_brings_new_card_definitions(data_dir):
-    run(Source(answers()))
-    nxt = date(2026, 9, 28)
-    source = Source(
-        answers(nxt, **{f"{NEW}/{goatbots.DEFINITIONS}": definitions({**DEFS, "1": {"name": "X"}})})
-    )
-    snap = run(source)
-    assert snap.kept == ["card-definitions.zip"] and len(kept(data_dir)) == 2
-    with zipfile.ZipFile(data_dir / "card-definitions.zip") as zf:
-        assert len(json.loads(zf.read("card-definitions.txt"))) == 2
-
-
 def test_an_empty_price_file_keeps_nothing_and_is_asked_again(data_dir, tracker):
     source = Source(answers(**{f"{NEW}/{goatbots.LATEST}": latest(prices={})}))
     res = watch(source, tracker)
@@ -251,20 +243,6 @@ def test_an_empty_price_file_keeps_nothing_and_is_asked_again(data_dir, tracker)
     run(Source(answers()))
     assert list(kept(data_dir)) == ["2026-09-28T031520Z"]
     assert json.loads((data_dir.parent / "empty-answers.json").read_text()) == {}
-
-
-def test_empty_card_definitions_dont_replace_the_kept_ones(data_dir, tracker):
-    run(Source(answers()))
-    nxt = date(2026, 9, 28)
-    run(Source(answers(nxt, **{f"{NEW}/{goatbots.DEFINITIONS}": definitions({})})), tracker)
-    assert tracker.outcomes()["GoatBots cards"] == (
-        "ok",
-        "empty card definitions, nothing kept; asked again next run",
-    )
-    with zipfile.ZipFile(data_dir / "card-definitions.zip") as zf:
-        assert json.loads(zf.read("card-definitions.txt")) == DEFS  # the kept ones stay
-    snap = run(Source(answers(nxt)))  # still behind the newest list: asked again
-    assert snap.kept == ["card-definitions.zip"]
 
 
 def test_once_a_year_is_over_its_whole_archive_is_kept_beside_the_partial_one(data_dir):
@@ -358,7 +336,7 @@ def test_a_list_kept_already_is_had_not_kept_again(data_dir, tracker):
     assert res.same == ["GoatBots prices"] and len(kept(data_dir)) == 1
     assert tracker.outcomes()["GoatBots prices"] == (
         "ok",
-        "have 2026-09-27's list, made 2026-09-28 03:15 UTC",
+        "have 2026-09-27's list, made 2026-09-28 03:15 UTC; the same as the one kept",
     )
     assert logged(data_dir)[-1]["result"] == "known"
     assert watching.load_tags("goatbots") == {"prices": f'"{hash(latest())}"'}
@@ -374,6 +352,7 @@ def test_a_list_that_fails_to_keep_saves_no_etag(data_dir, tracker, monkeypatch)
     assert watching.load_tags("goatbots") == {}  # so the next run asks for it whole
     monkeypatch.undo()
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir.parent.parent))
+    monkeypatch.setattr(goatbots, "LISTS", (goatbots.LIST,))
     source = Source(answers())
     watch(source)
     assert source.etags == [None] and len(kept(data_dir)) == 1
@@ -393,7 +372,7 @@ def test_a_busy_store_asks_nothing(data_dir, tracker):
         source = Source(answers())
         res = watch(source, tracker)
     assert res.busy and source.asked == []
-    assert tracker.outcomes() == {"GoatBots prices": ("ok", "another run is asking for it")}
+    assert tracker.outcomes() == {"GoatBots": ("ok", "another run is asking for its lists")}
 
 
 def test_the_watch_asks_only_when_the_next_list_is_due(data_dir, tracker):
@@ -401,9 +380,10 @@ def test_the_watch_asks_only_when_the_next_list_is_due(data_dir, tracker):
     source = Source(answers())
     res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
     assert source.asked == [] and res.waiting == ["GoatBots prices"]
-    assert tracker.outcomes()["GoatBots prices"] == (
+    assert tracker.outcomes()["GoatBots 1 list"] == (
         "ok",
-        "next asked 2026-09-28 13:05 UTC; its next list's time is learned from 14 gaps, 0 so far",
+        "none due; prices next asked 2026-09-28 13:05 UTC"
+        "; its next list's time is learned from 14 gaps, 0 so far",
     )
 
 
@@ -413,32 +393,10 @@ def test_newest_day_counts_the_daily_zips_kept_before(data_dir):
     for name in ("2026-09-26.zip", "notes.zip"):
         (daily / name).write_bytes(b"")
     assert goatbots.newest_day() == date(2026, 9, 26)
-    assert goatbots.definitions_due()  # no definitions yet
 
 
-def test_no_list_kept_means_no_newest_day_and_no_definitions_due(data_dir):
-    assert goatbots.newest_day() is None and not goatbots.definitions_due()
-
-
-def test_bad_card_definitions_are_retried_with_the_next_run(data_dir, tracker):
-    run(
-        Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": zipped({"card-definitions.txt": b"[]"})})), tracker
-    )
-    assert tracker.outcomes()["GoatBots cards"] == (
-        "fail",
-        f"{goatbots.DEFINITIONS}: card-definitions.txt isn't MTGO IDs and cards",
-    )
-    assert not (data_dir / "card-definitions.zip").exists()
-    snap = run(Source(answers()))  # same list, but the definitions are still missing
-    assert snap.kept == ["card-definitions.zip"]
-
-
-def test_card_definitions_without_their_file_fail(data_dir, tracker):
-    run(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": zipped({"x.txt": b"{}"})})), tracker)
-    assert tracker.outcomes()["GoatBots cards"] == (
-        "fail",
-        f"{goatbots.DEFINITIONS}: no card-definitions.txt in it, only x.txt",
-    )
+def test_no_list_kept_means_no_newest_day(data_dir):
+    assert goatbots.newest_day() is None
 
 
 def test_a_failed_year_stops_the_walk_and_is_retried(data_dir, tracker):
@@ -541,35 +499,10 @@ def test_a_zip_zipfile_cant_read_fails_cleanly_everywhere(data_dir, tracker, fie
     assert outcomes["GoatBots prices"] is not None and outcomes["GoatBots prices"][0] == "fail"
     assert outcomes["GoatBots 2026"] is not None and outcomes["GoatBots 2026"][0] == "fail"
     assert not [p for p in data_dir.rglob("*") if p.name.endswith((".new", ".part"))]
-    snap = run(
-        Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": recorded(definitions(), **fields)})), tracker
-    )
+    goatbots.LISTS = goatbots.LIST, goatbots.CARDS  # put back by the fixture's monkeypatch
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": recorded(definitions(), **fields)})), tracker)
     assert tracker.outcomes()["GoatBots cards"][0] == "fail"
-    assert "card-definitions.zip" not in snap.kept
-
-
-def test_card_definitions_that_failed_are_retried_while_behind_the_newest_day(data_dir, tracker):
-    run(Source(answers()))
-    nxt = date(2026, 9, 28)
-    run(Source(answers(nxt, **{f"{NEW}/{goatbots.DEFINITIONS}": net.FetchError("HTTP 503")})), tracker)
-    assert tracker.outcomes()["GoatBots cards"] == ("fail", "HTTP 503")
-    assert goatbots.definitions_due()  # the old copy is behind the new list
-    snap = run(Source(answers(nxt)))  # no new list, but the definitions are behind
-    assert snap.kept == ["card-definitions.zip"]
-    assert not goatbots.definitions_due()
-
-
-def test_card_definitions_missing_everywhere_fail(data_dir, tracker):
-    run(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": None})), tracker)
-    assert tracker.outcomes()["GoatBots cards"] == ("fail", f"{goatbots.DEFINITIONS}: HTTP 404")
-
-
-def test_card_definitions_without_names_are_refused(data_dir, tracker):
-    run(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": definitions({"1": {"cardset": "X"}})})), tracker)
-    assert tracker.outcomes()["GoatBots cards"] == (
-        "fail",
-        f"{goatbots.DEFINITIONS}: card-definitions.txt isn't MTGO IDs and cards",
-    )
+    assert not cards(data_dir)
 
 
 def test_a_latest_zip_with_two_days_keeps_the_later_and_sets_the_zip_aside(data_dir, tracker):
@@ -688,3 +621,166 @@ def test_a_none_file_written_before_its_day_was_goes_by_its_own_time(data_dir):
     seen = datetime(2026, 9, 27, 20, 51, tzinfo=UTC).timestamp()
     os.utime(yearly / "2023.none", (seen, seen))
     assert goatbots._none_since(yearly / "2023.none") == date(2026, 9, 27)  # asked again from 2026-10-04
+
+
+@pytest.fixture
+def with_cards(data_dir, monkeypatch):
+    """The card definitions asked for too, as the watch does."""
+    monkeypatch.setattr(goatbots, "LISTS", (goatbots.LIST, goatbots.CARDS))
+    return data_dir
+
+
+def test_the_card_definitions_are_kept_by_the_run_rule_under_the_zip_s_last_modified(with_cards, tracker):
+    data_dir = with_cards
+    res = watch(Source(answers()), tracker)
+    assert res.kept == ["GoatBots prices", "GoatBots cards"] and not res.failed
+    found = cards(data_dir)
+    assert list(found) == ["2026-09-28T031520Z"]
+    assert runs.rebuild(found["2026-09-28T031520Z"]) == json.dumps(DEFS).encode()  # the file's own bytes
+    size = watching.size(found["2026-09-28T031520Z"].stat().st_size)
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "ok",
+        f"kept the definitions made 2026-09-28 03:15 UTC, 1 card: a new run, {size} kept twice",
+    )
+    entry = logged(data_dir)[-1]
+    assert entry == entry | {
+        "list": "cards",
+        "result": "kept",
+        "made": "2026-09-28T031520Z",
+        "day": "2026-09-28",
+        "served_sha256": hashlib.sha256(definitions()).hexdigest(),
+    }
+    assert watching.load_tags("goatbots")["cards"] == f'"{hash(definitions())}"'
+
+
+def test_new_definitions_are_a_difference_and_the_same_ones_a_304(with_cards, tracker):
+    data_dir = with_cards
+    watch(Source(answers()))
+    more = definitions({**DEFS, "1": {"name": "X"}})
+    later = made(DAY) + timedelta(days=1)
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": more}), modified=later))
+    assert list(cards(data_dir)) == ["2026-09-28T031520Z", "2026-09-29T031520Z"]
+    assert cards(data_dir)["2026-09-29T031520Z"].name.endswith(".diff.zst")
+    source = Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": more}), modified=later)
+    res = watch(source, tracker)
+    assert tracker.outcomes()["GoatBots cards"] == ("ok", "no new definitions since the last kept")
+    assert "GoatBots cards" in res.same and len(cards(data_dir)) == 2
+
+
+def test_empty_card_definitions_are_kept_nowhere_and_asked_again(with_cards, tracker):
+    data_dir = with_cards
+    res = watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": definitions({})})), tracker)
+    assert res.empty == ["GoatBots cards"] and not cards(data_dir)
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "ok",
+        "empty card definitions, nothing kept; asked again next run",
+    )
+    assert "cards" not in watching.load_tags("goatbots")
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        (zipped({"card-definitions.txt": b"[]"}), "card-definitions.txt isn't MTGO IDs and cards"),
+        (zipped({"x.txt": b"{}"}), "no card-definitions.txt in it, only x.txt"),
+        (definitions({"1": {"cardset": "X"}}), "card-definitions.txt isn't MTGO IDs and cards"),
+        (b"<html>busy</html>", "not a zip"),
+    ],
+)
+def test_definitions_that_arent_whole_are_set_aside_once_a_publish(with_cards, tracker, body, why):
+    data_dir = with_cards
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": body})), tracker)
+    aside = "goatbots/aside/card-definitions-2026-09-28T130000Z.zip"
+    said = f"{goatbots.DEFINITIONS}: {why}; set aside as {aside}, asked again next run"
+    assert tracker.outcomes()["GoatBots cards"] == ("fail", said)
+    assert (data_dir.parent / aside).read_bytes() == body and not cards(data_dir)
+    assert logged(data_dir)[-1]["publish"] == "2026-09-28T031520Z"
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": body})), tracker, now=NOW + timedelta(minutes=5))
+    again = (
+        f"{goatbots.DEFINITIONS}: {why}"
+        f"; a copy of this publish is set aside already as {aside}, asked again next run"
+    )
+    assert tracker.outcomes()["GoatBots cards"] == ("fail", again)
+    assert len(list((data_dir / "aside").iterdir())) == 1  # kept once, not at every run
+    assert logged(data_dir)[-1]["not_kept"] is True
+
+
+def test_definitions_missing_everywhere_fail(with_cards, tracker):
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": None})), tracker)
+    assert tracker.outcomes()["GoatBots cards"] == ("fail", f"{goatbots.DEFINITIONS}: HTTP 404")
+
+
+def test_definitions_with_no_last_modified_are_set_aside_and_fail(with_cards, tracker):
+    data_dir = with_cards
+    watch(Source(answers(), modified=None), tracker)
+    aside = "goatbots/aside/card-definitions-2026-09-28T130000Z.zip"
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "fail",
+        f"{goatbots.DEFINITIONS}: no Last-Modified, so no time they were made; set aside as {aside}",
+    )
+    assert (data_dir.parent / aside).read_bytes() == definitions()
+
+
+def test_definitions_fetched_again_are_compared_with_the_ones_kept(with_cards, tracker):
+    data_dir = with_cards
+    watch(Source(answers()))
+    (data_dir / "watch-etags.json").unlink()  # the ETag lost: the zip comes whole again
+    watch(Source(answers()), tracker)
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "ok",
+        "have the definitions made 2026-09-28 03:15 UTC; the same as the one kept",
+    )
+    other = definitions({"2": {"name": "Y"}})
+    watch(Source(answers(**{f"{NEW}/{goatbots.DEFINITIONS}": other}), modified=made(DAY)), tracker)
+    aside = "goatbots/aside/card-definitions-2026-09-28T130000Z.zip"
+    assert tracker.outcomes()["GoatBots cards"] == (
+        "warn",
+        f"have the definitions made 2026-09-28 03:15 UTC; this copy isn't the one kept: set aside as {aside}",
+    )
+    assert (data_dir.parent / aside).read_bytes() == other and len(cards(data_dir)) == 1
+
+
+def test_a_price_list_fetched_again_that_isnt_the_one_kept_is_set_aside(data_dir, tracker):
+    watch(Source(answers()))
+    (data_dir / "watch-etags.json").unlink()
+    other = latest(prices={"348": 1.0})
+    watch(Source(answers(**{f"{NEW}/{goatbots.LATEST}": other})), tracker)
+    aside = "goatbots/aside/price-history-2026-09-28T130000Z.zip"
+    assert tracker.outcomes()["GoatBots prices"] == (
+        "warn",
+        f"have 2026-09-27's list, made 2026-09-28 03:15 UTC"
+        f"; this copy isn't the one kept: set aside as {aside}",
+    )
+    assert (data_dir.parent / aside).read_bytes() == other and len(kept(data_dir)) == 1
+
+
+def test_the_sync_leaves_the_definitions_it_kept_before_alone(data_dir):
+    """Before 0037 the sync kept the latest definitions as card-definitions.zip, replacing the
+    last; the watch keeps them now, and that file stays as it is."""
+    old = data_dir / "card-definitions.zip"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"kept before")
+    source = Source(answers())
+    run(source)
+    assert old.read_bytes() == b"kept before"
+    assert f"{NEW}/{goatbots.DEFINITIONS}" not in source.asked
+
+
+def test_definitions_from_a_server_with_no_etag_are_still_kept_and_had(with_cards, tracker):
+    data_dir = with_cards
+    watch(Source(answers(), tagged=False))
+    watch(Source(answers(), tagged=False), tracker)
+    assert len(cards(data_dir)) == 1 and "cards" not in watching.load_tags("goatbots")
+    assert tracker.outcomes()["GoatBots cards"][1].endswith("the same as the one kept")
+
+
+def test_damage_found_keeping_definitions_is_a_warning(with_cards, tracker, monkeypatch):
+    keep = runs.keep
+
+    def keep_and_repair(folder, at, data):
+        return dataclasses.replace(keep(folder, at, data), notes=("a copy was damaged",))
+
+    monkeypatch.setattr(goatbots.runs, "keep", keep_and_repair)
+    watch(Source(answers()), tracker)
+    assert tracker.outcomes()["GoatBots cards"][0] == "warn"
+    assert tracker.outcomes()["GoatBots cards"][1].endswith("; a copy was damaged")

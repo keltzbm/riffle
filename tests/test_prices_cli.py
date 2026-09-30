@@ -133,7 +133,7 @@ def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypat
     assert "! MTGJSON prices: [Errno 28] No space left on device" in result.output
     assert "! MTGJSON 90 days: [Errno 28] No space left on device" in result.output
     assert "! GoatBots prices: [Errno 28] No space left on device" in result.output
-    assert "! GoatBots cards and years: [Errno 28] No space left on device" in result.output
+    assert "! GoatBots years: [Errno 28] No space left on device" in result.output
     assert "! Cardmarket prices: [Errno 28] No space left on device" in result.output
     assert "! Card Kingdom prices: [Errno 28] No space left on device" in result.output
     assert "! Mana Pool prices: [Errno 28] No space left on device" in result.output

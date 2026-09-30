@@ -14,6 +14,7 @@ from riffle import locks, net, runs, watching
 from riffle.ingest import mtgjson
 
 B = mtgjson.BASE
+EVERY_FILE = mtgjson.FILES  # before a test narrows them to AllPricesToday
 DAY = date(2026, 9, 27)
 NOW = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)  # the 07:00 sync in Denver
 
@@ -156,6 +157,7 @@ def have() -> set[date]:
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(mtgjson, "FILES", mtgjson.FILES[:1])  # the catalogs' tests set them back
     return tmp_path / "riffle"
 
 
@@ -290,12 +292,17 @@ def test_the_90_days_are_retried_until_kept(data_dir, tracker):
 def test_a_build_that_doesnt_match_its_sha256_is_not_kept_and_asked_again(data_dir, tracker):
     source = Source(answers(**{f"{B}/{mtgjson.TODAY}.sha256": b"0" * 64}))
     res = watch(source, tracker)
-    why = f"{mtgjson.TODAY} doesn't match its .sha256; MTGJSON may be mid-update"
+    aside = "mtgjson/aside/AllPricesToday-2026-09-27T130000Z.json.xz"
+    why = (
+        f"{mtgjson.TODAY} doesn't match its .sha256; MTGJSON may be mid-update"
+        f"; set aside as {aside}, asked again next run"
+    )
     assert res.failed == [("MTGJSON prices today", why)]
     assert tracker.outcomes()["MTGJSON prices today"] == ("fail", why)
     assert not kept(data_dir) and watching.load_tags("mtgjson") == {}  # no ETag: asked whole again
     assert not [p for p in (data_dir / "mtgjson").rglob("*") if p.name.endswith((".new", ".part"))]
-    assert logged(data_dir)[0]["result"] == "failed"
+    assert logged(data_dir)[0]["result"] == "failed" and logged(data_dir)[0]["aside"] == aside
+    assert (data_dir / aside).exists()  # it may be the only copy of what MTGJSON served
     source = Source(answers())
     watch(source)
     assert source.etags == [None] and len(kept(data_dir)) == 1
@@ -323,16 +330,37 @@ def test_a_build_kept_already_is_had_not_kept_again(data_dir, tracker):
     assert res.same == ["MTGJSON prices today"] and len(kept(data_dir)) == 1
     assert tracker.outcomes()["MTGJSON prices today"] == (
         "ok",
-        "have the build made 2026-09-27 06:12 UTC (2026-09-27)",
+        "have the build made 2026-09-27 06:12 UTC (2026-09-27); the same as the one kept",
     )
-    assert logged(data_dir)[-1] | {"seconds": 0} == {
+    entry = logged(data_dir)[-1]
+    assert {k: entry[k] for k in ("at", "list", "result", "made", "same", "day")} == {
         "at": "2026-09-27T130000Z",
         "list": "prices-today",
         "result": "known",
         "made": "2026-09-27T061238Z",
-        "seconds": 0,
+        "same": True,
+        "day": "2026-09-27",
     }
+    assert "aside" not in entry and not (data_dir / "mtgjson" / "aside").exists()
     assert watching.load_tags("mtgjson") == {"prices-today": f'"{hash(prices(DAY))}"'}
+
+
+def test_a_build_fetched_again_that_isnt_the_one_kept_is_set_aside(data_dir, tracker):
+    """The same Last-Modified with other contents: the copy may be the only one of what MTGJSON
+    served, so it's kept aside, and the step warns."""
+    watch(Source(answers()))
+    (data_dir / "mtgjson" / "watch-etags.json").unlink()
+    other = prices(DAY, price=0.5)
+    res = watch(Source(answers(today=other), modified=built(DAY)), tracker)
+    aside = "mtgjson/aside/AllPricesToday-2026-09-27T130000Z.json.xz"
+    assert res.same == ["MTGJSON prices today"] and len(kept(data_dir)) == 1
+    assert tracker.outcomes()["MTGJSON prices today"] == (
+        "warn",
+        f"have the build made 2026-09-27 06:12 UTC (2026-09-27)"
+        f"; this copy isn't the one kept: set aside as {aside}",
+    )
+    assert (data_dir / aside).read_bytes() == other
+    assert logged(data_dir)[-1]["same"] is False and logged(data_dir)[-1]["aside"] == aside
 
 
 def test_a_build_with_no_last_modified_is_set_aside_and_fails(data_dir, tracker):
@@ -352,7 +380,7 @@ def test_a_busy_store_asks_nothing(data_dir, tracker):
         source = Source(answers())
         res = watch(source, tracker)
     assert res.busy and source.asked == []
-    assert tracker.outcomes() == {"MTGJSON prices today": ("ok", "another run is asking for it")}
+    assert tracker.outcomes() == {"MTGJSON": ("ok", "another run is asking for its lists")}
 
 
 def test_the_watch_asks_only_when_the_next_build_is_due(data_dir, tracker):
@@ -360,9 +388,10 @@ def test_the_watch_asks_only_when_the_next_build_is_due(data_dir, tracker):
     source = Source(answers())
     res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
     assert source.asked == [] and res.waiting == ["MTGJSON prices today"]
-    assert tracker.outcomes()["MTGJSON prices today"] == (
+    assert tracker.outcomes()["MTGJSON 1 list"] == (
         "ok",
-        "next asked 2026-09-27 13:05 UTC; its next list's time is learned from 14 gaps, 0 so far",
+        "none due; prices today next asked 2026-09-27 13:05 UTC"
+        "; its next list's time is learned from 14 gaps, 0 so far",
     )
     watch(source, now=NOW + timedelta(minutes=5), always=False)
     assert source.asked == [f"{B}/{mtgjson.TODAY}"]  # due: a 304
@@ -389,9 +418,10 @@ def test_a_build_is_asked_from_when_it_goes_online_not_when_it_s_made(data_dir, 
     source = Source(answers())
     res = watch(source, tracker, now=now, always=False)
     assert source.asked == [] and res.waiting == ["MTGJSON prices today"]
-    assert tracker.outcomes()["MTGJSON prices today"] == (
+    assert tracker.outcomes()["MTGJSON 1 list"] == (
         "ok",
-        "next asked 2026-10-16 10:32 UTC; its next list expected 2026-10-16 06:12 UTC, "
+        "none due; prices today next asked 2026-10-16 10:32 UTC"
+        "; its next list expected 2026-10-16 06:12 UTC, "
         "online from about 2026-10-16 12:57 UTC",
     )
 
@@ -435,16 +465,20 @@ def test_a_full_disk_fails_the_step_and_the_90_days_still_run(data_dir, tracker)
 )
 def test_a_file_that_isnt_a_price_file_fails_cleanly(data_dir, tracker, body, why):
     watch(Source(answers(today=body)), tracker)
-    assert tracker.outcomes()["MTGJSON prices today"] == ("fail", f"{mtgjson.TODAY}: {why}")
-    assert not kept(data_dir)
+    aside = "mtgjson/aside/AllPricesToday-2026-09-27T130000Z.json.xz"
+    said = f"{mtgjson.TODAY}: {why}; set aside as {aside}, asked again next run"
+    assert tracker.outcomes()["MTGJSON prices today"] == ("fail", said)
+    assert not kept(data_dir) and (data_dir / aside).read_bytes() == body
 
 
 def test_an_oversized_build_is_refused(data_dir, tracker, monkeypatch):
-    monkeypatch.setattr(mtgjson, "MAX_LIST", 100)
+    monkeypatch.setattr(mtgjson, "FILES", (dataclasses.replace(mtgjson.FILES[0], most=100),))
     watch(Source(answers()), tracker)
+    aside = "mtgjson/aside/AllPricesToday-2026-09-27T130000Z.json.xz"
     assert tracker.outcomes()["MTGJSON prices today"] == (
         "fail",
-        f"{mtgjson.TODAY}: unpacks to more than 100 bytes, too big to be what it claims",
+        f"{mtgjson.TODAY}: unpacks to more than 100 bytes, too big to be what it claims; "
+        f"set aside as {aside}, asked again next run",
     )
 
 
@@ -533,3 +567,114 @@ def test_a_90_day_file_missing_or_not_matching_is_not_kept(data_dir, tracker, ov
     refill(Source(answers(**overrides)), tracker)
     assert tracker.outcomes() == {"MTGJSON 90 days": ("fail", why)}
     assert mtgjson.kept_days(mtgjson.history_dir()) == []
+
+
+CSV = b"uuid,scryfallId\n0000cd33,5f8287b1\n"
+
+
+def catalog(file: mtgjson.File, day: date = DAY) -> bytes:
+    """A catalog file's list: JSON with its meta first, or a CSV or tar's bytes."""
+    return meta(day) if file.meta else CSV
+
+
+def catalogs(day: date = DAY, **overrides) -> dict:
+    """Every file of the build as MTGJSON serves it, each beside its .sha256 if it has one."""
+    found = answers(day)
+    for file in EVERY_FILE[1:]:
+        served = lzma.compress(catalog(file, day)) if file.path.endswith(".xz") else catalog(file, day)
+        found[f"{B}/{file.path}"] = served
+        if file.sha256:
+            found[f"{B}/{file.path}.sha256"] = sha(served)
+    found.update(overrides)
+    return found
+
+
+@pytest.fixture
+def every_file(data_dir, monkeypatch):
+    monkeypatch.setattr(mtgjson, "FILES", EVERY_FILE)
+    return data_dir
+
+
+def test_every_file_of_the_build_is_kept_as_a_list_of_its_own(every_file, tracker):
+    source = Source(catalogs())
+    res = watch(source, tracker)
+    assert res.kept == [f"MTGJSON {file.label}" for file in EVERY_FILE] and not res.failed
+    for file in EVERY_FILE[1:]:
+        found = runs.kept(mtgjson.lists_dir(file.list))
+        assert list(found) == ["2026-09-27T061238Z"]  # its Last-Modified
+        assert runs.rebuild(found["2026-09-27T061238Z"]) == catalog(file)  # unpacked, as served inside
+    assert f"{B}/BuildManifest.json.sha256" not in source.asked  # MTGJSON serves none for it
+    entries = {entry["list"]: entry for entry in logged(every_file)}
+    assert (
+        entries["all-printings"]["day"] == "2026-09-27"
+        and entries["all-printings"]["version"] == "5.3.0+20260927"
+    )
+    assert entries["card-identifiers"]["day"] == "2026-09-27" and "version" not in entries["card-identifiers"]
+    assert tracker.outcomes()["MTGJSON AllPrintings"][1].startswith(
+        "kept the list built 2026-09-27 06:12 UTC (2026-09-27)"
+    )
+
+
+def test_a_catalog_not_new_is_a_304(every_file):
+    watch(Source(catalogs()))
+    source = Source(catalogs())
+    res = watch(source)
+    assert res.same == [f"MTGJSON {file.label}" for file in EVERY_FILE] and not res.kept
+    assert None not in source.etags
+
+
+def test_a_catalog_that_isnt_whole_is_set_aside_once_a_build_and_the_rest_still_kept(every_file, tracker):
+    broken = b"<html>busy</html>"
+    overrides = {f"{B}/AllPrintings.json.xz": broken, f"{B}/AllPrintings.json.xz.sha256": sha(broken)}
+    res = watch(Source(catalogs(**overrides)), tracker)
+    aside = "mtgjson/aside/AllPrintings-2026-09-27T130000Z.json.xz"
+    assert res.failed == [
+        ("MTGJSON AllPrintings", f"AllPrintings.json.xz: not xz; set aside as {aside}, asked again next run")
+    ]
+    assert len(res.kept) == len(EVERY_FILE) - 1 and (every_file / aside).read_bytes() == broken
+    watch(Source(catalogs(**overrides)), tracker, now=NOW + timedelta(minutes=5))
+    said = (
+        f"AllPrintings.json.xz: not xz"
+        f"; a copy of this publish is set aside already as {aside}, asked again next run"
+    )
+    assert tracker.outcomes()["MTGJSON AllPrintings"] == ("fail", said)
+    assert len(list((every_file / "mtgjson" / "aside").iterdir())) == 1
+    last = [entry for entry in logged(every_file) if entry["list"] == "all-printings"][-1]
+    assert last["not_kept"] is True and last["publish"] == "2026-09-27T061238Z"
+
+
+def test_a_manifest_that_isnt_json_is_set_aside(every_file, tracker):
+    watch(Source(catalogs(**{f"{B}/BuildManifest.json": b"<html>busy</html>"})), tracker)
+    aside = "mtgjson/aside/BuildManifest-2026-09-27T130000Z.json"
+    assert tracker.outcomes()["MTGJSON BuildManifest"] == (
+        "fail",
+        f"BuildManifest.json: not the expected JSON; set aside as {aside}, asked again next run",
+    )
+
+
+def test_a_file_with_no_etag_or_time_is_set_aside_every_time(every_file, tracker):
+    """With nothing to say which publish a broken copy is, each is kept: nothing is lost."""
+    broken = b"<html>busy</html>"
+    overrides = {f"{B}/AllPrintings.json.xz": broken, f"{B}/AllPrintings.json.xz.sha256": sha(broken)}
+    for minutes in (0, 5):
+        watch(
+            Source(catalogs(**overrides), modified=None, tagged=False), now=NOW + timedelta(minutes=minutes)
+        )
+    assert (
+        len([p for p in (every_file / "mtgjson" / "aside").iterdir() if p.name.startswith("AllPrintings")])
+        == 2
+    )
+
+
+def test_lists_not_due_share_one_line_naming_the_next(every_file, tracker):
+    watch(Source(catalogs()))
+    source = Source(catalogs())
+    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
+    assert source.asked == [] and len(res.waiting) == len(EVERY_FILE)
+    assert tracker.outcomes() == {
+        f"MTGJSON {len(EVERY_FILE)} lists": (
+            "ok",
+            "none due; prices today next asked 2026-09-27 13:05 UTC"
+            "; its next list's time is learned from 14 gaps, 0 so far",
+        )
+    }

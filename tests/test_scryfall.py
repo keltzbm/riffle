@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import os
 from datetime import UTC, date, datetime
@@ -359,6 +360,32 @@ def test_a_bad_download_is_set_aside_and_asked_again(monkeypatch, tracker, clock
     served.files[default["jsonl_download_uri"]] = gz(CARDS)
     scryfall.refresh(tracker=tracker)
     assert scryfall.bulk_file().name == "2026-09-24T090540Z.jsonl.gz"
+
+
+def test_a_file_served_broken_again_is_set_aside_once_a_publish(monkeypatch, tracker, clock):
+    """A publish served broken at every refresh is kept once, not twice a day; each later copy
+    goes in the check log."""
+    default = entry("default_cards", AM)
+    body = b"<html>maintenance</html>"
+    Scryfall(monkeypatch, default, files={default["jsonl_download_uri"]: body})
+    scryfall.refresh()
+    scryfall.refresh(tracker=tracker)
+    aside = "2026-09-24T090540Z-2026-09-24T130006Z.jsonl.gz.bad"
+    why = "isn't gzip — Scryfall's format may have changed again"
+    assert tracker.outcomes()["Scryfall default cards"] == (
+        "fail",
+        f"the default_cards file {why}"
+        f"; a copy of this publish is set aside already as {aside}, asked again next run",
+    )
+    assert [p.name for p in scryfall.bulk_dir().iterdir()] == [aside]
+    line = json.loads(scryfall.checks_path().read_text().splitlines()[-1])
+    assert line == line | {
+        "type": "default_cards",
+        "stamp": "2026-09-24T090540Z",
+        "not_kept": True,
+        "aside": aside,
+    }
+    assert line["served_sha256"] == hashlib.sha256(body).hexdigest() and line["size"] == len(body)
 
 
 def test_force_downloads_default_cards_again(monkeypatch, tracker, clock):

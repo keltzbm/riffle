@@ -353,7 +353,7 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         ("MTGJSON prices", partial(mtgjson.watch, always=True)),
         ("MTGJSON 90 days", mtgjson.snapshot),
         ("GoatBots prices", partial(goatbots.watch, always=True)),
-        ("GoatBots cards and years", goatbots.snapshot),
+        ("GoatBots years", goatbots.snapshot),
         ("Cardmarket prices", partial(cardmarket.watch, always=True)),
         ("Card Kingdom prices", partial(pricelists.watch, pricelists.CARD_KINGDOM)),
         ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),

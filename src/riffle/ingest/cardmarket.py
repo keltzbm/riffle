@@ -18,11 +18,17 @@ one row per product, sealed ones included, prices in EUR or null ("-holo" instea
 for Pokémon). A Magic single's idProduct is Scryfall's cardmarket_id; every other product,
 Magic's sealed ones included, is named in Cardmarket's product lists
 (productCatalog/productList/products_singles_<id>.json and products_nonsingles_<id>.json on
-the same server), which the loader reads. Riffle keeps every guide as returned, by the run
-rule (riffle.runs): a run's first whole, twice, and each later one as a difference against it,
-under its createdAt in UTC:
+the same server), which the loader reads. Riffle keeps every guide and every product list as
+returned, by the run rule (riffle.runs): a run's first whole, twice, and each later one as a
+difference against it, under its createdAt in UTC:
 
-    <data_dir>/cardmarket/lists/<game>/<base's stamp>/...
+    <data_dir>/cardmarket/lists/<game>/<base's stamp>/...                 the guides
+    <data_dir>/cardmarket/products/<game>/<singles|nonsingles>/<run>/...  the product lists
+
+The product lists are made hours after the guides (11:27 UTC against 00:52 on 2026-09-29), so
+each is a list of its own, asked when its own next is due. One that isn't whole JSON is set
+aside once a publish. One Cardmarket has never served (accessories' answer 403) is asked for
+again once a Cardmarket day, at the look, so it's kept from the day it first answers.
 
 <game> is mtg, fab, or op for the games played and the name as a slug (pokemon) for the
 rest. Every game's guide is kept, played or not, the games Cardmarket adds too: once a
@@ -40,7 +46,8 @@ A look that fails isn't recorded, so the next run looks again; a games.json that
 is set aside, and its games are learned again at once. `riffle watch cardmarket` asks for a
 game's guide when riffle.cadence says its next is due, learned from its own createdAt times and
 checks, carrying the ETag of the guide last kept: a guide not new costs a 304 and no body.
-Each game asked for is a step of its own; the games not due share one line. Every check goes
+Its product lists likewise. Each list asked for is a step of its own; the lists not due share
+one line. Every check goes
 in <data_dir>/cardmarket/watch.jsonl. Until 2026-09-29 Riffle kept one guide a day, gzipped,
 under the day of its createdAt; those stay:
 
@@ -62,9 +69,10 @@ import zlib
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
-from riffle import cadence, lateness, net, runs, times, watching
+from riffle import net, runs, times, watching
 from riffle.config import data_dir
 from riffle.ingest import empties
 from riffle.progress import SILENT, Step, Tracker
@@ -101,6 +109,7 @@ OTHERS: dict[str, int | str] = {
 # guide goes up, each a 403 at a look.
 PAST = 5
 LOOK = "new games"  # a look's entries in watch.jsonl
+KINDS = ("singles", "nonsingles")  # each game's product lists: products_<kind>_<id>.json
 CREATED = re.compile(rb'"createdAt"\s*:\s*"([^"]+)"')
 CATEGORY = re.compile(rb'"categoryName"\s*:\s*("(?:[^"\\]|\\.)*")')
 MISSING = (403, 404)  # what Cardmarket's download server answers for a guide it doesn't have
@@ -114,6 +123,11 @@ def daily_dir() -> Path:
 
 def lists_dir(game: str) -> Path:
     return data_dir() / STORE / "lists" / game
+
+
+def products_dir(game: str, kind: str) -> Path:
+    """Where a game's product lists of one kind (KINDS) are kept, by the run rule."""
+    return data_dir() / STORE / "products" / game / kind
 
 
 def _count(n: int, noun: str) -> str:
@@ -253,10 +267,11 @@ def _look(fetch: Fetch, known: dict[str, int | str], now: datetime) -> Look:
     return look
 
 
-def _looked(fetch: Fetch, tracker: Tracker, now: datetime) -> dict[str, int]:
+def _looked(fetch: Fetch, tracker: Tracker, now: datetime) -> dict[str, int] | None:
     """Look for new games (_look) once a Cardmarket day: when no run has looked yet, or a guide
     kept was made after the last look. Its own step; the games found, by name: their IDs,
-    saved in games.json with the look's time. A look that fails saves nothing."""
+    saved in games.json with the look's time. None when no look was made, or it failed, which
+    saves nothing."""
     damaged = ""
     try:
         saved = _saved()
@@ -267,7 +282,7 @@ def _looked(fetch: Fetch, tracker: Tracker, now: datetime) -> dict[str, int]:
     looked = runs.parse(str(saved.get("looked", "")))
     newest = max((at for game in games() for at in made(game)[-1:]), default=None)
     if looked is not None and (newest is None or newest <= looked):
-        return {}
+        return None
     step = tracker.step(f"Cardmarket {LOOK}")
     entry: dict = {"at": watching.at(now), "list": LOOK}
     started = time.monotonic()
@@ -277,7 +292,7 @@ def _looked(fetch: Fetch, tracker: Tracker, now: datetime) -> dict[str, int]:
         step.warn(f"{damaged}not looked: {e}; looked again next run")
         seconds = round(time.monotonic() - started, 1)
         watching.log(STORE, entry | {"result": "failed", "why": str(e), "seconds": seconds})
-        return {}
+        return None
     _save(now, saved.get("games", {}) | look.found)
     names = [f"{name} ({game['id']})" for name, game in look.found.items()]
     said = [f"{'found ' + ', '.join(names) if names else 'no new game'}; asked {_ids(look.asked)}"]
@@ -356,16 +371,99 @@ def _guide(game: str, ref: int | str, fetch: Fetch, tags: dict[str, str], now: d
         fresh.unlink(missing_ok=True)
 
 
-def _missing(game: str, ref: int | str, key: str, now: datetime, step: Step) -> dict:
-    """A game Cardmarket has no guide for: a played game's step fails, the rest are noted."""
+def _missing(game: str, ref: int | str, key: str, now: datetime, step: Step, what: str = "") -> dict:
+    """A game's file Cardmarket doesn't have, its guide unless what names it: a played game's
+    step fails, the rest are noted."""
     if game not in GAMES:
-        empties.report(step, key, "no guide", now)
+        empties.report(step, key, f"no {what or 'guide'}", now)
         return {"result": "missing"}
-    gone = empties.record(key, "no guide", now)
+    gone = empties.record(key, f"no {what or 'guide'}", now)
     since = f" since {gone.first.date()} ({gone.runs} runs in a row)" if gone.runs > 1 else ""
-    why = f"Cardmarket has no price guide for game {ref}{since}"
+    why = f"Cardmarket has no {what or 'price guide'} for game {ref}{since}"
     step.fail(why)
     return {"result": "missing", "why": why}
+
+
+def _products(
+    game: str, ref: int | str, kind: str, fetch: Fetch, tags: dict[str, str], now: datetime, step: Step
+) -> dict:
+    """Ask for one of a game's product lists once and keep it if it's new, by the run rule under
+    its createdAt; end step saying what came. One that isn't whole JSON is set aside once per
+    publish. One Cardmarket has never served is noted, not warned about. The log entry."""
+    name = f"products_{kind}_{ref}.json"
+    listed = f"{game} {kind}"
+    folder = products_dir(game, kind)
+    have = runs.kept(folder)
+    key = f"{STORE}/{game}/{kind}"
+
+    def known(head: bytes) -> bool:
+        at = _created(head)
+        return at is not None and runs.name(at) in have
+
+    fresh = folder.parent / f"{kind}.new"
+    try:
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        got = fetch(
+            f"{PRODUCTS}/{name}",
+            fresh,
+            known,
+            etag=tags.get(listed),
+            accept="application/json",
+            progress=step.update,
+            missing=MISSING,
+        )
+        if got is None and not have:
+            step.ok("Cardmarket serves none yet; asked again once a Cardmarket day")
+            return {"result": "missing"}
+        if got is None:
+            return _missing(game, ref, key, now, step, f"{kind} product list")
+        if got.status == "unchanged":
+            step.ok("no new product list since the last one kept")
+            return {"result": "unchanged"}
+        if got.status == "known":
+            at = _created(got.head)
+            assert at is not None  # known() found it
+            if got.etag:
+                tags[listed] = got.etag
+            step.ok(f"have the product list made {times.shown(at)}")
+            return {"result": "known", "made": runs.name(at)}
+        body = fresh.read_bytes()
+        try:
+            doc = json.loads(body)
+            rows = doc["products"]
+            if not isinstance(rows, list):
+                raise TypeError("products")
+            at = created_at(doc["createdAt"])
+        except (ValueError, KeyError, TypeError, RecursionError) as e:
+            made = _created(body[: net.HEAD])
+            publish = runs.name(made) if made else got.etag
+            raise watching.broken(
+                STORE, listed, publish, fresh, name, now, f"{name}: not the expected JSON"
+            ) from e
+        if not rows:
+            empties.report(step, key, "empty product list", now)
+            return {"result": "empty"}
+        empties.clear(key)
+        kept = runs.keep(folder, at, body)
+        if got.etag:
+            tags[listed] = got.etag
+        rows_kept = _count(len(rows), "product")
+        note = f"kept the product list made {times.shown(at)}, {rows_kept}: {watching.how(kept)}"
+        if kept.notes:
+            step.warn(f"{note}; {'; '.join(kept.notes)}")
+        else:
+            step.ok(note)
+        return watching.record(kept)
+    finally:
+        fresh.unlink(missing_ok=True)
+
+
+def _never_served(log: list[dict], name: str, folder: Path) -> bool:
+    """A product list with nothing kept whose last answer was that Cardmarket has none."""
+    if runs.kept(folder):
+        return False
+    results = [e["result"] for e in log if e.get("list") == name and e.get("result") not in (None, "failed")]
+    return bool(results) and results[-1] == "missing"
 
 
 def watch(
@@ -374,67 +472,47 @@ def watch(
     clock: Callable[[], datetime] = times.now,
     always: bool = False,
 ) -> watching.Watch:
-    """Ask for each game's guide riffle.cadence says is due, or every game's when always (the
-    sync), the games played first, and keep each new one, each its own step; the games not due
-    share one line. Then, once a Cardmarket day, look for games Cardmarket has added, and ask
-    for each found. A guide that fails keeps nothing and is asked for again next run; once
-    Cardmarket gives no answer at all, the games after it fail without asking, and no run looks.
-    A run that finds Cardmarket's lock held asks nothing."""
-    res = watching.Watch()
-    with watching.held(STORE) as mine:
-        if not mine:
-            res.busy = True
-            tracker.step("Cardmarket guides").ok("another run is asking for them")
-            return res
-        tags = watching.load_tags(STORE)
-        log = watching.entries(STORE)
-        plans: list[cadence.Plan] = []
-        answering = True
+    """Ask for each game's guide, then each game's product lists (KINDS), each when
+    riffle.cadence says its next is due, or all when always (the sync), and keep each new one,
+    each its own step; the lists not due share one line (riffle.watching.many). Then, once a
+    Cardmarket day, look for games Cardmarket has added, and ask for each found, and for the
+    product lists Cardmarket has never served, so one is kept from the day it first answers.
+    A list that fails keeps nothing and is asked for again next run; once Cardmarket gives no
+    answer at all, the lists after it fail without asking, and no run looks."""
 
-        def ask(game: str, ref: int | str, now: datetime) -> None:
-            nonlocal answering
-            label = f"Cardmarket {game}"
-            entry: dict = {"at": watching.at(now), "list": game}
-            if not answering:
-                why = "not asked: Cardmarket gave no answer"
-                res.failed.append((label, why))
-                tracker.step(label).fail(why)
-                watching.log(STORE, entry | {"result": "failed", "why": why})
-                return
-            step = tracker.step(label, unit="bytes")
-            started = time.monotonic()
-            try:
-                entry |= _guide(game, ref, fetch, tags, now, step)
-            except (net.FetchError, OSError) as e:
-                answering = not isinstance(e, net.NoAnswer)
-                res.failed.append((label, str(e)))
-                step.fail(str(e))
-                entry |= {"result": "failed", "why": str(e)}
-            else:
-                if "why" in entry:
-                    res.failed.append((label, entry["why"]))
-                sorts = {"kept": res.kept, "empty": res.empty, "missing": res.empty}
-                sorts.get(entry["result"], res.same).append(label)
-            watching.log(STORE, entry | {"seconds": round(time.monotonic() - started, 1)})
+    def guide(game: str, ref: int | str) -> watching.Listed:
+        def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
+            return _guide(game, ref, fetch, tags, now, step)
 
-        for game, ref in games().items():
-            now = clock()
-            if not always:
-                busy = watching.longest(log, game, now, lateness.WINDOW)
-                plan = cadence.plan(
-                    made(game), watching.checks(log, game), now, busy, watching.online(log, game)
-                )
-                if not plan.ask:
-                    res.waiting.append(game)
-                    plans.append(plan)
-                    continue
-            ask(game, ref, now)
-        if plans:
-            first = min(plan.next for plan in plans)
-            step = tracker.step(f"Cardmarket {_count(len(plans), 'guide')}")
-            step.ok(f"none due; the next asked {times.shown(first)}")
-        if answering:
-            for game, ref in _looked(fetch, tracker, clock()).items():
-                ask(game, ref, clock())
-        watching.save_tags(STORE, tags)
-    return res
+        return watching.Listed(game, f"Cardmarket {game}", lists_dir(game), ask, "guide", partial(made, game))
+
+    def products(game: str, ref: int | str, kind: str) -> watching.Listed:
+        def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
+            return _products(game, ref, kind, fetch, tags, now, step)
+
+        folder = products_dir(game, kind)
+        return watching.Listed(
+            f"{game} {kind}", f"Cardmarket {game} {kind}", folder, ask, noun="product list"
+        )
+
+    log = watching.entries(STORE)
+    known = games()
+    lists = [guide(game, ref) for game, ref in known.items()]
+    deferred: list[watching.Listed] = []
+    for game, ref in known.items():
+        for kind in KINDS:
+            item = products(game, ref, kind)
+            (deferred if _never_served(log, item.name, item.folder) else lists).append(item)
+
+    def then(run: watching.Pass) -> None:
+        found = _looked(fetch, run.tracker, run.clock())
+        if found is None:
+            return
+        for item in deferred:
+            run.ask(item)
+        for game, ref in found.items():
+            run.ask(guide(game, ref))
+            for kind in KINDS:
+                run.ask(products(game, ref, kind))
+
+    return watching.many(STORE, "Cardmarket", lists, tracker, clock, always, then)

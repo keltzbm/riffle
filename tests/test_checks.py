@@ -123,7 +123,7 @@ def test_cardmarket_guides(data):
         datetime(2026, 9, 27, 23, 0, tzinfo=UTC),
     )
     rep = by_source()["Cardmarket"]
-    assert rep.summary() == "5 guides over 3 days: 4 wrong"
+    assert rep.summary() == "5 lists over 3 days: 4 wrong"
     assert rep.problems == [
         "cardmarket/daily/2026-09-28/fab.json.gz: made on 2026-09-27, kept under 2026-09-28",
         "cardmarket/daily/2026-09-28/lorcana.json.gz: made 2026-09-28 00:45 UTC, after it was fetched at"
@@ -498,7 +498,7 @@ def test_cardmarket_guides_kept_in_runs_are_checked_as_their_log_says(data, monk
     cardmarket_guides(("mtg", "fab"), 2, last)
     monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
     rep = by_source()["Cardmarket"]
-    assert rep.files == 4 and rep.problems == [] and rep.summary() == "4 guides over 2 days: all right"
+    assert rep.files == 4 and rep.problems == [] and rep.summary() == "4 lists over 2 days: all right"
     assert rep.notes == ["2 guides: lateness judged from 14 gaps, 1 so far at the fewest"]
     watching.log("cardmarket", {"at": "2026-09-28T010000Z", "list": "op", "result": "kept"})
     assert by_source()["Cardmarket"].problems == [
@@ -593,3 +593,47 @@ def test_goatbots_lists_kept_in_runs_are_checked_and_judged_for_lateness(data, m
         .problems[0]
         .endswith("; its other copy is whole, and the next list kept writes it again")
     )
+
+
+def test_mtgjson_s_catalogs_are_checked_and_judged_with_its_prices(data, monkeypatch):
+    from riffle.ingest import mtgjson
+
+    last = datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)
+    one_list("mtgjson", "prices-today", mtgjson.lists_dir(), 2, last, lambda made: made.isoformat().encode())
+    folder = mtgjson.lists_dir("all-printings")
+    one_list("mtgjson", "all-printings", folder, 2, last, lambda made: b"cards " + made.isoformat().encode())
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=8))
+    rep = by_source()["MTGJSON"]
+    assert rep.files == 4 and rep.problems == []
+    assert rep.notes == ["2 lists: lateness judged from 14 gaps, 1 so far at the fewest"]
+    runs.kept(folder)[runs.name(last)].write_bytes(b"changed")
+    assert any("changed since it was kept" in problem for problem in by_source()["MTGJSON"].problems)
+
+
+def test_goatbots_cards_and_cardmarket_product_lists_are_checked_too(data, monkeypatch):
+    from riffle.ingest import cardmarket, goatbots
+
+    last = datetime(2026, 9, 29, 3, 15, 19, tzinfo=UTC)
+    one_list(
+        "goatbots", "cards", goatbots.lists_dir("cards"), 2, last, lambda made: made.isoformat().encode()
+    )
+    made = datetime(2026, 9, 29, 11, 27, 51, tzinfo=UTC)
+    folder = cardmarket.products_dir("mtg", "singles")
+    one_list("cardmarket", "mtg singles", folder, 2, made, lambda at: at.isoformat().encode())
+    monkeypatch.setattr(times, "now", lambda: made + timedelta(hours=1))
+    reports = by_source()
+    assert reports["GoatBots"].files == 2 and reports["GoatBots"].problems == []
+    assert reports["GoatBots"].notes == ["lateness judged from 14 gaps, 1 so far"]
+    assert reports["Cardmarket"].files == 2 and reports["Cardmarket"].problems == []
+    assert "product lists" not in " ".join(reports["Cardmarket"].notes)  # one list: no count
+    assert "lateness judged from 14 gaps, 1 so far" in reports["Cardmarket"].notes
+
+
+def test_one_list_of_several_waiting_to_be_judged_is_said_as_one(data, monkeypatch):
+    from riffle.ingest import mtgjson
+
+    last = datetime(2026, 9, 29, 6, 12, 38, tzinfo=UTC)
+    one_list("mtgjson", "prices-today", mtgjson.lists_dir(), 2, last, lambda made: made.isoformat().encode())
+    one_list("mtgjson", "meta", mtgjson.lists_dir("meta"), 1, last, lambda made: b"meta")
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=8))
+    assert by_source()["MTGJSON"].notes == ["1 list: lateness judged from 14 gaps, 1 so far"]
