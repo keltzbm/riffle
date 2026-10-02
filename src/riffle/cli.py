@@ -197,10 +197,13 @@ def init() -> None:
     cfg = config.load()
     typer.echo(f"config     {path}")
     typer.echo(f"vault      {cfg.vault}")
+    typer.echo(f"notes      {cfg.notes}")
     typer.echo(f"data       {config.data_dir()}")
     typer.echo(f"database   {cfg.database_url}")
     for key, why in (cfg.obsolete or {}).items():
         typer.echo(f"  ! `{key}` in config is ignored: {why}", err=True)
+    if cfg.old_notes:
+        typer.echo(f"  ! {cfg.old_notes}", err=True)
 
 
 def _refresh(tracker: Tracker, force: bool = False) -> None:
@@ -784,8 +787,12 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
             err=True,
         )
+    if cfg0.old_notes:
+        tracker.step("vault setting").warn(cfg0.old_notes)
     if not cfg0.mtg_dir.is_dir():  # a missing or mistyped vault: nothing is written there
-        tracker.step("vault").fail(f"no deck folder at {cfg0.mtg_dir}; set vault in {config.config_path()}")
+        tracker.step("vault").fail(
+            f"no deck folder at {cfg0.mtg_dir}; set vault and notes in {config.config_path()}"
+        )
         return
     with _setup() as (cfg, cat, inv):
         res = syncmod.run(cfg.mtg_dir, inv, cat)

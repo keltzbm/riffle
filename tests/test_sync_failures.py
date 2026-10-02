@@ -99,7 +99,7 @@ def vault(tmp_path, monkeypatch, opened):
     """A one-deck vault under a fake HOME, the in-memory catalog, and a price snapshot kept."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # the default vault, under HOME
-    mtg = tmp_path / "atelier" / "library" / "tcg" / "mtg"
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     (mtg / "modern" / "burn.md").write_text(NOTE)
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
@@ -292,12 +292,35 @@ def test_a_missing_vault_is_reported_and_nothing_is_built_there(tmp_path, monkey
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
-    mtg = tmp_path / "atelier" / "library" / "tcg" / "mtg"
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     result = CliRunner().invoke(app, ["sync", "--offline"])
     assert result.exit_code == 1
-    assert f"vault: no deck folder at {mtg}; set vault in {tmp_path / 'config'}" in result.output
+    assert f"vault: no deck folder at {mtg}; set vault and notes in {tmp_path / 'config'}" in result.output
     assert not (tmp_path / "atelier").exists()
     assert "0 decks" not in result.output
+
+
+def test_a_config_from_before_the_notes_setting_still_syncs_and_says_what_to_change(
+    tmp_path, monkeypatch, opened
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    (tmp_path / ".config" / "riffle").mkdir(parents=True)
+    (tmp_path / ".config" / "riffle" / "config.toml").write_text('vault = "~/atelier/library/games"\n')
+    (tmp_path / "atelier" / "library" / ".obsidian").mkdir(parents=True)
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    (mtg / "modern").mkdir(parents=True)
+    (mtg / "modern" / "burn.md").write_text(NOTE)
+    monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
+    result = CliRunner().invoke(app, ["sync", "--offline"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "vault setting: ~/.config/riffle/config.toml names no notes folder, "
+        "so it's ~/atelier/library/games/tcg: "
+        'set vault = "~/atelier/library" and add notes = "games/tcg"'
+    ) in result.output
+    assert "1 decks · " in result.output
+    assert (mtg / "_generated" / "burn-data.md").exists()
 
 
 def test_a_note_that_isnt_utf8_fails_a_step_naming_it(vault, monkeypatch):

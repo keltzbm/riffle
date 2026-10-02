@@ -1,6 +1,6 @@
 """Read-only access to the Obsidian vault: deck notes and buy lines.
 
-A deck note is any .md under tcg/mtg/ whose frontmatter says game: mtg and
+A deck note is any .md under the notes folder's mtg/ whose frontmatter says game: mtg and
 whose body holds a decklist in a fenced code block — preferably under a
 "Moxfield import" heading. Nothing here writes; see export/obsidian.py.
 """

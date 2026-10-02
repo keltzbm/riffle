@@ -71,7 +71,7 @@ def test_without_a_catalog_commands_say_what_to_run(deck, monkeypatch, command):
 
 def test_an_offline_sync_writes_the_vault_from_the_catalog(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "tcg" / "mtg"
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     note = "---\ngame: mtg\nformat: modern\n---\n\n## Moxfield import\n\n```\n4 Lightning Bolt\n```\n"
     (mtg / "modern" / "burn.md").write_text(note)

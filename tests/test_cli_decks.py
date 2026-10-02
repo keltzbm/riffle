@@ -10,7 +10,7 @@ NOTE = "---\ngame: mtg\nformat: {fmt}\nstatus: {status}\n---\n\n## Moxfield impo
 def decks(tmp_path, monkeypatch, *notes: tuple[str, str, str, str, str]) -> list[str]:
     """`riffle decks` over a vault holding these notes: (folder, slug, format, status, list)."""
     monkeypatch.setenv("HOME", str(tmp_path))  # the default vault lives under it
-    mtg = tmp_path / "atelier" / "library" / "tcg" / "mtg"
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     for folder, slug, fmt, status, cards in notes:
         path = mtg / folder / f"{slug}.md"
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -278,10 +278,10 @@ gh codespace stop                                   # stops by itself when idle,
 
 | What | Where |
 |---|---|
-| Config | `~/.config/riffle/config.toml` — vault path |
+| Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`) |
 | Card data, collection, sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
 | Database | Postgres 18 in Docker (`compose.yaml`, volume `tcg_pgdata`); `database_url` in config, password in `~/.pgpass` |
-| Output | `tcg/mtg/_generated/` and `tcg/mtg/_log/` in the vault — nothing else |
+| Output | `mtg/_generated/` and `mtg/_log/` in the notes folder — nothing else |
 
 ## Invariants
 
