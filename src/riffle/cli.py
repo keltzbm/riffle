@@ -418,6 +418,7 @@ def mtgo_trickle() -> None:
     """One run of the trickle: at most one index page, then owed events (never asked for
     first, then retries, each newest first), as many as the pace allows. The job (riffle
     schedule trickle) runs this every 10 minutes."""
+    from riffle import trickle
     from riffle.ingest import mtgo
 
     with _tracked("riffle mtgo trickle") as tracker:  # report inside: a failed step exits 1 on leaving
@@ -425,8 +426,19 @@ def mtgo_trickle() -> None:
         if res.busy:
             _echo("another trickle run is in progress; nothing asked")
             return
+        if res.set_aside:
+            pages = "page" if len(res.set_aside) == 1 else "pages"
+            kept = trickle.set_aside_path(mtgo.SOURCE).name
+            _echo(
+                f"set aside {len(res.set_aside)} owed {pages} whose name holds no real date: "
+                f"{', '.join(res.set_aside)} (kept in {kept})"
+            )
         if res.carried:
             _echo(f"{res.carried} events from {mtgo.misses_path().name} moved to the owed list")
+        if res.undated:
+            names = "name" if len(res.undated) == 1 else "names"
+            listed = ", ".join(res.undated)
+            _echo(f"the {res.index} index lists {len(res.undated)} {names} with no real date: {listed}")
         if res.paused_until:
             _echo(f"paused until {times.shown(res.paused_until)}, after a throttle; nothing asked")
         elif not res.budget:
@@ -444,6 +456,8 @@ def mtgo_trickle() -> None:
             _echo(f"stopped early: {res.stopped}")
         for slug, err in res.broken:
             _echo(f"  ! {slug}: its lists wouldn't parse: {err}", err=True)
+        for slug, e in res.undue:
+            _echo(f"  ! {slug}: can't say when it's due: {_failure(e)}; skipped", err=True)
 
 
 @mtgo_app.command("status")
@@ -477,9 +491,13 @@ def mtgo_status() -> None:
         typer.echo(f"           older    {sum(n for _, n in months[12:])}")
     width = max((len(s) for s in retries[:10]), default=0)
     for n, slug in enumerate(retries[:10]):
-        o, at = st.owed[slug], st.owed[slug].retry_at()
+        o = st.owed[slug]
         asked = "once" if o.asks == 1 else f"{o.asks} times"
-        when = f"next try {times.shown(at)}" if at and at > st.at else "due now"
+        try:
+            at = o.retry_at()
+            when = f"next try {times.shown(at)}" if at and at > st.at else "due now"
+        except ValueError:
+            when = "its date isn't a day; the next run sets it aside"
         typer.echo(f"{'retries' if n == 0 else '':<11}{slug:<{width}}  {o.last}, asked {asked}, {when}")
     if len(retries) > 10:
         typer.echo(f"           and {len(retries) - 10} more")
@@ -487,6 +505,10 @@ def mtgo_status() -> None:
     if read:
         sweep = "the sweep is done" if st.sweep_done else "still going back"
         typer.echo(f"indexes    read back to {read[0]}, {sweep}")
+        undated = [s for m in st.months.values() for s in m.get("undated", ())]
+        if undated:
+            listed = ", ".join(undated)
+            typer.echo(f"           {len(undated)} listed with no real date, not taken as events: {listed}")
     else:
         typer.echo("indexes    none read yet")
     typer.echo(f"log        {trickle.RequestLog(mtgo.SOURCE).path}")
