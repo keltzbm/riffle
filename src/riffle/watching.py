@@ -25,7 +25,7 @@ from riffle.config import data_dir
 from riffle.progress import Step, Tracker, failure
 
 # each watched by `riffle watch <store>`
-STORES = ("cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots")
+STORES = ("cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots", "scryfall")
 
 
 @dataclass

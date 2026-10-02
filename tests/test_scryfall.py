@@ -2,14 +2,17 @@ import gzip
 import hashlib
 import json
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
-from riffle import net
+from riffle import locks, net, watching
+from riffle.cli import app
 from riffle.ingest import scryfall
 from riffle.ingest.scryfall import download_url
+from riffle.progress import SILENT
 
 
 def test_prefers_jsonl_link_after_the_2026_format_change():
@@ -107,10 +110,12 @@ class Scryfall:
     def __init__(self, monkeypatch, *entries, files=None, sets=SET_LIST):
         self.entries, self.files, self.sets = list(entries), dict(files or {}), sets
         self.downloaded: list[str] = []
+        self.asked: list[str] = []  # each api.scryfall.com request
         monkeypatch.setattr(net, "get", self.get)
         monkeypatch.setattr(net, "download", self.download)
 
     def get(self, url, accept):
+        self.asked.append(url)
         if url == scryfall.BULK_INDEX:
             return json.dumps({"object": "list", "data": self.entries}).encode()
         assert url == scryfall.SETS
@@ -219,6 +224,11 @@ def test_the_same_contents_are_not_kept_twice(monkeypatch, tracker, clock):
     last = lines(scryfall.checks_path())[-1]
     assert last["published"] == PM and last["same_as"] == "2026-09-24T090540Z.jsonl.gz" and "kept" not in last
     assert scryfall.is_current(pm)
+    assert watching.entries(scryfall.STORE)[-1] == watching.entries(scryfall.STORE)[-1] | {
+        "result": "new",  # a new publish all the same, for when it went online (riffle.watching.online)
+        "made": "2026-09-24T210523Z",
+        "same_as": "2026-09-24T090540Z.jsonl.gz",
+    }
     assert not list(scryfall.bulk_dir().glob("*.new"))
     scryfall.refresh(tracker=tracker)
     assert tracker.outcomes()["Scryfall default cards"] == ("ok", "current, the 2026-09-24 21:05 UTC file")
@@ -245,9 +255,17 @@ def test_a_missing_or_unstamped_download_is_never_current(monkeypatch, clock):
     assert not scryfall.is_current({"updated_at": "not a time"})
 
 
-@pytest.mark.parametrize("error", [net.FetchError("HTTP 503"), KeyError()], ids=["with a message", "without"])
-def test_a_failed_download_fails_only_its_own_step(monkeypatch, tracker, clock, error):
-    """A sync carries on with the files kept, and the other files are still asked for."""
+@pytest.mark.parametrize(
+    ("error", "why"),
+    [
+        (net.FetchError("HTTP 503"), "HTTP 503"),
+        (KeyError(), "KeyError (unexpected; details in {log}); asked again next run"),
+    ],
+    ids=["the source's", "a bug"],
+)
+def test_a_failed_download_fails_only_its_own_step(monkeypatch, tracker, clock, error, why):
+    """A sync carries on with the files kept, and the other files are still asked for. A bug's
+    traceback goes to errors.log, as in every watch."""
     default, art = entry("default_cards", AM), entry("art_tags", AM)
     served = Scryfall(monkeypatch, default, art, files={art["jsonl_download_uri"]: gz([{"label": "cat"}])})
     download = served.download
@@ -260,7 +278,7 @@ def test_a_failed_download_fails_only_its_own_step(monkeypatch, tracker, clock, 
     monkeypatch.setattr(net, "download", failing)
     scryfall.refresh(tracker=tracker)
     assert tracker.outcomes() == {
-        "Scryfall default cards": ("fail", str(error) or "KeyError"),
+        "Scryfall default cards": ("fail", why.format(log=scryfall.data_dir() / "errors.log")),
         "Scryfall art tags": ("ok", "kept the 2026-09-24 09:05 UTC file, 0.0 MB"),
     }
     assert scryfall.bulk_file() is None
@@ -297,8 +315,10 @@ def test_a_file_scryfall_doesnt_serve_fails_its_step(monkeypatch, tracker, clock
         (None, "Scryfall's bulk index is missing (https://api.scryfall.com/bulk-data)"),
         (b'{"object": "error"}', "Scryfall's bulk index isn't the expected JSON"),
         (b'{"data": [{"name": "no type"}]}', "Scryfall's bulk index isn't the expected JSON"),
+        (b"<html>maintenance</html>", "Scryfall's bulk index isn't the expected JSON"),
+        (b"[]", "Scryfall's bulk index isn't the expected JSON"),
     ],
-    ids=["missing", "no list", "an entry without a type"],
+    ids=["missing", "no list", "an entry without a type", "not JSON", "not an object"],
 )
 def test_an_unreadable_bulk_index_fails_and_keeps_what_is_kept(monkeypatch, tracker, answer, why):
     bulk = write_bulk(scryfall.data_dir())
@@ -315,12 +335,39 @@ def test_an_unreadable_bulk_index_fails_and_keeps_what_is_kept(monkeypatch, trac
 
 
 def test_a_bulk_index_that_doesnt_answer_fails_the_step(monkeypatch, tracker):
+    """No answer at all: the types after the first aren't asked."""
+    asked = []
+
     def get(url, accept):
+        asked.append(url)
         raise net.NoAnswer("no answer after 3 tries (timed out)")
 
     monkeypatch.setattr(net, "get", get)
+    scryfall.bulk_dir("rulings").mkdir(parents=True)
     scryfall.refresh(tracker=tracker)
-    assert tracker.outcomes() == {"Scryfall default cards": ("fail", "no answer after 3 tries (timed out)")}
+    assert tracker.outcomes() == {
+        "Scryfall default cards": ("fail", "Scryfall's bulk index: no answer after 3 tries (timed out)"),
+        "Scryfall rulings": ("fail", "not asked: Scryfall gave no answer"),
+    }
+    assert asked == [scryfall.BULK_INDEX]
+
+
+def test_a_bulk_index_that_fails_is_asked_once_a_run(monkeypatch, tracker):
+    """An error from the index fails the first type with it, and each type after says so."""
+    asked = []
+
+    def get(url, accept):
+        asked.append(url)
+        raise net.FetchError("HTTP 503")
+
+    monkeypatch.setattr(net, "get", get)
+    scryfall.bulk_dir("rulings").mkdir(parents=True)
+    scryfall.refresh(tracker=tracker)
+    assert tracker.outcomes() == {
+        "Scryfall default cards": ("fail", "Scryfall's bulk index: HTTP 503"),
+        "Scryfall rulings": ("fail", "not asked: Scryfall's bulk index failed"),
+    }
+    assert asked == [scryfall.BULK_INDEX]
 
 
 def test_an_index_without_default_cards_still_keeps_the_rest(monkeypatch, tracker, clock):
@@ -419,6 +466,157 @@ def test_blank_lines_in_a_bulk_file_are_skipped(tmp_path):
     path = tmp_path / "2026-09-24T090540Z.jsonl.gz"
     path.write_bytes(gzip.compress(b'{"id": "aaa"}\n\n{"id": "bbb"}\n'))
     assert [c["id"] for c in scryfall.cards(path)] == ["aaa", "bbb"]
+
+
+# ---- the watch --------------------------------------------------------------------------------
+
+
+def watched(clock, tracker=None):
+    """One run of `riffle watch scryfall` at clock.now."""
+    return scryfall.watch(tracker=tracker or SILENT, clock=lambda: clock.now)
+
+
+def published(kind, n, last, every=timedelta(hours=12)):
+    """n publishes of a type in the check log, every 12 hours to last; the last one's file kept."""
+    for i in range(n):
+        stamp = scryfall._stamp(last - every * (n - 1 - i))
+        _append(scryfall.checks_path(), {"type": kind, "stamp": stamp, "kept": f"{stamp}.jsonl.gz"})
+    scryfall.bulk_dir(kind).mkdir(parents=True, exist_ok=True)
+    (scryfall.bulk_dir(kind) / f"{stamp}.jsonl.gz").write_bytes(gz(CARDS))
+
+
+def _append(path, line):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(json.dumps(line) + "\n")
+
+
+def test_the_watch_asks_the_index_once_a_run_for_every_type_due(monkeypatch, tracker, clock):
+    default, rulings = entry("default_cards", AM), entry("rulings", AM)
+    files = {default["jsonl_download_uri"]: gz(CARDS), rulings["jsonl_download_uri"]: gz(RULES)}
+    served = Scryfall(monkeypatch, default, rulings, files=files)
+    learning = "asked at every firing until it has 14 gaps, 0 so far"
+    watched(clock, tracker)
+    assert tracker.outcomes() == {
+        "Scryfall default cards": ("ok", f"kept the 2026-09-24 09:05 UTC file, 0.0 MB; {learning}"),
+        "Scryfall rulings": ("ok", "kept the 2026-09-24 09:05 UTC file, 0.0 MB"),  # first seen in the index
+        "Scryfall set list": ("ok", "2 sets, kept"),
+    }
+    assert served.asked == [scryfall.BULK_INDEX, scryfall.SETS]
+    clock.now = datetime(2026, 9, 24, 13, 5, 6, tzinfo=UTC)
+    tracker.steps.clear()
+    watched(clock, tracker)
+    assert tracker.outcomes() == {
+        "Scryfall default cards": ("ok", f"current, the 2026-09-24 09:05 UTC file; {learning}"),
+        "Scryfall rulings": ("ok", f"current, the 2026-09-24 09:05 UTC file; {learning}"),
+    }
+    assert served.asked == [scryfall.BULK_INDEX, scryfall.SETS, scryfall.BULK_INDEX]
+    assert len(served.downloaded) == 2
+    found = watching.entries(scryfall.STORE)
+    assert [(e["list"], e["result"]) for e in found] == [
+        ("default_cards", "kept"),
+        ("rulings", "kept"),
+        ("default_cards", "known"),
+        ("rulings", "known"),
+    ]
+    assert found[0] == found[0] | {
+        "at": "2026-09-24T130006Z",
+        "made": "2026-09-24T090540Z",
+        "file": "scryfall/bulk/default_cards/2026-09-24T090540Z.jsonl.gz",
+        "size": len(gz(CARDS)),
+    }
+    assert found[2]["made"] == "2026-09-24T090540Z"
+
+
+def test_a_type_is_asked_when_its_next_publish_is_due(monkeypatch, tracker, clock):
+    """Once a type has 14 gaps, a firing asks for it only when it's due, and asks nothing else."""
+    last = datetime(2026, 9, 24, 9, 5, 40, tzinfo=UTC)
+    published("default_cards", 16, last)
+    scryfall.sets_path().write_bytes(SET_LIST)
+    watching.log(scryfall.STORE, {"at": "2026-09-24T130000Z", "list": "default_cards", "result": "known"})
+    served = Scryfall(monkeypatch, entry("default_cards", AM))
+    clock.now = datetime(2026, 9, 24, 13, 1, tzinfo=UTC)
+    watched(clock, tracker)
+    assert tracker.outcomes() == {
+        "Scryfall 1 file": (
+            "ok",
+            "none due; default cards next asked 2026-09-24 13:05 UTC;"
+            " its next file expected 2026-09-24 21:05 UTC",
+        )
+    }
+    assert served.asked == []
+    clock.now = datetime(2026, 9, 24, 13, 6, tzinfo=UTC)
+    tracker.steps.clear()
+    watched(clock, tracker)
+    assert tracker.outcomes() == {"Scryfall default cards": ("ok", "current, the 2026-09-24 09:05 UTC file")}
+    assert served.asked == [scryfall.BULK_INDEX]
+
+
+def test_a_sync_that_finds_the_watch_asking_asks_nothing(monkeypatch, tracker, clock):
+    default = entry("default_cards", AM)
+    served = Scryfall(monkeypatch, default, files={default["jsonl_download_uri"]: gz(CARDS)})
+    with locks.held(scryfall.data_dir() / "scryfall" / "watch.lock") as mine:
+        assert mine
+        scryfall.refresh(tracker=tracker)
+    assert tracker.outcomes() == {"Scryfall": ("ok", "another run is asking for its lists")}
+    assert not served.asked and not served.downloaded
+
+
+def test_a_type_the_index_stops_listing_warns_and_one_without_a_time_fails(monkeypatch, tracker, clock):
+    default, art = entry("default_cards", AM), entry("art_tags", None)
+    scryfall.bulk_dir("rulings").mkdir(parents=True)
+    Scryfall(monkeypatch, default, art, files={default["jsonl_download_uri"]: gz(CARDS)})
+    scryfall.refresh(tracker=tracker)
+    assert tracker.outcomes() == {
+        "Scryfall default cards": ("ok", "kept the 2026-09-24 09:05 UTC file, 0.0 MB"),
+        "Scryfall rulings": ("warn", "not in Scryfall's bulk index any more"),
+        "Scryfall art tags": ("fail", "Scryfall's art_tags entry has no publish time"),
+        "Scryfall set list": ("ok", "2 sets, kept"),
+    }
+    assert [(e["list"], e["result"]) for e in watching.entries(scryfall.STORE)] == [
+        ("default_cards", "kept"),
+        ("rulings", "missing"),
+        ("art_tags", "failed"),
+    ]
+
+
+def test_the_types_and_their_publishes_are_learned_from_the_store():
+    assert scryfall.kinds() == ["default_cards"]
+    scryfall.bulk_dir("unique_artwork").mkdir(parents=True)
+    rulings = scryfall.bulk_dir("rulings")
+    rulings.mkdir(parents=True)
+    for name in (
+        "2026-09-24T090037Z.jsonl.gz",
+        "2026-09-24T090037Z-2026-09-24T140000Z.jsonl.gz",  # a second copy of one publish
+        "2026-09-24T210000Z.jsonl.gz.bad",  # set aside, not kept
+    ):
+        (rulings / name).write_bytes(gz(RULES))
+    for line in (
+        {"type": "rulings", "stamp": "2026-09-24T210033Z", "same_as": "2026-09-24T090037Z.jsonl.gz"},
+        {"type": "rulings", "stamp": "2026-09-25T090031Z", "not_kept": True},
+        {"type": "rulings", "stamp": "not a time", "kept": "x.jsonl.gz"},
+        {"type": "art_tags", "stamp": "2026-09-24T090114Z", "kept": "2026-09-24T090114Z.jsonl.gz"},
+        {"type": 7},
+    ):
+        _append(scryfall.checks_path(), line)
+    assert scryfall.kinds() == ["default_cards", "art_tags", "rulings", "unique_artwork"]
+    assert scryfall.publishes("rulings") == [
+        datetime(2026, 9, 24, 9, 0, 37, tzinfo=UTC),
+        datetime(2026, 9, 24, 21, 0, 33, tzinfo=UTC),
+    ]
+    assert scryfall.publishes("unique_artwork") == []
+
+
+def test_riffle_watch_scryfall_keeps_a_new_publish_and_exits_1_on_a_failure(monkeypatch, tmp_path, clock):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    default = entry("default_cards", AM)
+    served = Scryfall(monkeypatch, default, files={default["jsonl_download_uri"]: gz(CARDS)})
+    result = CliRunner().invoke(app, ["watch", "scryfall"])
+    assert result.exit_code == 0, result.output
+    assert "Scryfall default cards" in result.output and "kept the 2026-09-24 09:05 UTC file" in result.output
+    served.entries = []
+    result = CliRunner().invoke(app, ["watch", "scryfall"])
+    assert result.exit_code == 1 and "no bulk file of type default_cards" in result.output
 
 
 # ---- the file kept before 0.4.0 ----------------------------------------------------------------
