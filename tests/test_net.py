@@ -228,6 +228,15 @@ def test_get_once_is_one_request_and_any_status_is_an_answer(server):
     assert server["requests"][0].get_header("Accept") == "text/html"
 
 
+def test_get_once_carries_a_retry_after(server):
+    asked = Answered(b"page", "https://example.test/asked")
+    asked.headers["Retry-After"] = "120"
+    server["answers"] = [asked, http_error(429, "Mon, 21 Sep 2026 14:00:00 GMT"), http_error(503)]
+    assert net.get_once("https://example.test/asked").retry_after == "120"
+    assert net.get_once("https://example.test/asked").retry_after == "Mon, 21 Sep 2026 14:00:00 GMT"
+    assert net.get_once("https://example.test/asked").retry_after is None
+
+
 def test_get_once_with_no_answer_is_a_fetch_error(server):
     server["answers"] = [TimeoutError("timed out")]
     with pytest.raises(net.FetchError, match="timed out"):

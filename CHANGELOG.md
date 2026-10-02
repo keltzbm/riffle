@@ -194,6 +194,29 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The MTGO trickle paces itself by how mtgo.com answers. mtgo.com builds a page when it's first asked for; a build
+  past about 30 seconds answers with a page without lists or a redirect to `/decklists`, and the page is ready for
+  the next request for under an hour (of 104 failed answers to 2026-10-02, 38 took 29.5 to 31.5 s; of 246 whole
+  ones, 1; of the failures that took 19.5 s or more and were asked again within the hour, 14 of 21 came back
+  whole). A retry waited an hour and went after every event never asked for, so 37 of the 42 failures at 30 s were
+  never asked again. Now a page that fails (empty, redirected, or no answer) is asked again at each of the next
+  two runs, ahead of everything else while it's under an hour old, and only after three failures in a row waits
+  the hour, doubling to a day (a week for one over 30 days old); a retry saved by an earlier build waits as it
+  would have. Only a 429, a 403 or a `Retry-After` pauses the job, for as long as mtgo.com asks, else 3, 6 or 12
+  hours as before; the pause says why (`paused until 08:00 MDT: mtgo.com answered 429`). Pages a run start at 1
+  and rise by one after each run whose every answer is whole, up to the ceiling of 5 requests in 15 minutes, and
+  fall only on a pause; before, 144 whole answers in a row raised a level and any stripped canary paused for
+  hours. An empty answer on a retry in its round is believed only when a page fetched whole in the last half hour,
+  not today's event, comes back whole again (the canary, found in the request log); a canary that fails ends the
+  run, and nothing counts against the page. An event is asked for only once it's as old as its kind's youngest
+  whole answer (`mtgo-ages.json`, learned from events fetched whole under 3 days old; on 2026-10-02 a league 5.4 h
+  after its date began, UTC, a challenge 9.6 h, a qualifier 30.7 h). While the sweep back through the indexes goes
+  on, the events never asked for are taken newest and oldest in turn. Each run's line reads
+  `2 new events (1 on a retry) · 0 missed · 13640 owed, 12900 due, 7 too new to ask · 3 pages a run`;
+  `riffle mtgo status` shows the learned ages, why a pause, and each month not read yet.
+- MTGO events are kept under `mtgo/<year>/<month>/`, written whole or not at all; the first trickle run moves
+  the events kept in `mtgo/` itself there (a rename each), and `riffle meta` reads only the months `--days`
+  reaches. `mtgo/raw/` stays as it is.
 - The notes folder is a setting of its own: `notes`, the folder in the vault that holds `mtg/`, relative to the
   vault (`"games/tcg"` by default), and `vault` names the Obsidian vault itself again. Before, Riffle joined
   `tcg/mtg` onto `vault`, so since the notes moved to `games/` on 2026-09-30 `vault` had to name
@@ -326,6 +349,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A month whose MTGO index listed no events is a failed try, retried like an event, not the month's answer
+  (unless the month is under 2 days old). Before, a 30-second answer from mtgo.com was saved as an empty month
+  and never read again, and three in a row ended the sweep at 2022-09: eight months were saved that way. The
+  first run forgets them (`forgot 8 months saved as listing no events: 2025-02, …; each is read again`). The
+  sweep now ends only on three months in a row each believed empty on three different days, and the next older
+  month is still asked once a week. An index answered from another page is a failed try too: before, a
+  redirect to `/decklists` would have been read as that month's list.
 - One list's unexpected error no longer ends its store's watch. The step fails naming the error, the
   traceback goes to `errors.log`, the lists after it are asked, and the ETags kept are saved however the run
   ends. Card Kingdom's and Mana Pool's watch is now the one every store uses, so its log entries say how long
