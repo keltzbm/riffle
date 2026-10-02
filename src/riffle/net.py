@@ -153,6 +153,7 @@ class Answer:
     status: int
     url: str  # where the answer came from: not the URL asked for after a redirect
     body: bytes
+    retry_after: str | None = None  # the Retry-After header, as sent
 
 
 def get_once(url: str, accept: str = "*/*", timeout: float = 60) -> Answer:
@@ -161,9 +162,9 @@ def get_once(url: str, accept: str = "*/*", timeout: float = 60) -> Answer:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return Answer(r.status, r.geturl(), r.read())
+            return Answer(r.status, r.geturl(), r.read(), r.headers.get("Retry-After"))
     except urllib.error.HTTPError as e:  # before URLError: HTTPError is a subclass
-        return Answer(e.code, e.geturl() or url, b"")
+        return Answer(e.code, e.geturl() or url, b"", e.headers.get("Retry-After") if e.headers else None)
     except (OSError, http.client.HTTPException) as e:
         raise FetchError(_why(e)) from e
 

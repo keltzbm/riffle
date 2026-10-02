@@ -4,12 +4,13 @@ Three parts, each kept in the data folder under the source's name:
 
 - the request log (<source>-requests.jsonl): every request, one line each, so how
   hard the source was asked, and how it answered, can always be read back;
-- the pace (<source>-pace.json): pages a run, at one of LEVELS. A throttle pauses
-  the source for hours and drops a level; SPEED_UP_AFTER whole answers in a row raise
-  one. Whatever the level, no WINDOW holds more than CEILING requests;
+- the pace (<source>-pace.json): pages a run, at one of LEVELS. A run whose every
+  answer was whole raises it one; only a pause, when the source asks for one, drops
+  it. Whatever the level, no WINDOW holds more than CEILING requests;
 - the owed list (<source>-owed.json): everything the source listed that isn't stored
   yet. Nothing leaves it except by being fetched or forgotten by hand. What was never
-  asked for is due at once; a retry waits, longer after each try.
+  asked for is due at once. A page that fails is asked again at each of the next runs
+  until ROUND tries in a row have failed; then it waits, longer after each round.
 
 MTGO is the first source (riffle.ingest.mtgo); a later event source reuses these with
 its own name. Every time here is UTC.
@@ -18,18 +19,20 @@ its own name. Every time here is UTC.
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from riffle.config import data_dir
 
-LEVELS = (1, 2, 3)  # pages a run
 CEILING = 5  # requests in any WINDOW, whoever makes them
+LEVELS = tuple(range(1, CEILING + 1))  # pages a run
 WINDOW = timedelta(minutes=15)
-PAUSES = (timedelta(hours=3), timedelta(hours=6), timedelta(hours=12))
+PAUSES = (timedelta(hours=3), timedelta(hours=6), timedelta(hours=12))  # when the source names no wait
 RECENT_THROTTLE = timedelta(hours=24)  # a throttle this soon after the last pauses longer
-SPEED_UP_AFTER = 144  # whole answers in a row before the pace rises a level
+ROUND = 3  # tries in a row: a page that fails is asked again at each of the next two runs
+READY = timedelta(hours=1)  # a page asked for stays ready for the next request about this long
 FRESH_DAYS = 30  # an owed item this young (by its own date) is retried within a day
-RETRY_FIRST = timedelta(hours=1)  # its first retry waits this, doubling with each try
+RETRY_FIRST = timedelta(hours=1)  # after its first round it waits this, doubling with each round
 RETRY_FRESH = timedelta(days=1)  # up to this
 RETRY_OLD = timedelta(days=7)  # an older one, weekly
 
@@ -116,11 +119,12 @@ def _request(line: str) -> Request | None:
 
 @dataclass
 class Pace:
-    level: int = LEVELS[-1]
+    level: int = LEVELS[0]
     paused_until: str | None = None
-    whole_streak: int = 0
     last_throttle: str | None = None
     pause_step: int = 0  # which of PAUSES the last throttle took
+    why: str = ""  # what the source said, for the last pause
+    oldest_first: bool = False  # the next run's first event never asked for is the oldest
 
     def paused(self, at: datetime) -> datetime | None:
         """When the pause ends, while there is one."""
@@ -133,28 +137,43 @@ class Pace:
         """Pages this run may fetch: the level's, cut to what the ceiling leaves."""
         return max(0, min(self.level, CEILING - log.count(at - WINDOW)))
 
-    def whole(self) -> bool:
-        """A whole answer. True when it raised the pace a level."""
-        self.whole_streak += 1
-        if self.whole_streak >= SPEED_UP_AFTER and self.level < LEVELS[-1]:
-            self.level += 1
-            self.whole_streak = 0
-            return True
-        return False
+    def all_whole(self) -> bool:
+        """A run whose every answer was whole: one more page a run, up to the ceiling. True
+        when it rose."""
+        if self.level >= LEVELS[-1]:
+            return False
+        self.level += 1
+        return True
 
-    def throttled(self, at: datetime) -> datetime:
-        """The source is throttling: pause, longer each time it happens again within
-        RECENT_THROTTLE, and come back a level slower. Returns when the pause ends."""
+    def throttled(self, at: datetime, why: str, wait: timedelta | None = None) -> datetime:
+        """The source asked for a pause: as long as it says, else one of PAUSES, longer
+        each time it happens again within RECENT_THROTTLE; and a page a run fewer.
+        Returns when the pause ends."""
         again = (
             self.last_throttle is not None
             and at - datetime.fromisoformat(self.last_throttle) <= RECENT_THROTTLE
         )
         self.pause_step = min(self.pause_step + 1, len(PAUSES) - 1) if again else 0
-        until = at + PAUSES[self.pause_step]
-        self.paused_until, self.last_throttle = stamp(until), stamp(at)
+        until = at + (PAUSES[self.pause_step] if wait is None else max(wait, timedelta(0)))
+        self.paused_until, self.last_throttle, self.why = stamp(until), stamp(at), why
         self.level = max(LEVELS[0], self.level - 1)
-        self.whole_streak = 0
         return until
+
+
+def wait_asked(retry_after: str | None, at: datetime) -> timedelta | None:
+    """How long a Retry-After header asks for: seconds, or an HTTP date. None when there's
+    none, or it's neither."""
+    if retry_after is None:
+        return None
+    try:
+        return timedelta(seconds=float(retry_after))
+    except (ValueError, OverflowError):
+        pass
+    try:
+        when = parsedate_to_datetime(retry_after)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return when - at if when.tzinfo is not None else None
 
 
 def pace_path(source: str) -> Path:
@@ -162,12 +181,13 @@ def pace_path(source: str) -> Path:
 
 
 def load_pace(source: str) -> Pace:
+    """The saved pace; what an older build saved that this one doesn't keep is left out."""
     saved = _read_json(pace_path(source))
     try:
-        pace = Pace(**saved)
+        pace = Pace(**{k: v for k, v in saved.items() if k in Pace.__dataclass_fields__})
+        pace.level = min(max(pace.level, LEVELS[0]), LEVELS[-1])
     except TypeError:
         return Pace()
-    pace.level = min(max(pace.level, LEVELS[0]), LEVELS[-1])
     return pace
 
 
@@ -182,34 +202,57 @@ def save_pace(source: str, pace: Pace) -> None:
 class Owed:
     day: str  # the item's own date, by the source's clock
     found: str  # UTC time it was first listed
-    tries: int = 0  # misses: answers that were really empty, 404s, redirects
+    tries: int = 0  # misses: answers believed empty, 404s, redirects
     last_try: str | None = None
     last: str = ""  # what the last try came to
-    asks: int = 0  # every try, whatever it came to: how long the next one waits
+    asks: int = 0  # every try, whatever it came to
+    again: int = 0  # retries left in its round, one at each of the next runs
+    rounds: int | None = None  # waits so far: how long the next one is
 
     def __post_init__(self) -> None:
         if self.last_try is not None:  # a list saved before asks were counted
             self.asks = max(self.asks, self.tries, 1)
+        if self.rounds is None:  # saved before rounds: every try waited, as a round does
+            self.rounds = self.asks
+
+    def warm(self) -> bool:
+        """In a round not over: its last try failed, and a page that was slow to build is
+        ready for the next request."""
+        return self.again > 0
+
+    def ready(self, at: datetime) -> bool:
+        """In a round not over, and asked within READY: the page its last try started
+        building is ready now. A round whose next run came late starts cold."""
+        return self.warm() and at - datetime.fromisoformat(str(self.last_try)) < READY
 
     def retry_at(self) -> datetime | None:
-        """When it's due again: RETRY_FIRST after the last try, doubling with each try up
-        to RETRY_FRESH while FRESH_DAYS young at that try, else RETRY_OLD. None when it was
-        never asked for, and so is due now."""
+        """When it's due again: at the next run while its round lasts; after the round,
+        RETRY_FIRST after the last try, doubling with each round up to RETRY_FRESH while
+        FRESH_DAYS young at that try, else RETRY_OLD. None when it was never asked for,
+        and so is due now."""
         if self.last_try is None:
             return None
         last = datetime.fromisoformat(self.last_try)
-        if (last.date() - date.fromisoformat(self.day)).days > FRESH_DAYS:
+        old = (last.date() - date.fromisoformat(self.day)).days > FRESH_DAYS
+        if self.warm():
+            return last
+        if old:
             return last + RETRY_OLD
-        return last + min(RETRY_FIRST * 2 ** min(self.asks - 1, 10), RETRY_FRESH)
+        return last + min(RETRY_FIRST * 2 ** min(max(self.rounds or 0, 1) - 1, 10), RETRY_FRESH)
 
     def due(self, at: datetime) -> bool:
         retry = self.retry_at()
         return retry is None or at >= retry
 
     def tried(self, at: datetime, outcome: str, miss: bool) -> None:
+        """A failed try: it starts a round, or goes on with the one it's in. A round that's
+        over adds a wait."""
         self.last_try, self.last = stamp(at), outcome
         self.tries += miss
         self.asks += 1
+        self.again = self.again - 1 if self.again else ROUND - 1
+        if not self.again:
+            self.rounds = (self.rounds or 0) + 1
 
 
 def owed_path(source: str) -> Path:

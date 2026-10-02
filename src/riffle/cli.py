@@ -401,9 +401,10 @@ def _watcher(store: str) -> Callable[..., object]:
 
 @mtgo_app.command("trickle")
 def mtgo_trickle() -> None:
-    """One run of the trickle: at most one index page, then owed events (never asked for
-    first, then retries, each newest first), as many as the pace allows. The job (riffle
-    schedule trickle) runs this every 10 minutes."""
+    """One run of the trickle: at most one index page, then owed events (a page that failed
+    at one of the last two runs first, then those never asked for, then the other
+    retries), as many as the pace allows. The job (riffle schedule trickle) runs this
+    every 10 minutes."""
     from riffle import trickle
     from riffle.ingest import mtgo
 
@@ -421,23 +422,37 @@ def mtgo_trickle() -> None:
             )
         if res.carried:
             _echo(f"{res.carried} events from {mtgo.misses_path().name} moved to the owed list")
+        if res.moved:
+            _echo(f"moved {res.moved} stored events into mtgo/<year>/<month>/")
+        if res.forgotten:
+            months = "month" if len(res.forgotten) == 1 else "months"
+            listed, n = ", ".join(res.forgotten), len(res.forgotten)
+            _echo(f"forgot {n} {months} saved as listing no events: {listed}; each is read again")
         if res.undated:
             names = "name" if len(res.undated) == 1 else "names"
             listed = ", ".join(res.undated)
             _echo(f"the {res.index} index lists {len(res.undated)} {names} with no real date: {listed}")
         if res.paused_until:
-            _echo(f"paused until {times.shown(res.paused_until)}, after a throttle; nothing asked")
+            _echo(
+                f"paused until {times.shown(res.paused_until)}: {res.why or 'mtgo.com asked'}; nothing asked"
+            )
         elif not res.budget:
             _echo("the last 15 minutes hold as many requests as allowed; nothing asked")
-        _echo(f"{len(res.fetched)} new events · {res.owed} owed, {res.due} due · {res.level} pages a run")
+        retried = f" ({res.retried} on a retry)" if res.retried else ""
+        young = f", {res.waiting} too new to ask" if res.waiting else ""
+        _echo(
+            f"{len(res.fetched)} new events{retried} · {len(res.missed)} missed · "
+            f"{res.owed} owed, {res.due} due{young} · {res.level} pages a run"
+        )
         if res.pending:
             _echo(f"{len(res.pending)} not published yet: {', '.join(res.pending)}")
-        for slug, outcome in res.missed:
-            _echo(f"  {slug}: {outcome}, still owed")
+        now = trickle.now()
+        for slug, outcome, when in res.missed:
+            _echo(f"  {slug}: {outcome}, still owed; {mtgo.next_try(now, when)}")
         if res.throttled and res.resume:
-            _echo(f"throttled: {res.throttled}; paused until {times.shown(res.resume)}")
+            _echo(f"paused until {times.shown(res.resume)}: {res.throttled}")
         if res.raised:
-            _echo(f"answers came back whole: up to {res.level} pages a run")
+            _echo(f"every answer whole: up to {res.level} pages a run")
         if res.stopped:
             _echo(f"stopped early: {res.stopped}")
         for slug, err in res.broken:
@@ -457,9 +472,14 @@ def mtgo_status() -> None:
     st = mtgo.status()
     pace = f"pace       {st.pace.level} pages a run"
     if st.pace.level < trickle.LEVELS[-1]:
-        pace += f", up a level after {trickle.SPEED_UP_AFTER - st.pace.whole_streak} more whole answers"
+        pace += ", one more after each run whose every answer is whole"
+    else:
+        pace += ", as many as the ceiling allows"
     typer.echo(pace)
-    typer.echo(f"paused     until {times.shown(st.paused_until)}" if st.paused_until else "paused     no")
+    if st.paused_until:
+        typer.echo(f"paused     until {times.shown(st.paused_until)}: {st.pace.why or 'mtgo.com asked'}")
+    else:
+        typer.echo("paused     no")
     typer.echo(f"requests   {len(st.window)} in the last 15 minutes (at most {trickle.CEILING})")
     verdicts = ", ".join(f"{n} {v}" for v, n in Counter(r.verdict for r in st.day).most_common())
     typer.echo(f"           {len(st.day)} in the last 24 hours{': ' + verdicts if verdicts else ''}")
@@ -470,6 +490,9 @@ def mtgo_status() -> None:
     )
     never = len(st.owed) - len(retries)
     typer.echo(f"owed       {len(st.owed)} events: {never} never asked, {len(retries)} to retry")
+    if st.ages:
+        ages = ", ".join(f"{kind} {hours:.1f} h" for kind, hours in sorted(st.ages.items()))
+        typer.echo(f"too new    {st.waiting}, each kind asked from the age it first came back whole: {ages}")
     months = sorted(Counter(o.day[:7] for o in st.owed.values()).items(), reverse=True)
     for month, n in months[:12]:
         typer.echo(f"           {month}  {n}")
@@ -491,6 +514,10 @@ def mtgo_status() -> None:
     if read:
         sweep = "the sweep is done" if st.sweep_done else "still going back"
         typer.echo(f"indexes    read back to {read[0]}, {sweep}")
+        for key, miss, days, when in mtgo.unread_months(st.months, st.at):
+            asked = "once" if miss.asks == 1 else f"{miss.asks} times"
+            empty = f", believed empty on {days} {'day' if days == 1 else 'days'}" if days else ""
+            typer.echo(f"           {key}  not read yet: {miss.last}, asked {asked}{empty}; {when}")
         undated = [s for m in st.months.values() for s in m.get("undated", ())]
         if undated:
             listed = ", ".join(undated)
@@ -571,7 +598,7 @@ def meta_show(
 
     from riffle.ingest import mtgo
 
-    path = mtgo.store_dir() / f"{event}.json"
+    path = mtgo.stored_path(event)
     if not path.exists():
         raise typer.BadParameter(f"no stored event {event} — see what's still owed: riffle mtgo status")
     ev = mtgo.Event.from_dict(json.loads(path.read_text(encoding="utf-8")))

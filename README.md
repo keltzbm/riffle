@@ -73,21 +73,24 @@ riffle meta show <event-slug> <player> -o ~/Downloads/list.txt
 riffle own ~/Downloads/list.txt                  # what that list costs you
 ```
 
-mtgo.com throttles by request rate, answering with stripped pages rather than
-errors, so Riffle never asks it for much at once. The trickle job runs
-`riffle mtgo trickle` every 10 minutes: 1 to 3 pages a run, never more than 5
-in any 15 minutes. It reads this month's index hourly and sweeps back through
-every earlier month, and keeps every event an index lists on an owed list until
-it's stored. Events never asked for come first, newest first; one that missed is
-retried with the pages left over, an hour later, then after waits that double
-up to a day, and weekly once it's a month old. An empty page is checked against a stored event first; if that
-comes back stripped too, the job pauses for hours and comes back slower, then
-speeds up again while pages come back whole. Nothing is given up;
-`riffle mtgo forget <slug>` drops an event by hand.
+mtgo.com builds a page when it's first asked for, and a build that takes more
+than about 30 seconds answers with a page without lists, or a redirect, though
+the page is ready for the next request. The trickle job runs `riffle mtgo
+trickle` every 10 minutes, never more than 5 requests in any 15 minutes: one
+page a run to start, one more after each run whose every answer was whole. It
+reads this month's index hourly and sweeps back through every earlier month,
+and keeps every event an index lists on an owed list until it's stored. A page
+that fails is asked again at each of the next two runs, first in line; after
+three failures it waits an hour, then waits that double up to a day, and weekly
+once it's a month old. Events never asked for come next (newest and oldest in
+turn while the sweep goes on), each once it's as old as the youngest of its kind
+that ever came back whole; retries after that get the pages left over. The job
+pauses only when mtgo.com asks it to (a 429, a 403 or a `Retry-After`). Nothing
+is given up; `riffle mtgo forget <slug>` drops an event by hand.
 
-Events are stored once each under `~/.local/share/riffle/mtgo/`, with each
-page's whole data object gzipped in `mtgo/raw/`. Every request is logged in
-`~/.local/share/riffle/mtgo-requests.jsonl`.
+Events are stored once each under `~/.local/share/riffle/mtgo/<year>/<month>/`,
+with each page's whole data object gzipped in `mtgo/raw/`. Every request is
+logged in `~/.local/share/riffle/mtgo-requests.jsonl`.
 
 A deck is named by its note's slug, or by a path to any `.md` or `.txt` list.
 
