@@ -292,11 +292,29 @@ def test_a_missing_vault_is_reported_and_nothing_is_built_there(tmp_path, monkey
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    notes = tmp_path / "atelier" / "library" / "games" / "tcg"
     result = CliRunner().invoke(app, ["sync", "--offline"])
     assert result.exit_code == 1
-    assert f"vault: no deck folder at {mtg}; set vault and notes in {tmp_path / 'config'}" in result.output
+    assert f"vault: no notes folder at {notes}; set vault and notes in {tmp_path / 'config'}" in result.output
     assert not (tmp_path / "atelier").exists()
+    assert "0 decks" not in result.output
+
+
+def test_a_notes_folder_without_mtg_syncs_without_decks_and_writes_nothing_there(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
+    notes = tmp_path / "atelier" / "library" / "games" / "tcg"
+    (notes / "one-piece").mkdir(parents=True)
+    (notes / "one-piece" / "red-zoro.md").write_text("---\ngame: one-piece\n---\n")
+    result = CliRunner().invoke(app, ["sync", "--offline"])
+    assert result.exit_code == 0, result.output
+    assert f"vault: no MTG decks in {notes}; Riffle reads MTG decks only for now" in result.output
+    assert "no deck folder" not in result.output and "set vault and notes" not in result.output
+    assert sorted(p.relative_to(notes).as_posix() for p in notes.rglob("*")) == [
+        "one-piece",
+        "one-piece/red-zoro.md",
+    ]
     assert "0 decks" not in result.output
 
 

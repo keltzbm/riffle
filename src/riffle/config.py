@@ -4,9 +4,11 @@
     notes = "games/tcg"
     database_url = "postgresql+psycopg://tcg@localhost:5432/tcg"
 
-The vault is the Obsidian vault itself; notes is the folder in it that holds
-mtg/, relative to the vault. A config that names no notes folder was written
-when vault named the folder holding tcg/, and is read that way.
+The vault is the Obsidian vault itself; notes is the folder in it that holds a
+folder per game (mtg/, one-piece/, fab/, …), relative to the vault. Riffle reads
+decks from mtg/ only for now, and a notes folder without one syncs no decks. A
+config that names no notes folder was written when vault named the folder
+holding tcg/, and is read that way.
 
 The database URL never holds a password: libpq reads it from ~/.pgpass.
 
@@ -45,7 +47,8 @@ DEFAULT_DATABASE_URL = "postgresql+psycopg://tcg@localhost:5432/tcg"
 DEFAULT_CONFIG = f"""\
 # riffle configuration
 vault = "~/atelier/library"
-# the folder in the vault that holds mtg/
+# the folder in the vault that holds a folder per game (mtg/, one-piece/, …);
+# Riffle reads decks from mtg/ only for now
 notes = "games/tcg"
 # Postgres; the password comes from ~/.pgpass, never from this file
 database_url = "{DEFAULT_DATABASE_URL}"
@@ -55,7 +58,7 @@ database_url = "{DEFAULT_DATABASE_URL}"
 @dataclass
 class Config:
     vault: Path
-    notes: Path  # the folder holding mtg/, resolved against the vault
+    notes: Path  # the folder holding a folder per game, resolved against the vault
     database_url: str = DEFAULT_DATABASE_URL
     obsolete: dict[str, str] | None = None  # key -> why it's ignored
     old_notes: str | None = None  # what a config without a notes line is read as, and the change it needs
