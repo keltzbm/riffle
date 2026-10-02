@@ -4,12 +4,17 @@ list, and each day's prices.
 Scryfall publishes its bulk files about twice a day (09:05 and 21:05 UTC on 2026-09-28):
 default cards (each card in English, or in the one language it was printed in), all cards
 (every language), oracle cards, unique artwork, rulings, and Tagger's oracle and art tags.
-Each refresh asks the bulk index, one API request, and downloads every file whose publish
-time it hasn't seen, from *.scryfall.io, which has no rate limit. A download is read whole,
-then kept as served in
+Each file is up until the next replaces it, so a publish not fetched in time is gone. The
+watch (`riffle watch scryfall`) asks for each type when riffle.cadence says its next publish
+is due, learned from its own publish times; the sync asks for every type (refresh). A run
+asks the bulk index once, one API request, and downloads every file whose publish time it
+hasn't seen, from *.scryfall.io, which has no rate limit. A download is read whole, then kept
+as served in
 
     <data_dir>/scryfall/bulk/<type>/<published>.jsonl.gz   <published> its updated_at, in UTC
     <data_dir>/scryfall/bulk/checks.jsonl                  every publish seen, kept or not
+    <data_dir>/scryfall/watch.jsonl                        every check of each type
+                                                           (riffle.watching)
 
 unless its contents, uncompressed, are byte for byte those of the newest file kept of its
 type: then checks.jsonl records the publish, same_as that file, and nothing else is written.
@@ -48,22 +53,24 @@ import json
 import shutil
 import time
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from riffle import net, runs, times
+from riffle import net, runs, times, watching
 from riffle.config import data_dir
-from riffle.progress import SILENT, Step, Tracker
+from riffle.progress import SILENT, Step, Tracker, contained, failure
 
 BULK_INDEX = "https://api.scryfall.com/bulk-data"
 SETS = "https://api.scryfall.com/sets"
 API_PAUSE = 0.1  # seconds between api.scryfall.com requests, as Scryfall asks: between set list pages
 DEFAULT = "default_cards"  # the bulk file the catalog and prices are read from
+STORE = "scryfall"  # its watch's lock and log (riffle.watching)
 
 
 BAD = ".bad"  # a file set aside as unreadable; kept, never read
 STAMP = "%Y-%m-%dT%H%M%SZ"
+STAMPED = len("2026-09-28T090539Z")  # how much of a kept file's name is its stamp
 
 
 class CorruptBulk(ValueError):
@@ -223,17 +230,24 @@ def _published(stamp: object) -> datetime | None:
 
 def _from_stamp(name: str) -> datetime:
     """The time a kept file's name starts with (2026-09-28T090539Z...)."""
-    return datetime.strptime(name[: len("2026-09-28T090539Z")], STAMP).replace(tzinfo=UTC)
+    return datetime.strptime(name[:STAMPED], STAMP).replace(tzinfo=UTC)
 
 
 def bulk_index() -> list[dict]:
-    """Every bulk file Scryfall lists, as the bulk index gives them."""
-    body = net.get(BULK_INDEX, accept="application/json")
+    """Every bulk file Scryfall lists, as the bulk index gives them. An index that can't be had
+    or read raises net.FetchError naming it (net.NoAnswer when Scryfall gave no answer)."""
+    try:
+        body = net.get(BULK_INDEX, accept="application/json")
+    except net.FetchError as e:
+        raise type(e)(f"Scryfall's bulk index: {e}") from e
     if body is None:
-        raise RuntimeError(f"Scryfall's bulk index is missing ({BULK_INDEX})")
-    entries = json.loads(body).get("data")
+        raise net.FetchError(f"Scryfall's bulk index is missing ({BULK_INDEX})")
+    try:
+        entries = json.loads(body).get("data")
+    except (ValueError, AttributeError):
+        entries = None
     if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get("type") for e in entries):
-        raise RuntimeError("Scryfall's bulk index isn't the expected JSON")
+        raise net.FetchError("Scryfall's bulk index isn't the expected JSON")
     return entries
 
 
@@ -272,7 +286,7 @@ def download_url(info: dict) -> tuple[str, str]:
         return info["jsonl_download_uri"], ".jsonl.gz"
     if info.get("download_uri"):
         return info["download_uri"], ".json"
-    raise RuntimeError(f"Scryfall bulk entry has no download link: {sorted(info)}")
+    raise net.FetchError(f"Scryfall bulk entry has no download link: {sorted(info)}")
 
 
 def _kept_digest(kind: str, path: Path) -> str:
@@ -290,13 +304,13 @@ def download(info: dict, progress: net.Progress | None = None) -> tuple[Path, bo
     kind = str(info.get("type") or DEFAULT)
     published = _published(info.get("updated_at"))
     if published is None:
-        raise RuntimeError(f"Scryfall's {kind} entry has no publish time")
+        raise net.FetchError(f"Scryfall's {kind} entry has no publish time")
     url, suffix = download_url(info)
     fetched = times.now()
     name = f"{_stamp(published)}{suffix}"
     fresh = bulk_dir(kind) / f"{name}.new"
     if net.download(url, fresh, progress=progress) is None:
-        raise RuntimeError(f"Scryfall's {kind} file is missing ({url})")
+        raise net.FetchError(f"Scryfall's {kind} file is missing ({url})")
     with fresh.open("rb") as f:
         gz = f.read(2) == b"\x1f\x8b"
     try:
@@ -314,10 +328,10 @@ def download(info: dict, progress: net.Progress | None = None) -> tuple[Path, bo
             fresh.unlink()
             _append(checks_path(), line | {"not_kept": True, "aside": earlier[0].name})
             said = f"a copy of this publish is set aside already as {earlier[0].name}"
-            raise RuntimeError(f"the {kind} file {why}; {said}, asked again next run") from e
+            raise net.FetchError(f"the {kind} file {why}; {said}, asked again next run") from e
         aside = fresh.with_name(f"{_stamp(published)}-{_stamp(fetched)}{suffix}{BAD}")
         fresh.replace(aside)
-        raise RuntimeError(f"the {kind} file {why}; set aside as {aside.name}, asked again next run") from e
+        raise net.FetchError(f"the {kind} file {why}; set aside as {aside.name}, asked again next run") from e
     line = {
         "type": kind,
         "published": info.get("updated_at"),
@@ -361,52 +375,125 @@ def _when(path: Path) -> str:
     return f"the {times.shown(_from_stamp(path.name))} file"
 
 
-def _keep_one(info: dict, step: Step, force: bool = False) -> bool:
-    """One bulk file on its own step. Whether a file was downloaded."""
-    kind = info["type"]
-    published = _published(info.get("updated_at"))
-    if not force and published is not None and _seen(kind, published):
-        step.ok(f"current, the {times.shown(published)} file")
-        return False
-    path, kept = download(info, progress=step.update)
-    size = f"{path.stat().st_size / 1e6:,.1f} MB"
-    step.ok(f"kept {_when(path)}, {size}" if kept else f"the same as {_when(path)}; not kept twice")
-    return True
-
-
 def label(kind: str) -> str:
     return f"Scryfall {kind.replace('_', ' ')}"
 
 
+def kinds() -> list[str]:
+    """The bulk types watched, as the store has them: default cards first, then every other
+    type kept or checked so far. A type the bulk index lists beyond these is kept the run it's
+    first seen (watch)."""
+    root = data_dir() / "scryfall" / "bulk"
+    found = {path.name for path in root.iterdir() if path.is_dir()} if root.is_dir() else set()
+    found |= {line["type"] for line in _lines(checks_path()) if isinstance(line.get("type"), str)}
+    return [DEFAULT, *sorted(found - {DEFAULT})]
+
+
+def publishes(kind: str) -> list[datetime]:
+    """When each publish of a type was made, oldest first: every file kept, and every publish
+    the check log has kept or found the same as one kept. One publish counts once, however
+    many copies of it are kept: the gaps its watch learns from (riffle.cadence)."""
+    found = {made for path in kept_files(kind) if (made := runs.parse(path.name[:STAMPED])) is not None}
+    for line in _lines(checks_path()):
+        if line.get("type") == kind and (line.get("kept") or line.get("same_as")):
+            made = runs.parse(str(line.get("stamp", "")))
+            if made is not None:
+                found.add(made)
+    return sorted(found)
+
+
+class _Index:
+    """The bulk index, asked once a run, by the first type due; each type after reads that
+    answer. One that failed isn't asked again that run: each type after it fails saying so."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, dict] | None = None  # by type, in the index's order
+        self.failed = False
+
+    def __call__(self) -> dict[str, dict]:
+        if self.failed:
+            raise net.FetchError("not asked: Scryfall's bulk index failed")
+        if self.entries is None:
+            try:
+                _adopt()
+                self.entries = {str(entry["type"]): entry for entry in bulk_index()}
+            except Exception:
+                self.failed = True
+                raise
+        return self.entries
+
+
+def _ask(kind: str, index: _Index, force: bool, step: Step) -> dict:
+    """One bulk type, from the run's index: a publish not seen downloaded and kept (download),
+    one seen left alone, and step ended saying which; force downloads it anyway. Default cards
+    missing from the index fails; another type warns, since there's nothing to fetch. The
+    check's log entry (riffle.watching)."""
+    info = index().get(kind)
+    if info is None:
+        if kind == DEFAULT:
+            raise net.FetchError(f"no bulk file of type {DEFAULT}")
+        step.warn("not in Scryfall's bulk index any more")
+        return {"result": "missing"}
+    published = _published(info.get("updated_at"))
+    if published is None:
+        raise net.FetchError(f"Scryfall's {kind} entry has no publish time")
+    made = _stamp(published)
+    if not force and _seen(kind, published):
+        step.ok(f"current, the {times.shown(published)} file")
+        return {"result": "known", "made": made}
+    path, kept = download(info, progress=step.update)
+    if not kept:
+        step.ok(f"the same as {_when(path)}; not kept twice")
+        return {"result": "new", "made": made, "same_as": path.name}
+    size = path.stat().st_size
+    step.ok(f"kept {_when(path)}, {size / 1e6:,.1f} MB")
+    return {"result": "kept", "made": made, "file": path.relative_to(data_dir()).as_posix(), "size": size}
+
+
+def watch(
+    tracker: Tracker = SILENT,
+    clock: Callable[[], datetime] = times.now,
+    always: bool = False,
+    force: bool = False,
+) -> watching.Watch:
+    """Ask for each bulk type when riffle.cadence says its next publish is due, or always (the
+    sync), and keep each publish not seen (riffle.watching.many), the bulk index asked once a
+    run. Then, from the same index, a type no list knows yet is kept, and after a new
+    default-cards file (or with no set list yet) the set list is fetched. force downloads
+    default cards again."""
+    index = _Index()
+    answered: dict[str, str] = {}  # each type asked without failing: its result
+
+    def listed(kind: str) -> watching.Listed:
+        def ask(tags: dict[str, str], now: datetime, step: Step) -> dict:
+            entry = _ask(kind, index, force and kind == DEFAULT, step)
+            answered[kind] = entry["result"]
+            return entry
+
+        return watching.Listed(
+            kind, label(kind), bulk_dir(kind), ask, noun="file", history=lambda: publishes(kind)
+        )
+
+    known = kinds()
+
+    def then(run: watching.Pass) -> None:
+        for kind in index.entries or {}:
+            if kind not in known:
+                run.ask(listed(kind))
+        default = answered.get(DEFAULT)
+        if default in watching.FOUND or (default is not None and not sets_path().exists()):
+            refresh_sets(run.tracker)
+
+    return watching.many(STORE, "Scryfall", [listed(kind) for kind in known], tracker, clock, always, then)
+
+
 def refresh(force: bool = False, tracker: Tracker = SILENT) -> None:
-    """Download each bulk file Scryfall lists whose publish time hasn't been seen, default
-    cards first, then the set list after a new default-cards file; force downloads default
-    cards again. A failure is reported on its own step, never raised: the files kept stay,
-    and a sync carries on with them."""
-    step = tracker.step(label(DEFAULT), unit="bytes")
-    try:
-        _adopt()
-        entries = bulk_index()
-    except Exception as e:
-        step.fail(str(e) or type(e).__name__)
-        return
-    default = next((e for e in entries if e["type"] == DEFAULT), None)
-    others = [e for e in entries if e["type"] != DEFAULT]
-    try:
-        if default is None:
-            raise RuntimeError(f"no bulk file of type {DEFAULT}")
-        new = _keep_one(default, step, force=force)
-    except Exception as e:
-        step.fail(str(e) or type(e).__name__)
-    else:
-        if new or not sets_path().exists():
-            refresh_sets(tracker)
-    for entry in others:
-        other = tracker.step(label(entry["type"]), unit="bytes")
-        try:
-            _keep_one(entry, other)
-        except Exception as e:
-            other.fail(str(e) or type(e).__name__)
+    """The sync's Scryfall step: every bulk type asked (watch, always), under the store's watch
+    lock, so a sync that finds the watch asking leaves it to the watch and carries on with the
+    files kept. force downloads default cards again. A failure is reported on its own step,
+    never raised."""
+    with contained(tracker, label(DEFAULT), failure) as scope:
+        watch(tracker=scope, always=True, force=force)
 
 
 def refresh_sets(tracker: Tracker = SILENT) -> None:

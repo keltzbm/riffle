@@ -7,6 +7,18 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- `riffle watch scryfall`: Scryfall's bulk files under a watch job of their own (`riffle schedule watch` installs
+  it with the other six), so a publish is kept within minutes, not at the next sync. Each file is up only until
+  the next replaces it, about 12 hours, and only the sync asked for them: a sync that didn't run, or failed at
+  Scryfall, lost that publish. Each bulk type is a list asked when `riffle.cadence` says its next is due, learned
+  from its own publish times (every firing until it has 14 gaps); the types are the ones kept so far, and one
+  the index lists beyond them is kept the run it's first seen. A run asks the bulk index once, for every type
+  due; each check goes in `scryfall/watch.jsonl`, and the files are kept as before. The sync's Scryfall step
+  runs the same watch for every type, under the store's lock: one that finds the watch asking says `another
+  run is asking for its lists` and carries on with the files kept. An index that fails fails the first type
+  with its error (`Scryfall's bulk index: HTTP 503`) and each type after it (`not asked: Scryfall's bulk index
+  failed`); a type the index no longer lists warns instead of failing; an unexpected error's traceback goes to
+  `errors.log`, as in every watch. `riffle check` judges each type's lateness from its publishes.
 - Every publish of each source's catalog is kept, by the run rule, each file a list of its own asked when its own
   next is due (`riffle.cadence`) with the ETag of the last one kept. MTGJSON: every file of each build, in
   `mtgjson/lists/<list>/` under its `Last-Modified` (AllPrintings, AllIdentifiers, TcgplayerSkus, AtomicCards,

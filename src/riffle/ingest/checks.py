@@ -25,7 +25,8 @@ header of a file Riffle gzipped, the file's own time otherwise). `riffle check` 
                               no set under it from a later refresh (by its Last-Modified); each game
                               kept in its runs as its kept.json says. Games not finished are noted:
                               tcgcsv's day passed, or it's being fetched. And its lateness.
-    Scryfall                  no day's prices kept before that day began (UTC)
+    Scryfall                  no day's prices kept before that day began (UTC); each bulk type's
+                              lateness, from its publishes kept or found the same as one kept
 """
 
 import gzip
@@ -437,7 +438,7 @@ def tcgcsv_days() -> Report:
 
 
 def scryfall_days() -> Report:
-    """No day's prices kept before that day began (UTC)."""
+    """No day's prices kept before that day began (UTC); whether each bulk type is late."""
     rep = Report("Scryfall", "day")
     for path in sorted(scryfall.prices_dir().glob("*.jsonl.gz")):
         rep.files += 1
@@ -449,6 +450,8 @@ def scryfall_days() -> Report:
             rep.problems.append(f"{_rel(path)}: no time it was kept")
         elif got.date() < day:
             rep.problems.append(f"{_rel(path)}: kept {times.shown(got)}, before its day began")
+    published = {kind.replace("_", " "): scryfall.publishes(kind) for kind in scryfall.kinds()}
+    _lateness(rep, {kind: made for kind, made in published.items() if made}, "file")
     return rep
 
 

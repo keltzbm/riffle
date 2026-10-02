@@ -272,7 +272,7 @@ def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
 
 def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp_path, monkeypatch):
     run = _cli(tmp_path, monkeypatch, FakeLaunchctl(print_out=PRINT))
-    stores = ["cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots"]
+    stores = ["cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots", "scryfall"]
     labels = [f"com.keltzbm.riffle-watch-{store}" for store in stores]
     shown = run("schedule", "watch")
     assert [shown.index(label) for label in labels] == sorted(shown.index(label) for label in labels)
@@ -285,6 +285,7 @@ def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp
         < every.index("riffle-watch-cardkingdom")
         < every.index("riffle-watch-tcgcsv")
         < every.index("riffle-watch-goatbots")
+        < every.index("riffle-watch-scryfall")
     )
     assert run("schedule", "watch", "--remove") == "".join(f"removed {label}\n" for label in labels)
     assert "no cardkingdom watch job — start one with: riffle schedule watch" in run("schedule")

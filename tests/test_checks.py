@@ -284,6 +284,33 @@ def test_scryfall_days(data):
     ]
 
 
+def scryfall_publishes(kind: str, n: int, last: datetime, how: str = "kept") -> None:
+    """n publishes of a bulk type in Scryfall's check log, every 12 hours to last."""
+    log = data_dir_of() / "scryfall" / "bulk" / "checks.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as f:
+        for i in range(n):
+            stamp = runs.name(last - timedelta(hours=12) * (n - 1 - i))
+            f.write(json.dumps({"type": kind, "stamp": stamp, how: f"{stamp}.jsonl.gz"}) + "\n")
+
+
+def test_scryfall_s_bulk_types_are_judged_for_lateness(data, monkeypatch):
+    """By their publishes, a publish found the same as one kept too (rulings, most days)."""
+    last = datetime(2026, 9, 27, 21, 5, tzinfo=UTC)
+    scryfall_publishes("default_cards", 16, last)
+    scryfall_publishes("rulings", 3, last, how="same_as")
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
+    assert by_source()["Scryfall"].notes == [
+        "1 file: lateness judged from 14 gaps, 2 so far",
+        "1 file judged for lateness",
+    ]
+    monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=16))
+    assert by_source()["Scryfall"].notes[0] == (
+        "default cards: late: the last was made 2026-09-27 21:05 UTC, 16h 00m ago, "
+        "past 1.25 × its longest gap in 30 days (15h 00m)"
+    )
+
+
 def test_riffle_check_says_all_right(data):
     gz(data / "cardkingdom" / "daily" / "2026-09-27" / "singles.json.gz", ck())
     result = CliRunner().invoke(app, ["check"])

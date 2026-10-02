@@ -370,9 +370,10 @@ def watch_cmd(
     store: str = typer.Argument(..., help="The store whose lists to keep", autocompletion=_complete_store),
 ) -> None:
     """Keep every new list a store publishes: each of its lists asked for once, a new one kept
-    whole or as a difference against its run's first. The jobs (riffle schedule watch) run
-    this every 5 minutes; tcgcsv, Cardmarket, MTGJSON and GoatBots ask only when their next
-    list is due, as learned from their own lists and checks."""
+    whole or as a difference against its run's first (Scryfall's files as served). The jobs
+    (riffle schedule watch) run this every 5 minutes; tcgcsv, Cardmarket, MTGJSON, GoatBots
+    and Scryfall ask only when their next list is due, as learned from their own lists and
+    checks."""
     from riffle import watching
 
     if store not in watching.STORES:
@@ -384,7 +385,7 @@ def watch_cmd(
 
 def _watcher(store: str) -> Callable[..., object]:
     """A store's watch, one of watching.STORES."""
-    from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, tcgcsv
+    from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 
     watchers: dict[str, Callable[..., object]] = {
         "cardkingdom": partial(pricelists.watch, pricelists.CARD_KINGDOM),
@@ -393,6 +394,7 @@ def _watcher(store: str) -> Callable[..., object]:
         "tcgcsv": tcgcsv.watch,
         "mtgjson": mtgjson.watch,
         "goatbots": goatbots.watch,
+        "scryfall": scryfall.watch,
     }
     return watchers[store]
 
