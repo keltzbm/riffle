@@ -14,7 +14,7 @@ import typer
 from riffle import config, disk, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
-from riffle.progress import Tracker, Watched, contained, elapsed, open_tracker
+from riffle.progress import Tracker, Watched, contained, elapsed, failure, open_tracker
 from riffle.store import Catalog
 
 app = typer.Typer(help="Collection, decks, prices, and the Obsidian vault.", no_args_is_help=True)
@@ -183,25 +183,6 @@ def _run(title: str) -> Iterator[Tracker]:
         yield tracker
 
 
-def _failure(e: Exception) -> str:
-    """What a failed step says. A source's own trouble (no answer, a bad answer, a full disk)
-    says what happened. Anything else is a bug: the step names the error, and the traceback
-    goes to errors.log instead of across the screen."""
-    import traceback
-
-    if isinstance(e, (OSError, net.FetchError)):
-        return str(e) or type(e).__name__
-    what = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-    log = config.data_dir() / "errors.log"
-    try:
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open("a", encoding="utf-8") as f:
-            f.write(f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}\n{''.join(traceback.format_exception(e))}\n")
-    except OSError:
-        return f"{what} (unexpected)"
-    return f"{what} (unexpected; details in {log})"
-
-
 @contextmanager
 def _setup() -> Iterator[tuple[config.Config, Catalog, syncmod.Inventory]]:
     cfg = config.load()
@@ -337,7 +318,7 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
     except (ValueError, KeyError) as e:
         step.fail(str(e))
     except Exception as e:
-        step.fail(_failure(e))
+        step.fail(failure(e))
     else:
         day = path.name.split(".")[0]
         if written:
@@ -348,7 +329,7 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
             step.drop()  # offline resyncs (watch, ingest manabox) shouldn't repeat "already have"
     if not online:
         return
-    # Each source in turn; whatever one raises fails only its own steps (see _failure).
+    # Each source in turn; whatever one raises fails only its own steps (see failure).
     sources: list[tuple[str, Callable[..., object]]] = [
         ("MTGJSON prices", partial(mtgjson.watch, always=True)),
         ("MTGJSON 90 days", mtgjson.snapshot),
@@ -359,9 +340,9 @@ def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None
         ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),
     ]
     for label, snapshot in sources:
-        with contained(tracker, label, _failure) as scope:
+        with contained(tracker, label, failure) as scope:
             snapshot(tracker=scope)
-    with contained(tracker, "tcgcsv prices", _failure) as scope:
+    with contained(tracker, "tcgcsv prices", failure) as scope:
         snap = tcgcsv.watch(delay=delay, tracker=scope, always=True).snap
         if snap is not None:
             _echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
@@ -457,7 +438,7 @@ def mtgo_trickle() -> None:
         for slug, err in res.broken:
             _echo(f"  ! {slug}: its lists wouldn't parse: {err}", err=True)
         for slug, e in res.undue:
-            _echo(f"  ! {slug}: can't say when it's due: {_failure(e)}; skipped", err=True)
+            _echo(f"  ! {slug}: can't say when it's due: {failure(e)}; skipped", err=True)
 
 
 @mtgo_app.command("status")
@@ -894,7 +875,7 @@ def _resync_and_keep_watching() -> None:
     except typer.Exit:
         typer.echo("resync failed; still watching", err=True)
     except Exception as e:
-        typer.echo(f"resync failed: {_failure(e)}; still watching", err=True)
+        typer.echo(f"resync failed: {failure(e)}; still watching", err=True)
 
 
 @app.command("check")

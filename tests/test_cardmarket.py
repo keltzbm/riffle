@@ -179,25 +179,25 @@ def test_made_counts_the_days_kept_before_and_the_runs_since(data_dir, few):
     assert cardmarket.stamp(day / "mtg.json.gz") == cardmarket.created_at("2026-09-26T02:46:00+0200")
 
 
-def test_a_guide_not_due_is_not_asked_and_they_share_a_line(data_dir, few, tracker):
-    run(Source(every()))  # one check each: with no gaps yet, every firing asks
+def test_a_guide_still_learning_is_asked_at_every_firing_and_says_its_gaps(data_dir, few, tracker):
+    run(Source(every()))  # one guide each: no gaps yet
     source = Source(every())
     res = run(source, tracker, now=NOW + timedelta(minutes=2), always=False)
-    assert source.asked == [] and res.waiting == [
-        "Cardmarket mtg",
-        "Cardmarket fab",
-        "Cardmarket pokemon",
-        "Cardmarket yugioh",
-    ]
-    assert tracker.outcomes() == {
-        "Cardmarket 4 guides": (
-            "ok",
-            "none due; mtg next asked 2026-09-27 13:05 UTC"
-            "; its next guide's time is learned from 14 gaps, 0 so far",
-        )
-    }
-    run(source, now=NOW + timedelta(minutes=5), always=False)
-    assert len(source.asked) == 4
+    assert len(source.asked) == 4 and res.waiting == []
+    assert tracker.outcomes()["Cardmarket mtg"] == (
+        "ok",
+        "no new guide since the last one kept; asked at every firing until it has 14 gaps, 0 so far",
+    )
+
+
+def test_a_guide_kept_in_both_daily_and_lists_is_one_publish(data_dir, few, tracker):
+    run(Source(every()))  # kept in lists/
+    day = data_dir / "daily" / "2026-09-27"
+    day.mkdir(parents=True)
+    (day / "mtg.json.gz").write_bytes(gzip.compress(guide(STAMP)))  # and kept a day, before 0033
+    assert len(cardmarket.made("mtg")) == 1
+    run(Source(every()), tracker, now=NOW + timedelta(minutes=5), always=False)
+    assert tracker.outcomes()["Cardmarket mtg"][1].endswith("0 so far")  # not a gap of nothing
 
 
 def test_a_guide_learned_daily_is_asked_from_its_expected_time(data_dir, monkeypatch, tracker, no_look):

@@ -1,5 +1,6 @@
-"""When a watch asks a source that limits its requests: from the list's expected time, less its
-learned lead, until the list comes; otherwise every far interval, learned from its checks."""
+"""When a watch asks a source that limits its requests: at every firing until it has 14 gaps;
+then from the list's expected time, less its learned lead, until the list comes, and otherwise
+every far interval, learned from its checks."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -145,11 +146,30 @@ def test_a_learned_list_is_asked_from_its_expected_time_until_it_comes():
     assert cadence.plan(made, [*week, (late - timedelta(minutes=5), False)], late).ask  # however late
 
 
-def test_until_its_time_is_learned_a_list_is_asked_each_far_interval():
-    made = daily(5)
+def test_until_it_has_14_gaps_a_list_is_asked_at_every_firing():
+    for n in (2, 3, 14):  # 1, 2 and 13 gaps
+        made = daily(n)
+        now = made[-1] + timedelta(hours=6)
+        plan = cadence.plan(made, [(now - timedelta(minutes=1), False)], now)  # asked a minute ago
+        assert plan.ask and plan.learning and plan.next == now and plan.far == cadence.EVERY
+        assert plan.gaps == n - 1 and plan.expected is None
+
+
+def test_from_14_gaps_a_list_is_asked_each_far_interval():
+    made = daily(15)
     now = made[-1] + timedelta(hours=6)
     checks = every(now - timedelta(minutes=30), 42, timedelta(hours=4))
     plan = cadence.plan(made, checks, now)
     last = max(at for at, _ in checks)
-    assert not plan.ask and plan.next == last + plan.far and plan.expected is None
+    assert not plan.ask and not plan.learning and plan.next == last + plan.far
+    assert plan.far == cadence.far(made, checks, now) == timedelta(hours=6)  # a day over 4 chances
     assert cadence.plan(made, checks, last + plan.far).ask
+
+
+def test_a_list_kept_twice_is_one_list():
+    made = daily(15)
+    twice = [*made, *made[-3:]]  # Cardmarket's guides of 2026-09-27 to 29, in daily/ and lists/
+    now = made[-1] + timedelta(hours=6)
+    checks = every(now - timedelta(minutes=30), 42, timedelta(hours=4))
+    assert cadence.plan(twice, checks, now) == cadence.plan(made, checks, now)
+    assert cadence.plan(twice, checks, now).gaps == 14

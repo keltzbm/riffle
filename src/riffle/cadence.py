@@ -1,8 +1,8 @@
 """When a watch asks a source that limits its requests, learned from the list's own publish times
-and its own checks: tcgcsv asks for under 10,000 requests a day, so its watch doesn't ask at every
-firing, and neither do Cardmarket's 21 guides.
+and its own checks: tcgcsv asks for under 10,000 requests a day, so once a list's schedule is
+learned its watch doesn't ask at every firing, and neither do Cardmarket's, MTGJSON's or GoatBots'.
 
-A watch job fires every EVERY. At each firing a list is asked for when either holds:
+A watch job fires every EVERY. At each firing a list is asked for when any of these holds:
 
 - Its next list is due: past its expected time less its lead, and asked at every firing from
   then until the list comes, however late. Expected is the last list's time plus the median of
@@ -17,8 +17,9 @@ A watch job fires every EVERY. At each firing a list is asked for when either ho
   N · f^⌊L/c⌋ ≤ TARGET, where L is its shortest gap in the 30 days before its last list less its
   longest fetch, N its lists a year, and f the CONFIDENCE upper bound on its checks' failure rate
   over the last WEEK, counting one failure more than seen. The far checks alone keep the loss
-  under TARGET even when the expected time is wrong; the near ones only shorten the wait. With
-  no check logged, or under two lists, every firing asks.
+  under TARGET even when the expected time is wrong; the near ones only shorten the wait.
+- It's still learning: with no check logged, or under 14 gaps (lateness.LEAST_GAPS) between
+  its lists, every firing asks. One publish is counted once, however many times it's kept.
 
 Why these (the vault's price-watch-numbers note has the proof):
 
@@ -39,6 +40,13 @@ Why these (the vault's price-watch-numbers note has the proof):
 - The far interval is price-watch-numbers §3's check interval, from each list's own log. On
   tcgcsv it settles near 6 hours once a week of checks is logged: about 5 requests a day in all,
   against 288 at every firing. A failed check shortens it.
+- No far interval before 14 gaps: it stands on the shortest gap seen, and with g gaps seen the
+  chance the next is shorter than all of them is 1/(g+1). From one gap of a day it was 3 hours
+  after a dozen clean checks; on 2026-09-30 Cardmarket published a second guide 7 hours after
+  its first. A list replaced between two checks can't be fetched again; a check that finds
+  nothing new is a conditional request answered without a body. 14 is the count the expected
+  time already waits for (lateness.LEAST_GAPS): the next gap is shorter than every one seen 1
+  time in 15.
 """
 
 import math
@@ -63,8 +71,13 @@ class Plan:
     next: datetime  # when it's asked next, if not now
     expected: datetime | None  # when its next list is expected; None until it has 14 gaps
     opens: datetime | None  # when it's asked at every firing from: expected less the lead
-    far: timedelta  # the far interval
+    far: timedelta  # the far interval; EVERY while it's learning
     gaps: int  # gaps between its lists so far
+
+    @property
+    def learning(self) -> bool:
+        """Asked at every firing until it has lateness.LEAST_GAPS gaps."""
+        return self.gaps < lateness.LEAST_GAPS
 
 
 def upper(failures: int, checks: int) -> float:
@@ -84,7 +97,8 @@ def far(
     made: Sequence[datetime], checks: Sequence[tuple[datetime, bool]], now: datetime, busy: timedelta = _NONE
 ) -> timedelta:
     """The far interval for a list made at these times (oldest first), from its checks, each
-    (when, failed), and busy, its longest fetch: never under EVERY."""
+    (when, failed), and busy, its longest fetch: never under EVERY. plan uses it only once the
+    list has lateness.LEAST_GAPS gaps."""
     gaps = [b - a for a, b in zip(made, made[1:], strict=False)]
     if not gaps:
         return EVERY
@@ -133,13 +147,16 @@ def plan(
 ) -> Plan:
     """Whether to ask for a list at this firing, and when it's asked next if not: made is when
     its lists were made, checks each check (when, failed), busy its longest fetch, online when
-    each list could first have been online, by its made (riffle.watching.online)."""
-    made = sorted(made)
-    interval = far(made, checks, now, busy)
+    each list could first have been online, by its made (riffle.watching.online). A list made
+    at the same time twice (kept twice) is one list. While it's learning, every firing asks."""
+    made = sorted(set(made))
+    gaps = max(0, len(made) - 1)
+    learning = gaps < lateness.LEAST_GAPS
+    interval = EVERY if learning else far(made, checks, now, busy)
     last = max((at for at, _ in checks), default=None)
-    due = now if last is None else last + interval
+    due = now if last is None or learning else last + interval
     coming = expected(made)
     opens = None if coming is None else coming - lead(made, now, online)
     if opens is not None:
         due = min(due, opens)
-    return Plan(due <= now, max(due, now), coming, opens, interval, max(0, len(made) - 1))
+    return Plan(due <= now, max(due, now), coming, opens, interval, gaps)

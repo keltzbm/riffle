@@ -1,9 +1,10 @@
 """Every price guide Cardmarket, Europe's card marketplace, publishes, in euros, for every game
 it sells and its accessories.
 
-Cardmarket publishes a price guide per game once a day (every guide within a minute of the
-others, 02:44 to 02:48 Central European Time on the days kept) on its public download server,
-as plain JSON, no key needed:
+Cardmarket publishes a price guide per game, most days once (on 2026-09-30 a second came 7
+hours after the first), every guide within a minute of the others (02:44 to 02:48 Central
+European Time on the first days kept), on its public download server, as plain JSON, no key
+needed:
 
     https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_<id>.json
 
@@ -45,7 +46,8 @@ and when a run last looked:
 A look that fails isn't recorded, so the next run looks again; a games.json that can't be read
 is set aside, and its games are learned again at once. `riffle watch cardmarket` asks for a
 game's guide when riffle.cadence says its next is due, learned from its own createdAt times and
-checks, carrying the ETag of the guide last kept: a guide not new costs a 304 and no body.
+checks (at every firing until it has 14 gaps), carrying the ETag of the guide last kept: a guide
+not new costs a 304 and no body.
 Its product lists likewise. Each list asked for is a step of its own; the lists not due share
 one line. Every check goes
 in <data_dir>/cardmarket/watch.jsonl. Until 2026-09-29 Riffle kept one guide a day, gzipped,
@@ -160,10 +162,11 @@ def stamp(path: Path) -> datetime | None:
 
 
 def made(game: str) -> list[datetime]:
-    """When Cardmarket made each guide kept for a game, in UTC, oldest first."""
+    """When Cardmarket made each guide kept for a game, in UTC, oldest first: once each, though
+    the guides of 2026-09-27 to 29 are kept in both daily/ and lists/."""
     found = [stamp(path) for path in daily_dir().glob(f"*/{game}.json.gz")]
     found += [runs.parse(name) for name in runs.kept(lists_dir(game))]
-    return sorted(at.astimezone(UTC) for at in found if at is not None)
+    return sorted({at.astimezone(UTC) for at in found if at is not None})
 
 
 def games_path() -> Path:

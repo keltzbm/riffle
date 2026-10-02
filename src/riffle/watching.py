@@ -22,7 +22,7 @@ from pathlib import Path
 
 from riffle import cadence, lateness, locks, net, runs, times
 from riffle.config import data_dir
-from riffle.progress import Step, Tracker
+from riffle.progress import Step, Tracker, failure
 
 # each watched by `riffle watch <store>`
 STORES = ("cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots")
@@ -220,16 +220,41 @@ def set_aside(store: str, fresh: Path, name: str, at: datetime) -> str:
 
 
 def waiting(plan: cadence.Plan, what: str) -> str:
-    """When a list not due is asked next, and when the next is expected, once that's learned;
-    and when it's online, if it's learned to go online after that."""
-    said = f"next asked {times.shown(plan.next)}"
-    if plan.expected is None:
-        learned = f"learned from {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
-        return f"{said}; its next {what}'s time is {learned}"
-    said = f"{said}; its next {what} expected {times.shown(plan.expected)}"
+    """When a list not due is asked next, and when the next is expected; and when it's online,
+    if it's learned to go online after that."""
+    assert plan.expected is not None  # a list still learning is always due (riffle.cadence)
+    said = f"next asked {times.shown(plan.next)}; its next {what} expected {times.shown(plan.expected)}"
     if plan.opens is not None and plan.opens > plan.expected:
         said = f"{said}, online from about {times.shown(plan.opens)}"
     return said
+
+
+def learning(plan: cadence.Plan) -> str:
+    """What a list asked because it's still learning says after its result, so a list that
+    never learns is seen: how many gaps it has of the ones it needs."""
+    return f"asked at every firing until it has {lateness.LEAST_GAPS} gaps, {plan.gaps} so far"
+
+
+class Noted:
+    """A step whose ok and warn notes end with one of its own (learning)."""
+
+    def __init__(self, inner: Step, note: str):
+        self.inner, self.note = inner, note
+
+    def update(self, done: int, total: int | None = None) -> None:
+        self.inner.update(done, total)
+
+    def ok(self, note: str = "") -> None:
+        self.inner.ok(f"{note}; {self.note}" if note else self.note)
+
+    def warn(self, note: str) -> None:
+        self.inner.warn(f"{note}; {self.note}")
+
+    def fail(self, why: str) -> None:
+        self.inner.fail(why)
+
+    def drop(self) -> None:
+        self.inner.drop()
 
 
 def made(folder: Path) -> list[datetime]:
@@ -319,8 +344,9 @@ def _count(n: int, noun: str) -> str:
 class Pass:
     """One run of a store's watch over its lists, holding the store's lock: each list asked
     when riffle.cadence says it's due (from when its lists kept were made, its checks, and
-    when each went online), or always (the sync), and each check logged. Once the source
-    gives no answer at all, the lists after it fail without asking."""
+    when each went online), or always (the sync), and each check logged. A list still learning
+    says how many gaps it has (learning). Once the source gives no answer at all, the lists
+    after it fail without asking; any other error fails only its own list's step."""
 
     def __init__(
         self, store: str, source: str, tracker: Tracker, clock: Callable[[], datetime], always: bool
@@ -331,6 +357,7 @@ class Pass:
         self.log = entries(store)
         self.answering = True
         self._waiting: list[tuple[cadence.Plan, Listed]] = []
+        self._learning: dict[str, str] = {}  # what each list due while learning adds, by name
 
     def due(self, item: Listed) -> bool:
         """Whether a list is due; one that isn't waits for the line of lists not due."""
@@ -344,6 +371,8 @@ class Pass:
         if not plan.ask:
             self.res.waiting.append(item.label)
             self._waiting.append((plan, item))
+        elif plan.learning:
+            self._learning[item.name] = learning(plan)
         return plan.ask
 
     def ask(self, item: Listed) -> dict:
@@ -357,14 +386,20 @@ class Pass:
             log(self.store, entry | {"result": "failed", "why": why})
             return entry | {"result": "failed"}
         step = self.tracker.step(item.label, unit="bytes")
+        note = self._learning.pop(item.name, None)
         started = time.monotonic()
         try:
-            entry |= item.ask(self.tags, now, step)
+            entry |= item.ask(self.tags, now, step if note is None else Noted(step, note))
         except (net.FetchError, OSError) as e:
             self.answering = not isinstance(e, net.NoAnswer)
             self.res.failed.append((item.label, str(e)))
             step.fail(str(e))
             entry |= {"result": "failed", "why": str(e)} | getattr(e, "facts", {})
+        except Exception as e:  # a bug: its traceback to errors.log, and the next list is asked
+            why = f"{failure(e)}; asked again next run"
+            self.res.failed.append((item.label, why))
+            step.fail(why)
+            entry |= {"result": "failed", "why": why}
         else:
             if "why" in entry:
                 self.res.failed.append((item.label, entry["why"]))
@@ -403,16 +438,18 @@ def many(
     then: Callable[[Pass], None] | None = None,
 ) -> Watch:
     """The watch of a store's lists (Pass), the lists not due on one line; then, still holding
-    the lock, whatever else the store asks once a run. A run that finds the store's lock held
-    asks nothing."""
+    the lock, whatever else the store asks once a run. The ETags kept are saved however the run
+    ends. A run that finds the store's lock held asks nothing."""
     with held(store) as mine:
         if not mine:
             tracker.step(source).ok("another run is asking for its lists")
             return Watch(busy=True)
         run = Pass(store, source, tracker, clock, always)
-        run.each(lists)
-        run.said_waiting()
-        if then is not None and run.answering:
-            then(run)
-        save_tags(store, run.tags)
+        try:
+            run.each(lists)
+            run.said_waiting()
+            if then is not None and run.answering:
+                then(run)
+        finally:
+            save_tags(store, run.tags)
     return run.res

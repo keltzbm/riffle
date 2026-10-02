@@ -12,7 +12,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from riffle import cli, net
+from riffle import cli, net, progress
 from riffle.cli import app
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, scryfall_catalog, tcgcsv
 from riffle.progress import Watched
@@ -352,8 +352,8 @@ def test_an_unreadable_lock_file_names_another_run(tmp_path):
 def test_a_bug_is_still_reported_when_errors_log_cant_be_written(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     (tmp_path / "riffle").write_text("a file where the data folder should be")
-    assert cli._failure(ValueError("bad")) == "ValueError: bad (unexpected)"
-    assert cli._failure(OSError()) == "OSError"
+    assert progress.failure(ValueError("bad")) == "ValueError: bad (unexpected)"
+    assert progress.failure(OSError()) == "OSError"
 
 
 def test_a_manabox_export_is_copied_whole_then_the_vault_resynced(vault, tmp_path, monkeypatch):

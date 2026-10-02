@@ -182,6 +182,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- A watched list is asked at every firing until 14 gaps between its publishes are seen
+  (`lateness.LEAST_GAPS`); only then is it asked by the far interval learned from its shortest gap. Before, one
+  gap was enough: a day's gap gave a list 3 hours between checks after a dozen clean ones, and on 2026-09-30
+  Cardmarket published a second guide 7 hours after its first. A list still learning says so after its result
+  (`no new guide since the last one kept; asked at every firing until it has 14 gaps, 2 so far`), so a list
+  that never learns is seen. The extra checks are conditional requests answered without a body.
 - Every other download that isn't whole is set aside in `<store>/aside/` once a publish, not dropped, and asked
   for again: Card Kingdom's and Mana Pool's lists (gzipped, as before), Cardmarket's guides, GoatBots' prices and
   yearly archives, tcgcsv's price files, set lists, categories and `last-updated.txt`, and MTGJSON's 90-day file.
@@ -301,6 +307,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- One list's unexpected error no longer ends its store's watch. The step fails naming the error, the
+  traceback goes to `errors.log`, the lists after it are asked, and the ETags kept are saved however the run
+  ends. Card Kingdom's and Mana Pool's watch is now the one every store uses, so its log entries say how long
+  each check took, and a list after one that got no answer reads `not asked: Card Kingdom gave no answer`.
+- A Cardmarket guide kept both a day (`daily/`, before 0033) and as a list (`lists/`) counts as one publish,
+  not two a gap of nothing apart. The gap of nothing kept the 21 older games' guides asked at every firing by
+  accident, until the pair was 30 days old, and it put them in `riffle check`'s lateness as a gap of zero.
 - `riffle mtgo trickle` no longer stops for good on a page whose name holds no real date. mtgo.com listed
   `premodern-league-2026-09-3111007` (31 September) on 2026-10-01; it joined the owed list, and from the next
   run every run ended in `ValueError: day 31 must be in range 1..30` before asking for anything. Such a name

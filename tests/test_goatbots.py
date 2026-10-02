@@ -384,15 +384,14 @@ def test_a_busy_store_asks_nothing(data_dir, tracker):
     assert tracker.outcomes() == {"GoatBots": ("ok", "another run is asking for its lists")}
 
 
-def test_the_watch_asks_only_when_the_next_list_is_due(data_dir, tracker):
+def test_until_its_schedule_is_learned_the_watch_asks_at_every_firing(data_dir, tracker):
     watch(Source(answers()))
     source = Source(answers())
-    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
-    assert source.asked == [] and res.waiting == ["GoatBots prices"]
-    assert tracker.outcomes()["GoatBots 1 list"] == (
+    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)  # a firing come early
+    assert source.asked == [f"{NEW}/price-history.zip"] and res.waiting == []
+    assert tracker.outcomes()["GoatBots prices"] == (
         "ok",
-        "none due; prices next asked 2026-09-28 13:05 UTC"
-        "; its next list's time is learned from 14 gaps, 0 so far",
+        "no new list since the last one kept; asked at every firing until it has 14 gaps, 0 so far",
     )
 
 
