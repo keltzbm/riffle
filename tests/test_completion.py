@@ -25,7 +25,7 @@ def offered(line: str) -> list[str] | None:
 def vault(tmp_path, monkeypatch):
     """Three deck notes, a note that isn't a deck, and a generated note, in the default vault."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "tcg" / "mtg"
+    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     for rel, text in {
         "commander/simic-aesi-lands.md": DECK,
         "commander/selesnya-emmara-tokens.md": DECK,

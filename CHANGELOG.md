@@ -182,6 +182,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The notes folder is a setting of its own: `notes`, the folder in the vault that holds `mtg/`, relative to the
+  vault (`"games/tcg"` by default), and `vault` names the Obsidian vault itself again. Before, Riffle joined
+  `tcg/mtg` onto `vault`, so since the notes moved to `games/` on 2026-09-30 `vault` had to name
+  `~/atelier/library/games`. A config with no `notes` line is still read the old way, its notes in `<vault>/tcg`,
+  and `riffle init` and every sync say what to change: `set vault = "~/atelier/library" and add notes =
+  "games/tcg"`, the vault found as the folder above holding `.obsidian/`. `riffle init` shows both settings, and
+  a sync that finds no `mtg/` folder says to set `vault` and `notes`.
 - A watched list is asked at every firing until 14 gaps between its publishes are seen
   (`lateness.LEAST_GAPS`); only then is it asked by the far interval learned from its shortest gap. Before, one
   gap was enough: a day's gap gave a list 3 hours between checks after a dozen clean ones, and on 2026-09-30

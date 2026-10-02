@@ -1,9 +1,11 @@
 """Write the vault's machine zones. Nothing else in the vault is touched.
 
-    tcg/mtg/_generated/<deck>-data.md    regenerated every sync; stale ones removed
-    tcg/mtg/_generated/collection-summary.md
-    tcg/mtg/_log/prices.md               append-only, one snapshot per day
-    tcg/mtg/_log/<deck>-versions.md      append-only, only when a list changes
+In the notes folder (config's notes):
+
+    mtg/_generated/<deck>-data.md    regenerated every sync; stale ones removed
+    mtg/_generated/collection-summary.md
+    mtg/_log/prices.md               append-only, one snapshot per day
+    mtg/_log/<deck>-versions.md      append-only, only when a list changes
 
 Authored notes pull generated ones in with ![[aesi-lands-data]]. No dots in
 generated names: Obsidian reads "aesi-lands.data" as a ".data" file.
