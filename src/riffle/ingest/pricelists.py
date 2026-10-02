@@ -79,6 +79,7 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
+from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -320,39 +321,10 @@ def watch(
     tracker: Tracker = SILENT,
     clock: Callable[[], datetime] = times.now,
 ) -> Watch:
-    """Ask for each of a store's lists once and keep each new one, each its own step. A list
-    that fails keeps nothing and is asked for again next run, a copy fetched whole set aside
-    once a publish (_broken); after one gets no answer at all, the rest fail without asking. A
-    run that finds the store's lock held asks nothing."""
-    store = lists[0].store
-    res = Watch()
-    with watching.held(store) as mine:
-        if not mine:
-            res.busy = True
-            tracker.step(f"{lists[0].label.rsplit(' ', 1)[0]} lists").ok("another run is asking for them")
-            return res
-        tags = watching.load_tags(store)
-        answering = True
-        for plist in lists:
-            now = clock()
-            entry: dict = {"at": watching.at(now), "list": plist.name}
-            if not answering:
-                why = "not asked: no answer to the list before"
-                res.failed.append((plist.label, why))
-                tracker.step(plist.label).fail(why)
-                watching.log(store, entry | {"result": "failed", "why": why})
-                continue
-            step = tracker.step(plist.label, unit="bytes")
-            try:
-                entry |= _one(plist, fetch, tags, now, step)
-            except (net.FetchError, OSError) as e:
-                answering = not isinstance(e, net.NoAnswer)
-                res.failed.append((plist.label, str(e)))
-                step.fail(str(e))
-                entry |= {"result": "failed", "why": str(e)} | getattr(e, "facts", {})
-            else:
-                sort = {"kept": res.kept, "empty": res.empty}.get(entry["result"], res.same)
-                sort.append(plist.label)
-            watching.log(store, entry)
-        watching.save_tags(store, tags)
-    return res
+    """Ask for each of a store's lists at every run and keep each new one, each its own step
+    (riffle.watching.many). A list that fails keeps nothing and is asked for again next run, a
+    copy fetched whole set aside once a publish (_broken); after one gets no answer at all, the
+    rest fail without asking. A run that finds the store's lock held asks nothing."""
+    listed = [watching.Listed(p.name, p.label, lists_dir(p), partial(_one, p, fetch)) for p in lists]
+    source = lists[0].label.rsplit(" ", 1)[0]
+    return watching.many(lists[0].store, source, listed, tracker, clock, always=True)

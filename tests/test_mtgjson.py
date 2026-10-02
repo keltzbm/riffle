@@ -387,18 +387,15 @@ def test_a_busy_store_asks_nothing(data_dir, tracker):
     assert tracker.outcomes() == {"MTGJSON": ("ok", "another run is asking for its lists")}
 
 
-def test_the_watch_asks_only_when_the_next_build_is_due(data_dir, tracker):
+def test_until_its_schedule_is_learned_the_watch_asks_at_every_firing(data_dir, tracker):
     watch(Source(answers()))
     source = Source(answers())
-    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
-    assert source.asked == [] and res.waiting == ["MTGJSON prices today"]
-    assert tracker.outcomes()["MTGJSON 1 list"] == (
+    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)  # a firing come early
+    assert source.asked == [f"{B}/{mtgjson.TODAY}"] and res.waiting == []  # a 304
+    assert tracker.outcomes()["MTGJSON prices today"] == (
         "ok",
-        "none due; prices today next asked 2026-09-27 13:05 UTC"
-        "; its next list's time is learned from 14 gaps, 0 so far",
+        "no new build since the last one kept; asked at every firing until it has 14 gaps, 0 so far",
     )
-    watch(source, now=NOW + timedelta(minutes=5), always=False)
-    assert source.asked == [f"{B}/{mtgjson.TODAY}"]  # due: a 304
 
 
 def test_a_build_is_asked_from_when_it_goes_online_not_when_it_s_made(data_dir, tracker):
@@ -681,15 +678,27 @@ def test_a_file_with_no_etag_or_time_is_set_aside_once_its_bytes(every_file, tra
     ]
 
 
+def learned(name: str, last: datetime) -> None:
+    """14 gaps of a day kept for a list, the last made at last, and a clean check a minute ago."""
+    folder = mtgjson.lists_dir(name)
+    for i in range(15):
+        stamp = runs.name(last - timedelta(days=i))
+        (folder / stamp).mkdir(parents=True)
+        (folder / stamp / f"{stamp}{runs.BASE}").touch()
+    checked = runs.name(NOW - timedelta(minutes=1))
+    watching.log("mtgjson", {"at": checked, "list": name, "result": "unchanged"})
+
+
 def test_lists_not_due_share_one_line_naming_the_next(every_file, tracker):
-    watch(Source(catalogs()))
+    for file in EVERY_FILE:
+        learned(file.list, datetime(2026, 9, 27, 6, 12, tzinfo=UTC))  # today's build
     source = Source(catalogs())
-    res = watch(source, tracker, now=NOW + timedelta(minutes=4), always=False)
+    res = watch(source, tracker, now=NOW, always=False)
     assert source.asked == [] and len(res.waiting) == len(EVERY_FILE)
     assert tracker.outcomes() == {
         f"MTGJSON {len(EVERY_FILE)} lists": (
             "ok",
-            "none due; prices today next asked 2026-09-27 13:05 UTC"
-            "; its next list's time is learned from 14 gaps, 0 so far",
+            "none due; prices today next asked 2026-09-27 13:04 UTC"
+            "; its next list expected 2026-09-28 06:12 UTC",
         )
     }

@@ -18,12 +18,13 @@ import functools
 import math
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
-from riffle import times
+from riffle import config, net, times
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -161,6 +162,23 @@ def contained(tracker: Tracker, label: str, why: Callable[[Exception], str]) -> 
             step.fail(note)
         if not running:
             tracker.step(label).fail(note)
+
+
+def failure(e: Exception) -> str:
+    """What a failed step says. A source's own trouble (no answer, a bad answer, a full disk)
+    says what happened. Anything else is a bug: the step names the error, and the traceback
+    goes to errors.log instead of across the screen."""
+    if isinstance(e, (OSError, net.FetchError)):
+        return str(e) or type(e).__name__
+    what = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+    log = config.data_dir() / "errors.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}\n{''.join(traceback.format_exception(e))}\n")
+    except OSError:
+        return f"{what} (unexpected)"
+    return f"{what} (unexpected; details in {log})"
 
 
 def elapsed(seconds: float) -> str:

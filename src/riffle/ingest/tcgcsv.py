@@ -632,7 +632,10 @@ def watch(
             return res
         if _whole(log) == runs.name(stamp):
             watching.log(STORE, entry | {"result": "same", "made": runs.name(stamp)})
-            tracker.step("tcgcsv").ok(f"no new day since the one made {times.shown(stamp)}")
+            said = f"no new day since the one made {times.shown(stamp)}"
+            if res.plan is not None and res.plan.learning:
+                said = f"{said}; {watching.learning(res.plan)}"
+            tracker.step("tcgcsv").ok(said)
             return res
         watching.log(STORE, entry | {"result": "new", "made": runs.name(stamp)})
         started = time.monotonic()

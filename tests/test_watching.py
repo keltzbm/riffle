@@ -1,5 +1,6 @@
 """What every store's watch shares: its log, read back for the checks it made and how long its
-fetches took."""
+fetches took; one list's failure kept to its own step; and the ETags kept saved however a run
+ends."""
 
 import json
 from dataclasses import replace
@@ -119,3 +120,62 @@ def test_the_days_kept_come_from_the_log_and_one_it_cant_read_is_left_out(data):
         "goatbots", {"at": "2026-09-29T031600Z", "list": "other", "result": "kept", "day": "2026-09-25"}
     )
     assert [d.isoformat() for d in watching.days("goatbots", "prices")] == ["2026-09-27", "2026-09-28"]
+
+
+def listed(name: str, ask: watching.Ask, folder) -> watching.Listed:
+    return watching.Listed(name, f"Store {name}", folder, ask)
+
+
+def kept(tags: dict[str, str], now: datetime, step) -> dict:
+    tags["first"] = '"1"'
+    step.ok("kept")
+    return {"result": "kept"}
+
+
+def test_one_list_s_bug_fails_its_own_step_and_the_lists_after_it_are_asked(data, tracker):
+    def broken(tags: dict[str, str], now: datetime, step) -> dict:
+        raise KeyError("createdAt")
+
+    asked = []
+
+    def after(tags: dict[str, str], now: datetime, step) -> dict:
+        asked.append("after")
+        step.ok("no new list")
+        return {"result": "unchanged"}
+
+    lists = [listed("first", kept, data), listed("broken", broken, data), listed("after", after, data)]
+    res = watching.many("store", "Store", lists, tracker, lambda: NOW, always=True)
+    why = f"KeyError: 'createdAt' (unexpected; details in {data / 'errors.log'}); asked again next run"
+    assert res.failed == [("Store broken", why)] and asked == ["after"] and res.same == ["Store after"]
+    assert tracker.outcomes()["Store broken"] == ("fail", why)
+    assert watching.load_tags("store") == {"first": '"1"'}
+    entry = next(e for e in watching.entries("store") if e["list"] == "broken")
+    assert entry["result"] == "failed" and entry["why"] == why and "seconds" in entry
+    assert "KeyError: 'createdAt'" in (data / "errors.log").read_text()
+
+
+def test_the_etags_kept_are_saved_however_the_run_ends(data, tracker):
+    def then(run: watching.Pass) -> None:
+        raise RuntimeError("a bug after the lists")
+
+    with pytest.raises(RuntimeError):
+        watching.many("store", "Store", [listed("first", kept, data)], tracker, lambda: NOW, True, then)
+    assert watching.load_tags("store") == {"first": '"1"'}
+
+
+def test_a_noted_step_ends_its_ok_and_warn_notes_with_its_own(tracker):
+    steps = [watching.Noted(tracker.step(str(n)), "learning") for n in range(5)]
+    steps[0].update(1, 2)
+    steps[0].ok("no new list")
+    steps[1].ok()
+    steps[2].warn("kept; a note")
+    steps[3].fail("HTTP 503")
+    steps[4].drop()
+    assert tracker.steps[0].updates == [(1, 2)]
+    assert tracker.outcomes() == {
+        "0": ("ok", "no new list; learning"),
+        "1": ("ok", "learning"),
+        "2": ("warn", "kept; a note; learning"),
+        "3": ("fail", "HTTP 503"),
+        "4": ("drop",),
+    }

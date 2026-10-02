@@ -682,18 +682,32 @@ def test_the_first_watch_asks_and_fetches_the_day(data_dir, sleeps):
 
 
 def test_a_watch_before_the_next_check_is_due_asks_nothing(data_dir, sleeps, tracker):
+    for n in range(10, 24):  # 14 days kept before the 24th: its schedule is learned
+        day = tcgcsv.daily_dir() / f"2026-09-{n}"
+        day.mkdir(parents=True)
+        (day / "last-updated.txt").write_text(f"2026-09-{n}T20:05:50+0000")
     watch(fake_fetch(fab_answers())[0])
     fetch, asked = fake_fetch(fab_answers())
     res = watch(fetch, tracker, at=NOW + timedelta(minutes=2))
     assert asked == [] and not res.asked and res.plan is not None and not res.plan.ask
-    said = "next asked 2026-09-24 22:05 UTC; its next day's time is learned from 14 gaps, 0 so far"
+    said = "next asked 2026-09-24 22:05 UTC; its next day expected 2026-09-25 20:05 UTC"
     assert tracker.outcomes() == {"tcgcsv": ("ok", said)}
 
 
-def test_a_due_check_that_finds_the_same_day_asks_once(data_dir, sleeps, tracker):
+def test_until_its_schedule_is_learned_every_firing_asks(data_dir, sleeps, tracker):
     watch(fake_fetch(fab_answers())[0])
     fetch, asked = fake_fetch(fab_answers())
-    res = watch(fetch, tracker, at=NOW + timedelta(minutes=5))
+    res = watch(fetch, tracker, at=NOW + timedelta(minutes=2))
+    assert asked == [f"{B}/last-updated.txt"] and res.plan is not None and res.plan.learning
+    said = "no new day since the one made 2026-09-24 20:05 UTC"
+    said += "; asked at every firing until it has 14 gaps, 0 so far"
+    assert tracker.outcomes() == {"tcgcsv": ("ok", said)}
+
+
+def test_a_check_that_finds_the_same_day_asks_once(data_dir, sleeps, tracker):
+    watch(fake_fetch(fab_answers())[0])
+    fetch, asked = fake_fetch(fab_answers())
+    res = watch(fetch, tracker, at=NOW + timedelta(minutes=5), always=True)
     assert asked == [f"{B}/last-updated.txt"] and res.snap is None
     assert tracker.outcomes() == {"tcgcsv": ("ok", "no new day since the one made 2026-09-24 20:05 UTC")}
     assert logged(data_dir)[-1] == {

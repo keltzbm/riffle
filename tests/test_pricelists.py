@@ -86,7 +86,9 @@ def kept(data_dir, store: str = "cardkingdom", name: str = "singles") -> dict:
 
 
 def logged(data_dir, store: str = "cardkingdom") -> list[dict]:
-    return [json.loads(line) for line in (data_dir / store / "watch.jsonl").read_text().splitlines()]
+    """The store's log, without how long each check took (seconds)."""
+    found = [json.loads(line) for line in (data_dir / store / "watch.jsonl").read_text().splitlines()]
+    return [{k: v for k, v in entry.items() if k != "seconds"} for entry in found]
 
 
 @pytest.fixture
@@ -154,6 +156,8 @@ def test_every_list_kept_is_logged_with_its_hashes(data_dir):
         "sha256": runs.hashlib.sha256(ck()).hexdigest(),
         "file_sha256": runs.file_sha256(path),
     }
+    raw = (data_dir / "cardkingdom" / "watch.jsonl").read_text().splitlines()[0]
+    assert "seconds" in json.loads(raw)  # how long it took, as every watched store logs
 
 
 def test_mana_pool_s_etag_is_sent_and_a_304_asks_nothing_more(data_dir, tracker):
@@ -334,7 +338,7 @@ def test_a_run_finding_the_store_s_lock_held_asks_nothing(data_dir, tracker):
         assert mine
         res = run(store, tracker)
     assert res.busy and store.asked == [] and not (data_dir / "cardkingdom" / "watch.jsonl").exists()
-    assert tracker.outcomes() == {"Card Kingdom lists": ("ok", "another run is asking for them")}
+    assert tracker.outcomes() == {"Card Kingdom": ("ok", "another run is asking for its lists")}
 
 
 def test_a_list_wrapped_in_html_is_kept_wrapped(data_dir):
@@ -389,7 +393,7 @@ def test_no_answer_skips_the_store_s_other_lists(data_dir):
     assert store.asked == [(SINGLES.url, None)]
     assert res.failed == [
         ("Card Kingdom singles", "no answer after 3 tries (timed out)"),
-        ("Card Kingdom sealed", "not asked: no answer to the list before"),
+        ("Card Kingdom sealed", "not asked: Card Kingdom gave no answer"),
     ]
     assert [e["result"] for e in logged(data_dir)] == ["failed", "failed"]
 
