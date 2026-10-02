@@ -349,6 +349,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A notes folder without `mtg/` no longer fails the sync. Riffle reads decks from `mtg/` only for now, and a user
+  who keeps only One Piece, FaB or Yu-Gi-Oh! lists had every sync fail with `no deck folder at …/mtg; set vault
+  and notes in <config>`, advice that was wrong for settings that were right. The sync now says `vault: no MTG
+  decks in <notes>; Riffle reads MTG decks only for now`, writes nothing in the vault, and exits 0 if nothing
+  else failed. A notes folder that doesn't exist still fails, naming it: `vault: no notes folder at <notes>; set
+  vault and notes in <config>`, with nothing written. The default config and the README say the notes folder
+  holds a folder per game.
 - A month whose MTGO index listed no events is a failed try, retried like an event, not the month's answer
   (unless the month is under 2 days old). Before, a 30-second answer from mtgo.com was saved as an empty month
   and never read again, and three in a row ended the sweep at 2022-09: eight months were saved that way. The

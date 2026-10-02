@@ -818,10 +818,13 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         )
     if cfg0.old_notes:
         tracker.step("vault setting").warn(cfg0.old_notes)
-    if not cfg0.mtg_dir.is_dir():  # a missing or mistyped vault: nothing is written there
+    if not cfg0.notes.is_dir():  # a missing or mistyped vault: nothing is written there
         tracker.step("vault").fail(
-            f"no deck folder at {cfg0.mtg_dir}; set vault and notes in {config.config_path()}"
+            f"no notes folder at {cfg0.notes}; set vault and notes in {config.config_path()}"
         )
+        return
+    if not cfg0.mtg_dir.is_dir():  # a user of other games only: not a fault
+        tracker.step("vault").ok(f"no MTG decks in {cfg0.notes}; Riffle reads MTG decks only for now")
         return
     with _setup() as (cfg, cat, inv):
         res = syncmod.run(cfg.mtg_dir, inv, cat)
