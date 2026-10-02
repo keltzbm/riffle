@@ -105,9 +105,16 @@ class Event:
 
 
 def parse_slug(slug: str) -> tuple[str, str, str] | None:
-    """(event name, ISO date, event id), or None if it isn't an event slug."""
+    """(event name, ISO date, event id), or None if it isn't an event slug. A name whose
+    date isn't a day isn't one: mtgo.com has listed a league dated 31 September."""
     m = _SLUG.match(slug)
-    return (m["name"], m["date"], m["id"]) if m else None
+    if m is None:
+        return None
+    try:
+        date.fromisoformat(m["date"])
+    except ValueError:
+        return None
+    return m["name"], m["date"], m["id"]
 
 
 def classify(name: str) -> str:
@@ -129,6 +136,12 @@ def event_format(name: str) -> str:
 def event_slugs(index_html: str) -> list[str]:
     """Event slugs linked from a monthly index page, in page order, deduplicated."""
     return list(dict.fromkeys(s.lower() for s in _LINK.findall(index_html) if parse_slug(s.lower())))
+
+
+def undated_slugs(index_html: str) -> list[str]:
+    """Links on an index page shaped like an event's but dated a day that doesn't exist."""
+    links = dict.fromkeys(s.lower() for s in _LINK.findall(index_html))
+    return [s for s in links if _SLUG.match(s) and parse_slug(s) is None]
 
 
 def extract_data(page_html: str) -> dict:
@@ -345,12 +358,23 @@ def _event_id(slug: str) -> int:
     return int(parsed[2]) if parsed else 0
 
 
-def due(owed: dict[str, trickle.Owed], at: datetime) -> list[str]:
+def due(
+    owed: dict[str, trickle.Owed], at: datetime, undue: list[tuple[str, Exception]] | None = None
+) -> list[str]:
     """Owed events due a try: those never asked for, newest first, then retries, newest
     first. A retry gets only the pages new events leave, so one that keeps missing can't
-    hold up the rest."""
+    hold up the rest. An event that can't say when it's due is left out and added to
+    undue, so one bad entry doesn't stop the others."""
+    ready = []
+    for slug, o in owed.items():
+        try:
+            if o.due(at):
+                ready.append(slug)
+        except Exception as e:
+            if undue is not None:
+                undue.append((slug, e))
     return sorted(
-        (s for s, o in owed.items() if o.due(at)),
+        ready,
         key=lambda s: (owed[s].last_try is None, owed[s].day, _event_id(s)),
         reverse=True,
     )
@@ -390,6 +414,9 @@ class TrickleResult:
     broken: list[tuple[str, str]] = field(default_factory=list)  # lists that wouldn't parse
     carried: int = 0  # events the old misses file handed to the owed list
     raised: bool = False  # the pace rose a level
+    set_aside: list[str] = field(default_factory=list)  # owed pages whose name holds no real date
+    undated: list[str] = field(default_factory=list)  # names that index listed with no real date
+    undue: list[tuple[str, Exception]] = field(default_factory=list)  # can't say when they're due
     owed: int = 0
     due: int = 0
 
@@ -459,7 +486,8 @@ class _Trickle:
         key, url = _key(y, m), f"{BASE}/decklists/{y}/{m:02d}"
         self.res.index = key
         answer, ms = self.fetch(url)
-        slugs = event_slugs(answer.body.decode("utf-8", errors="replace")) if answer.status == 200 else []
+        page = answer.body.decode("utf-8", errors="replace") if answer.status == 200 else ""
+        slugs, self.res.undated = event_slugs(page), undated_slugs(page)
         if not slugs:
             self.record(url, answer, ms, "missing" if answer.status == 404 else "empty")
             young = (self.clock().date() - date(y, m, 1)).days < NEW_MONTH_DAYS
@@ -471,6 +499,8 @@ class _Trickle:
         self.res.raised |= self.pace.whole()
         at = self.clock()
         self.months[key] = {"read": trickle.stamp(at), "events": len(slugs)}
+        if self.res.undated:
+            self.months[key]["undated"] = self.res.undated
         self.res.listed = len(slugs)
         for slug in slugs:
             parsed = parse_slug(slug)
@@ -538,6 +568,16 @@ def _carry_misses(owed: dict[str, trickle.Owed], at: datetime) -> int:
     return carried
 
 
+def _set_aside_undated(owed: dict[str, trickle.Owed], at: datetime) -> list[str]:
+    """Owed pages whose name isn't an event's leave the owed list for the set-aside file:
+    kept, and never asked for. Written there before it leaves the list."""
+    gone = [slug for slug in owed if parse_slug(slug) is None]
+    for slug in gone:
+        trickle.set_aside(SOURCE, slug, owed[slug], "its name holds no real date", at)
+        del owed[slug]
+    return gone
+
+
 def _read_months() -> dict[str, dict]:
     try:
         months = json.loads(months_path().read_text(encoding="utf-8"))
@@ -568,7 +608,7 @@ def run_trickle(
             return TrickleResult(busy=True)
         at = clock()
         owed = trickle.load_owed(SOURCE)
-        res = TrickleResult(carried=_carry_misses(owed, at))
+        res = TrickleResult(set_aside=_set_aside_undated(owed, at), carried=_carry_misses(owed, at))
         pace, months = trickle.load_pace(SOURCE), _read_months()
         run = _Trickle(get, clock, sleep, trickle.RequestLog(SOURCE), pace, owed, months, res)
         try:
@@ -580,7 +620,12 @@ def run_trickle(
             trickle.save_owed(SOURCE, owed)
             trickle.save_pace(SOURCE, pace)
             _save_months(months)
-            res.level, res.owed, res.due = pace.level, len(owed), len(due(owed, clock()))
+            undue: list[tuple[str, Exception]] = []
+            res.level, res.owed, res.due = pace.level, len(owed), len(due(owed, clock(), undue))
+            res.undue = res.undue or undue
+            if res.undue:
+                step = tracker.step("mtgo owed list")
+                step.fail(f"{len(res.undue)} owed events can't say when they're due")
         return res
 
 
@@ -595,7 +640,7 @@ def _pages(run: _Trickle, tracker: Tracker) -> None:
             run.index(*ym)
             step.ok(f"{res.listed} events, {res.newly_owed} newly owed" if res.listed else "no events")
             left -= 1
-        todo = due(run.owed, run.clock())[:left]
+        todo = due(run.owed, run.clock(), res.undue)[:left]
         if todo:
             step = tracker.step("mtgo events", total=len(todo), unit="events")
             for n, slug in enumerate(todo, 1):

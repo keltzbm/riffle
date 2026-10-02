@@ -301,6 +301,15 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- `riffle mtgo trickle` no longer stops for good on a page whose name holds no real date. mtgo.com listed
+  `premodern-league-2026-09-3111007` (31 September) on 2026-10-01; it joined the owed list, and from the next
+  run every run ended in `ValueError: day 31 must be in range 1..30` before asking for anything. Such a name
+  isn't an event's now, so an index's copy of it is never owed (the run and `riffle mtgo status` say which
+  names an index listed that way). One already owed is set aside at the next run: moved, with its fields,
+  the time and the reason, to `mtgo-owed-set-aside.jsonl`, and named in the run's output. And an owed event
+  that can't say when it's due for any other reason fails alone: it's left out, the rest are fetched, the
+  run names it (the traceback goes to `errors.log`) and exits 1. `riffle mtgo status` no longer fails on
+  such an event either.
 - A file with no stamp (no `Last-Modified`, or none in a list's first bytes) is set aside once a publish, named by
   its ETag, instead of at every firing with its ETag never saved: had MTGJSON stopped sending `Last-Modified`, its
   catalogs would have put a whole build in `mtgjson/aside/` every 5 minutes, up to about 124 GB a day.

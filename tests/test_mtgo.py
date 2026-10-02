@@ -486,6 +486,85 @@ def test_a_run_already_going_keeps_another_from_asking():
             mtgo.forget(OLD)
 
 
+UNDATED = "premodern-league-2026-09-3111007"  # as mtgo.com listed it on 2026-10-01: 31 September
+
+
+@pytest.mark.parametrize("day", ["2026-09-31", "2026-02-30", "2026-13-01", "2026-00-10"])
+def test_a_name_whose_date_is_not_a_day_is_not_an_event(day):
+    assert mtgo.parse_slug(f"premodern-league-{day}11007") is None
+
+
+def test_a_leap_day_is_a_day():
+    assert mtgo.parse_slug("modern-league-2028-02-2911007") == ("modern-league", "2028-02-29", "11007")
+
+
+def test_an_index_listing_an_undated_name_twice_owes_nothing_for_it():
+    link = f'<a href="/decklist/{UNDATED}">Premodern League</a>'
+    index = INDEX + link + link
+    assert UNDATED not in mtgo.event_slugs(index) and mtgo.undated_slugs(index) == [UNDATED]
+    site = Site({SEP: index})
+    res = _trickle(site)
+    assert res.undated == [UNDATED] and UNDATED not in trickle.load_owed(mtgo.SOURCE)
+    assert mtgo._read_months()["2026-09"]["undated"] == [UNDATED]
+    assert _url(UNDATED) not in site.asked
+
+
+def test_an_owed_page_with_no_real_date_is_set_aside_and_the_rest_are_fetched(no_index, tracker):
+    _owe(OLD)
+    owed = trickle.load_owed(mtgo.SOURCE)
+    owed[UNDATED] = trickle.Owed(day="2026-09-31", found="2026-10-01T20:42:27+00:00")
+    owed[UNDATED].tried(NOW - timedelta(hours=1), "redirect", miss=True)
+    trickle.save_owed(mtgo.SOURCE, owed)
+    site = Site({_url(OLD): _page(CHALLENGE)})
+    res = _trickle(site, tracker=tracker)
+    assert res.set_aside == [UNDATED] and [e.slug for e in res.fetched] == [OLD] and not res.undue
+    assert UNDATED not in trickle.load_owed(mtgo.SOURCE) and _url(UNDATED) not in site.asked
+    kept = [json.loads(line) for line in trickle.set_aside_path(mtgo.SOURCE).read_text().splitlines()]
+    assert kept == [
+        {
+            "key": UNDATED,
+            "why": "its name holds no real date",
+            "at": trickle.stamp(NOW),
+            "day": "2026-09-31",
+            "found": "2026-10-01T20:42:27+00:00",
+            "tries": 1,
+            "last_try": trickle.stamp(NOW - timedelta(hours=1)),
+            "last": "redirect",
+            "asks": 1,
+        }
+    ]
+    assert "mtgo owed list" not in tracker.outcomes()
+    assert _trickle(Site()).set_aside == []  # set aside once
+
+
+def test_an_owed_event_that_cant_say_when_its_due_fails_alone(no_index, tracker):
+    _owe(OLD, OLDER)
+    owed = trickle.load_owed(mtgo.SOURCE)
+    owed[OLDER].day = "2026-09-31"  # a real name over a day that isn't one
+    owed[OLDER].tried(NOW - timedelta(hours=1), "redirect", miss=True)
+    trickle.save_owed(mtgo.SOURCE, owed)
+    assert mtgo.due(owed, NOW) == [OLD]  # left out, and nothing raised
+    site = Site({_url(OLD): _page(CHALLENGE)})
+    res = _trickle(site, tracker=tracker)
+    assert [e.slug for e in res.fetched] == [OLD]
+    assert [(slug, type(e)) for slug, e in res.undue] == [(OLDER, ValueError)]
+    assert OLDER in trickle.load_owed(mtgo.SOURCE)  # still owed: nothing is dropped
+    assert tracker.outcomes()["mtgo owed list"][0] == "fail"
+
+
+def test_a_paused_run_still_says_which_owed_events_cant_say_when_theyre_due(no_index, tracker):
+    _owe(OLDER)
+    owed = trickle.load_owed(mtgo.SOURCE)
+    owed[OLDER].day = "2026-09-31"
+    owed[OLDER].tried(NOW - timedelta(hours=1), "redirect", miss=True)
+    trickle.save_owed(mtgo.SOURCE, owed)
+    pace = trickle.load_pace(mtgo.SOURCE)
+    pace.paused_until = trickle.stamp(NOW + timedelta(hours=1))
+    trickle.save_pace(mtgo.SOURCE, pace)
+    res = _trickle(Site(), tracker=tracker)
+    assert res.paused_until is not None and [slug for slug, _ in res.undue] == [OLDER]
+
+
 def test_forget_and_status(no_index):
     _owe(OLD, YOUNG)
     assert mtgo.forget(YOUNG) and not mtgo.forget(YOUNG)
@@ -520,12 +599,19 @@ def test_the_trickle_command_reports_the_run(monkeypatch):
             throttled="x came back empty",
             resume=NOW + timedelta(hours=3),
             broken=[("bad", "KeyError")],
+            index="2026-09",
+            set_aside=[UNDATED],
+            undated=[UNDATED],
+            undue=[("odd", ValueError("day 31 must be in range 1..30"))],
         )
 
     monkeypatch.setattr(mtgo, "run_trickle", run)
     result = _cli("mtgo", "trickle")
     assert result.exit_code == 1
     for line in (
+        f"set aside 1 owed page whose name holds no real date: {UNDATED} (kept in mtgo-owed-set-aside.jsonl)",
+        f"the 2026-09 index lists 1 name with no real date: {UNDATED}",
+        "! odd: can't say when it's due: ValueError: day 31 must be in range 1..30 (unexpected; details in",
         "4 events from mtgo-misses.json moved to the owed list",
         "0 new events · 7 owed, 3 due · 2 pages a run",
         "1 not published yet: young",
@@ -593,6 +679,19 @@ def test_the_status_command_lists_the_retries_newest_first():
         f"           retry-02  redirect, asked once, next try {times.utc(owed['retry-02'].retry_at())}",
     ]
     assert lines[first + 9].startswith("           retry-09") and lines[first + 10] == "           and 2 more"
+
+
+def test_the_status_command_survives_an_owed_event_with_no_real_date():
+    owed = trickle.load_owed(mtgo.SOURCE)
+    owed[UNDATED] = trickle.Owed(day="2026-09-31", found="x")
+    owed[UNDATED].tried(trickle.now() - timedelta(minutes=30), "redirect", miss=True)
+    trickle.save_owed(mtgo.SOURCE, owed)
+    mtgo._save_months({"2026-09": {**_read(10, at=trickle.now()), "undated": [UNDATED]}})
+    result = _cli("mtgo", "status")
+    assert result.exit_code == 0
+    line = f"{UNDATED}  redirect, asked once, its date isn't a day; the next run sets it aside"
+    assert line in result.output
+    assert f"1 listed with no real date, not taken as events: {UNDATED}" in result.output
 
 
 def test_the_forget_command():

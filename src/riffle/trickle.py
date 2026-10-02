@@ -228,3 +228,15 @@ def load_owed(source: str) -> dict[str, Owed]:
 
 def save_owed(source: str, owed: dict[str, Owed]) -> None:
     _write_json(owed_path(source), {k: asdict(v) for k, v in owed.items()})
+
+
+def set_aside_path(source: str) -> Path:
+    return data_dir() / f"{source}-owed-set-aside.jsonl"
+
+
+def set_aside(source: str, key: str, entry: Owed, why: str, at: datetime) -> None:
+    """Keep an owed item that will never be asked for: one line, with why and when."""
+    path = set_aside_path(source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"key": key, "why": why, "at": stamp(at), **asdict(entry)}) + "\n")
