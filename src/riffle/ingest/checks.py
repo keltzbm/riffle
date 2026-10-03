@@ -34,6 +34,7 @@ import json
 import lzma
 import re
 import zipfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -59,6 +60,12 @@ class Report:
     days: set[str] = field(default_factory=set)
     problems: list[str] = field(default_factory=list)  # "<file>: what's wrong"
     notes: list[str] = field(default_factory=list)
+    kept: dict[str, Counter[str]] = field(default_factory=dict)  # row -> ISO day -> kept: riffle status
+    late: bool = False  # a list late by its own margin (riffle.lateness)
+
+    def tally(self, day: str, row: str = "") -> None:
+        """One more kept on day, in a row of its own when a source has more than one."""
+        self.kept.setdefault(row, Counter())[day] += 1
 
     def summary(self) -> str:
         count = f"{self.files:,} {self.what}{'s' * (self.files != 1)}"
@@ -106,6 +113,7 @@ def store(lists: tuple[pricelists.PriceList, ...]) -> Report:
             continue
         rep.files += 1
         rep.days.add(path.parent.name)
+        rep.tally(path.parent.name)
         made = pricelists.kept_made(path, plist)
         if made is None:
             rep.problems.append(f"{_rel(path)}: no readable {plist.stamp}")
@@ -183,6 +191,7 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
             continue
         rep.files += 1
         rep.days.add(pricelists.day_of(made, plist).isoformat())
+        rep.tally(pricelists.day_of(made, plist).isoformat())
         _hashed(rep, entry)
         if made - got > SLACK:
             rep.problems.append(
@@ -225,6 +234,7 @@ def cardmarket_guides() -> Report:
     for path in sorted(cardmarket.daily_dir().glob("*/*.json.gz")):
         rep.files += 1
         rep.days.add(path.parent.name)
+        rep.tally(path.parent.name)
         made = cardmarket.stamp(path)
         if made is None:
             rep.problems.append(f"{_rel(path)}: no readable createdAt")
@@ -254,6 +264,7 @@ def _logged(rep: Report, store: str, day: Callable[[dict, datetime], date | None
             continue
         rep.files += 1
         rep.days.add(when.isoformat())
+        rep.tally(when.isoformat())
         _hashed(rep, entry)
         _made_late(rep, data_dir() / entry["file"], made, got)
 
@@ -281,6 +292,7 @@ def _lateness(rep: Report, lists: dict[str, list[datetime]], what: str) -> None:
             waiting.append(len(made) - 1)
             continue
         judged.append(verdict)
+        rep.late |= verdict.late
         if verdict.late:
             bar = elapsed((verdict.longest * verdict.margin).total_seconds())
             ago = elapsed(verdict.since.total_seconds())
@@ -315,6 +327,7 @@ def mtgjson_files() -> Report:
         for path in sorted(folder.glob("*.json.xz")):
             rep.files += 1
             named, inside = path.name.removesuffix(".json.xz"), _mtgjson_day(path)
+            rep.tally(named)
             if inside is None:
                 rep.problems.append(f"{_rel(path)}: no readable meta date")
             elif inside.isoformat() != named:
@@ -333,6 +346,7 @@ def goatbots_days() -> Report:
     for path in sorted(goatbots.daily_dir().glob("*.zip")):
         rep.files += 1
         named = path.name.removesuffix(".zip")
+        rep.tally(named)
         try:
             with zipfile.ZipFile(path) as zf:
                 days = goatbots.price_days(zf)
@@ -404,6 +418,10 @@ def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: li
             gid, when = late[0]
             more = f", and {len(late) - 1} more" if len(late) > 1 else ""
             rep.problems.append(f"{_rel(path)}: set {gid} is from a later refresh, {times.shown(when)}{more}")
+    if tcgcsv.finished(game):
+        rep.tally(day.isoformat(), "prices")
+    if products.exists():
+        rep.tally(day.isoformat(), "products")
     if part.exists():
         unfinished.append(f"{day} {game.name} (being fetched)")
     elif missing.exists():
@@ -451,6 +469,8 @@ def scryfall_days() -> Report:
         rep.files += 1
         day = _day(path.name.removesuffix(".jsonl.gz"))
         got = pricelists.fetched(path)
+        if day is not None:
+            rep.tally(day.isoformat())
         if day is None:
             rep.problems.append(f"{_rel(path)}: not named by a day")
         elif got is None:
@@ -458,20 +478,23 @@ def scryfall_days() -> Report:
         elif got.date() < day:
             rep.problems.append(f"{_rel(path)}: kept {times.shown(got)}, before its day began")
     published = {kind.replace("_", " "): scryfall.publishes(kind) for kind in scryfall.kinds()}
+    for made in (m for kept in published.values() for m in kept):
+        rep.tally(made.astimezone(UTC).date().isoformat())
     _lateness(rep, {kind: made for kind, made in published.items() if made}, "file")
     return rep
 
 
-CHECKS: tuple[Callable[[], Report], ...] = (
-    lambda: store(pricelists.CARD_KINGDOM),
-    lambda: store(pricelists.MANA_POOL),
-    cardmarket_guides,
-    mtgjson_files,
-    goatbots_days,
-    tcgcsv_days,
-    scryfall_days,
-)
+# Each source's check, by the name its Report gives it, so one that can't run can be named.
+CHECKS: dict[str, Callable[[], Report]] = {
+    "Card Kingdom": lambda: store(pricelists.CARD_KINGDOM),
+    "Mana Pool": lambda: store(pricelists.MANA_POOL),
+    "Cardmarket": cardmarket_guides,
+    "MTGJSON": mtgjson_files,
+    "GoatBots": goatbots_days,
+    "tcgcsv": tcgcsv_days,
+    "Scryfall": scryfall_days,
+}
 
 
 def run() -> list[Report]:
-    return [check() for check in CHECKS]
+    return [check() for check in CHECKS.values()]

@@ -917,6 +917,22 @@ def _resync_and_keep_watching() -> None:
         typer.echo(f"resync failed: {failure(e)}; still watching", err=True)
 
 
+@app.command("status")
+def status_cmd(
+    days: int = typer.Option(None, "--days", "-d", min=1, max=90, help="Days each strip shows [default: 14]"),
+) -> None:
+    """What Riffle has kept, source by source and day by day, with gaps marked; then the MTGO
+    backlog, the scheduled jobs, the store's size and free disk, and the backup. Reads only;
+    exits 1 if a source's files can't be read."""
+    from riffle import status
+
+    lines, readable = status.report(times.now(), days or status.DAYS, config.data_dir())
+    for line in lines:
+        typer.echo(line)
+    if not readable:
+        raise typer.Exit(1)
+
+
 @app.command("check")
 def check_cmd() -> None:
     """Check every kept price file: filed under the day its own stamp says, and made before it
