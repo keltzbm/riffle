@@ -6,6 +6,7 @@ import json
 import lzma
 import os
 import zipfile
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -300,11 +301,14 @@ def test_scryfall_s_bulk_types_are_judged_for_lateness(data, monkeypatch):
     scryfall_publishes("default_cards", 16, last)
     scryfall_publishes("rulings", 3, last, how="same_as")
     monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=1))
-    assert by_source()["Scryfall"].notes == [
+    rep = by_source()["Scryfall"]
+    assert rep.notes == [
         "1 file: lateness judged from 14 gaps, 2 so far",
         "1 file judged for lateness",
     ]
+    assert not rep.late and rep.kept[""]["2026-09-27"] == 4  # each publish, two a day of each type
     monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=16))
+    assert by_source()["Scryfall"].late
     assert by_source()["Scryfall"].notes[0] == (
         "default cards: late: the last was made 2026-09-27 21:05 UTC, 16h 00m ago, "
         "past 1.25 × its longest gap in 30 days (15h 00m)"
@@ -465,6 +469,7 @@ def test_a_tcgcsv_game_kept_in_its_runs_is_checked_as_its_record_says(data):
         "tcgcsv/daily/2026-09-27/mtg/kept.json: set 4 is from a later refresh, 2026-09-28 20:04 UTC",
         "tcgcsv/daily/2026-09-27/op/kept.json: unreadable",
     ]
+    assert rep.kept == {"prices": Counter({"2026-09-27": 2})}  # each game's day kept, for riffle status
     record = json.loads((day / "mtg" / "kept.json").read_text())
     (data / record["file"]).write_bytes(b"damaged")
     (data / record["file"]).with_name("2026-09-27T200459Z.copy.json.zst").unlink()
@@ -489,7 +494,9 @@ def test_a_tcgcsv_game_s_products_are_checked_as_their_record_says(data):
     tcgcsv._finish_products(day / "mtg", datetime(2026, 9, 27, 20, 4, 59, tzinfo=UTC))
     (day / "op").mkdir()
     (day / "op" / tcgcsv.PRODUCTS_KEPT).write_text("not JSON")
-    assert by_source()["tcgcsv"].problems == ["tcgcsv/daily/2026-09-27/op/products.json: unreadable"]
+    rep = by_source()["tcgcsv"]
+    assert rep.problems == ["tcgcsv/daily/2026-09-27/op/products.json: unreadable"]
+    assert rep.kept == {"products": Counter({"2026-09-27": 2})}
     record = json.loads((day / "mtg" / tcgcsv.PRODUCTS_KEPT).read_text())
     (data / record["file"]).write_bytes(b"damaged")
     assert (

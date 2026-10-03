@@ -7,6 +7,17 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- `riffle status`: what Riffle has kept, at a glance. Each source's last 14 days (`--days N`) as a strip, one
+  cell a day by the source's own clock, read from what `riffle check` reads: Card Kingdom, Mana Pool,
+  Cardmarket, MTGJSON, GoatBots, tcgcsv's prices and products (each game's day), Scryfall, and MTGO's events
+  by their dates. A cell's height is what was kept that day against the busiest day its row shows, in the
+  progress bars' braille (`⣀ ⣤ ⣶ ⣿`); `✗` is a day with nothing kept between days that had some, `·` one not
+  kept yet, and a row ends with its count and riffle check's verdict (`1 wrong`, `late`). Shape carries the
+  meaning and color only repeats it, in the progress bars' purple, so it reads in a log and for every kind of
+  color vision. Under the strips: MTGO's owed events by month and how far back its indexes are read, each
+  scheduled job loaded and any whose last run didn't exit 0, the store's size and the disk's free space, and
+  whether Time Machine has a destination. It asks no source anything; a source whose files can't be read
+  shows `unreadable (…)` on its row and the command exits 1.
 - Each set's products from tcgcsv, kept in `tcgcsv/products/<game>/` by the run rule: the catalog that names a
   price's `productId` (name, number, and `extendedData`: rules text, rarity, and for most games color, cost and
   type), for every game tcgcsv carries. Only the prices were kept, so a One Piece, Lorcana, Star Wars: Unlimited

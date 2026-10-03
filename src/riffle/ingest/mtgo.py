@@ -22,6 +22,7 @@ import hashlib
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass, field
@@ -246,6 +247,16 @@ def _event_files(folder: Path, since: date | None) -> Iterator[Path]:
     for month in sorted(folder.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]")):
         if f"{month.parent.name}-{month.name}" >= first:
             yield from month.glob("*.json")
+
+
+def kept_days() -> Counter[str]:
+    """Events kept, by the date in their names: every one in the store (riffle status)."""
+    found: Counter[str] = Counter()
+    for path in _event_files(store_dir(), None):
+        parsed = parse_slug(path.stem)
+        if parsed is not None:
+            found[parsed[1]] += 1
+    return found
 
 
 def _file_events() -> int:

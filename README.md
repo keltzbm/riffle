@@ -187,7 +187,15 @@ seven runs in a row the sync warns.
 ```bash
 riffle check                                # every kept file under its own day, made before it was fetched;
                                             # GoatBots' whole years to Dec 31; tcgcsv's unfinished games
+riffle status                               # what's kept, each source's last 14 days as a strip (--days N),
+                                            # gaps marked; MTGO's backlog, the jobs, disk, backup
 ```
+
+`riffle status` draws each day as a braille cell whose height is what was kept
+that day against the busiest day its row shows (`⣀ ⣤ ⣶ ⣿`); `✗` is a day with
+nothing kept between days that had some, `·` one not kept yet. The shapes say
+it all; color only repeats them, in the progress bars' purple. It reads what
+`riffle check` reads and asks no source anything.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
