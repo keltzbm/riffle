@@ -136,32 +136,31 @@ def test_filters_that_match_no_deck_together_say_so_and_exit_1(tmp_path, monkeyp
     assert decks("--format", "modern", "--strategy", "ramp", code=1) == ["no decks match"]
 
 
-def test_a_value_no_deck_has_names_the_ones_there_are(tmp_path, monkeypatch):
+def test_a_value_no_deck_has_names_the_ones_there_are(tmp_path, monkeypatch, plain):
     _vault(tmp_path, monkeypatch, AESI, BURN)
     result = CliRunner().invoke(app, ["decks", "--format", "moden"])
     assert result.exit_code == 2
-    assert "Invalid value for '--format': no deck has format moden; the vault has commander, modern" in (
-        " ".join(result.output.replace("│", " ").split())
-    )
+    said = "Invalid value for '--format': no deck has format moden; the vault has commander, modern"
+    assert said in plain(result.output)
 
 
-def test_among_many_values_a_typo_gets_the_close_ones(tmp_path, monkeypatch):
+def test_among_many_values_a_typo_gets_the_close_ones(tmp_path, monkeypatch, plain):
     notes = [{**BURN, "slug": f"deck-{n}", "archetype": f"theme{n}"} for n in range(13)]
     _vault(tmp_path, monkeypatch, *notes, {**BURN, "slug": "tribal", "archetype": "tribal"})
     result = CliRunner().invoke(app, ["decks", "--archetype", "tribel"])
     assert result.exit_code == 2
-    assert "no deck has archetype tribel; close: tribal" in " ".join(result.output.replace("│", " ").split())
+    assert "no deck has archetype tribel; close: tribal" in plain(result.output)
     result = CliRunner().invoke(app, ["decks", "--archetype", "zzz"])
-    assert "no deck has archetype zzz" in result.output and "close" not in result.output
+    assert "no deck has archetype zzz" in plain(result.output) and "close" not in result.output
 
 
 @pytest.mark.parametrize(
     ("args", "why"), [(["--colors", "wx"], "wubrg"), (["--sort", "price"], "one of name")]
 )
-def test_a_bad_color_or_sort_is_refused(tmp_path, monkeypatch, args, why):
+def test_a_bad_color_or_sort_is_refused(tmp_path, monkeypatch, plain, args, why):
     _vault(tmp_path, monkeypatch, BURN)
     result = CliRunner().invoke(app, ["decks", *args])
-    assert result.exit_code == 2 and why in result.output
+    assert result.exit_code == 2 and why in plain(result.output)
 
 
 @pytest.mark.parametrize(
