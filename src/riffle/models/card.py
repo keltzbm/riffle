@@ -20,6 +20,15 @@ class Printing:
 
 
 @dataclass(frozen=True)
+class PricedPrinting:
+    """What a card's price on a day needs from one of its printings (see Catalog.prices)."""
+
+    scryfall_id: str
+    playable: bool  # paper, and none of gold or silver border, memorabilia, oversized
+    digital: bool
+
+
+@dataclass(frozen=True)
 class CardRules:
     """Oracle-level facts the rules care about. Same for every printing."""
 

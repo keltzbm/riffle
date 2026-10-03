@@ -255,6 +255,21 @@ def test_a_price_is_the_cheapest_printing_that_can_be_played(cat):
     assert lotus.usd is None  # its playable printing has no price; Collectors' Edition's isn't it
 
 
+def test_a_kept_day_prices_each_card_as_the_catalog_does(cat):
+    """`riffle prices log` applies pricing.on_day to a kept day; for the day the catalog holds,
+    it must give what Catalog.prices gives: the rule written twice, once in SQL."""
+    from riffle.analysis import pricing
+
+    card_ids = {cid(sc.oracle_id(c)) for c in CARDS}
+    day = {c["id"]: c.get("prices") or {} for c in CARDS}
+    printings = cat.price_printings(card_ids | {"nope"})
+    assert printings.keys() == card_ids
+    assert pricing.on_day(printings, day) == cat.prices(card_ids)
+    tomb = {p.scryfall_id: p.playable for p in printings[cid("o-tomb")]}
+    assert tomb == {"tomb-1": True, "tomb-wc": False, "tomb-30a": False, "tomb-big": False, "tomb-un": False}
+    assert cat.price_printings([]) == {}
+
+
 def test_arena_rarity(cat):
     assert cat.arena_rarity(cid("o-oko")) == "mythic"  # the rare printing isn't on Arena
     assert cat.arena_rarity(cid("o-mox")) == "mythic"

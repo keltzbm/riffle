@@ -9,7 +9,7 @@ from collections.abc import Collection
 from datetime import date
 from typing import Protocol
 
-from riffle.models import CardRules, Prices, Printing
+from riffle.models import CardRules, PricedPrinting, Prices, Printing
 
 
 class Catalog(Protocol):
@@ -21,6 +21,10 @@ class Catalog(Protocol):
     def prices(self, card_ids: Collection[str]) -> dict[str, Prices]:
         """Each card's paper price, its cheapest printing that can be played (or its cheapest, for a
         card with none), and its cheapest MTGO price; unknown IDs are left out."""
+
+    def price_printings(self, card_ids: Collection[str]) -> dict[str, list[PricedPrinting]]:
+        """Each card's printings, for its price on a kept day by the rule prices() follows;
+        unknown IDs are left out."""
 
     def prices_day(self) -> date | None:
         """The day of Scryfall's prices the catalog holds: the UTC date Scryfall published the

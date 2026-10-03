@@ -14,6 +14,7 @@ import typer
 from riffle import config, disk, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
+from riffle.models import Deck
 from riffle.progress import Tracker, Watched, contained, elapsed, failure, open_tracker
 from riffle.store import Catalog
 
@@ -24,6 +25,8 @@ meta_app = typer.Typer(help="MTGO metagame: league 5-0s, challenges, showcases."
 app.add_typer(meta_app, name="meta")
 mtgo_app = typer.Typer(help="MTGO decklists from mtgo.com, a few pages at a time.", no_args_is_help=True)
 app.add_typer(mtgo_app, name="mtgo")
+prices_app = typer.Typer(help="Card prices from the days the store keeps.", no_args_is_help=True)
+app.add_typer(prices_app, name="prices")
 
 # ---- tab completion --------------------------------------------------------------------
 # The shell runs `riffle` itself on every Tab press and offers what these return. When
@@ -670,15 +673,111 @@ def _columns(rows: Sequence[Sequence[str]], right: Collection[int] = ()) -> list
     return lines
 
 
+def _colors(deck: Deck) -> str:
+    """The note's colors as letters, "WU"; "C" for colorless, nothing when the note doesn't say."""
+    value = deck.meta.get("colors")
+    if value is None:
+        return ""
+    letters = "".join(value if isinstance(value, list) else [str(value)]).upper()
+    return letters or "C"
+
+
+def _listed(value: object) -> list[object]:
+    """A frontmatter value as a list: a list's items, a value alone, nothing when missing."""
+    return [v for v in (value if isinstance(value, list) else [value]) if v is not None]
+
+
+def _matches(value: object, wanted: str) -> bool:
+    """A frontmatter value is wanted, in any case; a list is when any of its items is."""
+    return any(str(v).lower() == wanted.lower() for v in _listed(value))
+
+
+def _known(field: str, wanted: str | None, found: list[Deck]) -> None:
+    """A value no deck note has is a typo or a missing note: say which values there are."""
+    if wanted is None or not found or any(_matches(d.meta.get(field), wanted) for d in found):
+        return
+    values = sorted({str(v) for d in found for v in _listed(d.meta.get(field))})
+    if len(values) <= 12:
+        hint = f"; the vault has {', '.join(values)}" if values else ""
+    else:
+        import difflib
+
+        close = difflib.get_close_matches(wanted, values, n=3)
+        hint = f"; close: {', '.join(close)}" if close else ""
+    raise typer.BadParameter(f"no deck has {field} {wanted}{hint}", param_hint=f"'--{field}'")
+
+
+SORTS = ("name", "format", "strategy", "colors", "cards", "checked", "to-buy")
+
+
 @app.command()
-def decks() -> None:
-    """List the deck notes the vault holds."""
+def decks(
+    fmt: str = typer.Option(None, "--format", help="Only this format: commander, modern, …"),
+    strategy: str = typer.Option(None, "--strategy", help="Only this strategy: aggro, control, …"),
+    colors: str = typer.Option(None, "--colors", help="Exactly these colors, any order: wu; c for colorless"),
+    archetype: str = typer.Option(None, "--archetype", help="Only this archetype: tribal, ramp, …"),
+    to_buy: int = typer.Option(None, "--to-buy", min=0, help="At most N cards left to buy"),
+    sort: str = typer.Option("name", "--sort", help=" | ".join(SORTS), autocompletion=_choices(*SORTS)),
+) -> None:
+    """List the deck notes: format, strategy, colors, cards, when the list was last checked.
+    Filters narrow it; --to-buy reads the collection and adds a column of cards still to buy."""
+    if sort not in SORTS:
+        raise typer.BadParameter(f"one of {', '.join(SORTS)}", param_hint="'--sort'")
+    wanted_colors = None
+    if colors is not None:
+        if not colors or set(colors.upper()) - set("WUBRGC"):
+            raise typer.BadParameter("letters from wubrg, or c for colorless", param_hint="'--colors'")
+        wanted_colors = set(colors.upper()) - {"C"}
     cfg = config.load()
-    rows = [
-        (d.slug, _text(d.meta.get("format")), _text(d.meta.get("status")), f"{d.count()} cards")
-        for d in vault.decks(cfg.mtg_dir)
+    found = vault.decks(cfg.mtg_dir)
+    for field, wanted in (("format", fmt), ("strategy", strategy), ("archetype", archetype)):
+        _known(field, wanted, found)
+    kept = [
+        d
+        for d in found
+        if all(
+            wanted is None or _matches(d.meta.get(field), wanted)
+            for field, wanted in (("format", fmt), ("strategy", strategy), ("archetype", archetype))
+        )
+        and (wanted_colors is None or set(_colors(d)) - {"C"} == wanted_colors)
     ]
-    for line in _columns(rows, right={3}):
+    short: dict[str, int] = {}
+    if to_buy is not None or sort == "to-buy":
+        from riffle.analysis.ownership import BUY, summary
+
+        with _setup() as (_, cat, inv):
+            short = {d.slug: summary(syncmod.analyse(d, inv, cat).rows)[BUY] for d in kept}
+        if to_buy is not None:
+            kept = [d for d in kept if short[d.slug] <= to_buy]
+    if not kept:
+        if found:
+            _echo("no decks match", err=True)
+            raise typer.Exit(1)
+        return
+    keys = {
+        "name": lambda d: (d.slug,),
+        "format": lambda d: (_text(d.meta.get("format")), d.slug),
+        "strategy": lambda d: (_text(d.meta.get("strategy")), d.slug),
+        "colors": lambda d: (_colors(d), d.slug),
+        "cards": lambda d: (d.count(), d.slug),
+        "checked": lambda d: (_text(d.meta.get("checked")), d.slug),
+        "to-buy": lambda d: (short[d.slug], d.slug),
+    }
+    rows = []
+    for d in sorted(kept, key=keys[sort]):
+        checked = _text(d.meta.get("checked"))
+        row = [
+            d.slug,
+            _text(d.meta.get("format")),
+            _text(d.meta.get("strategy")),
+            _colors(d),
+            f"{d.count()} cards",
+            f"checked {checked}" if checked else "not checked",
+        ]
+        if short:
+            row.append(f"{short[d.slug]} to buy")
+        rows.append(row)
+    for line in _columns(rows, right={4} | ({6} if short else set())):
         typer.echo(line)
 
 
@@ -751,6 +850,52 @@ def price(
         typer.echo(f"  {verdict}{extra} a {budget_tix:,.0f}-tix budget")
     if dp.missing_on_mtgo:
         typer.echo(f"not on MTGO: {', '.join(dp.missing_on_mtgo)}")
+
+
+@prices_app.command("log")
+def prices_log(
+    cards: list[str] = typer.Argument(None, help="Card names [default: every unticked #mtg/buy line's]"),
+) -> None:
+    """Each card's price on every Scryfall day the store keeps, a line a card a day:
+    `date | card | paper | tix`, by the rule deck prices use. What _log/prices.md held."""
+    from riffle.analysis import pricing
+    from riffle.export import obsidian
+    from riffle.ingest import scryfall
+
+    days = scryfall.price_days()
+    if not days:
+        _echo("no Scryfall price days kept yet; riffle sync keeps one a day", err=True)
+        raise typer.Exit(1)
+    failed = False
+    if cards:
+        names = cards
+    else:
+        unreadable: vault.Unreadable = []
+        names = vault.buy_cards(config.load().notes, unreadable)
+        for path, why in unreadable:
+            _echo(f"  ! can't read {path} ({why}); its buy lines are left out", err=True)
+    with _catalog() as cat:
+        wanted: dict[str, str] = {}  # card_id -> name, as the catalog has it
+        for name in names:
+            card_id = cat.resolve(name)
+            if card_id is None:
+                _echo(f"no card named {name!r}" if cards else f"  ! buy list: unmatched {name}", err=True)
+                failed = failed or bool(cards)
+            else:
+                wanted[card_id] = cat.name(card_id)
+        printings = cat.price_printings(wanted)
+    order = sorted(wanted, key=lambda card_id: wanted[card_id])
+    for day, path in days:
+        try:
+            prices = pricing.on_day(printings, scryfall.day_prices(path, pricing.scryfall_ids(printings)))
+        except scryfall.Unreadable as e:
+            _echo(f"  ! {day}: {e}; that day is left out", err=True)
+            failed = True
+            continue
+        for card_id in order:
+            typer.echo(obsidian.price_line(day.isoformat(), wanted[card_id], prices[card_id]))
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command("export")
@@ -832,7 +977,6 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         tracker.step(label).fail(why)
     _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
-        f"{res.prices_logged} prices logged{f' for {res.prices_day}' if res.prices_day else ''} · "
         f"versions changed: {', '.join(res.versions) or 'none'}"
     )
     if res.removed:
