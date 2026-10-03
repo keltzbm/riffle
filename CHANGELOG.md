@@ -364,6 +364,15 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A card's price was its cheapest paper printing of any kind, so a gold-bordered World Championship
+  copy, a Collectors' Edition or 30th Anniversary one, an art card or an oversized one set it: Ancient Tomb
+  was $56.21 (its 1999 World Championship printing) against $123.01 for the cheapest that can be played,
+  and nearly every Commander list's "still to buy" was low, by up to about $175 (C48). A price is now the
+  cheapest printing that can be played: not gold- or silver-bordered, not from a memorabilia set, not
+  oversized. A card with no such printing (an Un-card, a plane, a scheme) keeps its cheapest; one whose
+  playable printings have no price has none, and is named among the cards without a price. Measured on
+  the catalog of 2026-10-02: 188 cards' prices change, none down; 124 rise by half or more (Gaea's Cradle
+  $302.69 to $1,627.48) and 7 lose theirs (Black Lotus and Mox Sapphire among them).
 - tcgcsv's request budget was per run, so two runs on one day could ask for 9,000 each, past tcgcsv's 10,000 a
   day (audit C13). Every request, the watch's checks too, is now counted under its UTC day in
   `tcgcsv/requests.json`, and a game's prices wait for the next day when they'd take the day past 9,000.
