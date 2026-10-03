@@ -7,6 +7,17 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- `riffle prices log [CARD…]`: each card's price on every Scryfall day the store keeps, a line a card a
+  day as `date | card | paper | tix`, by the rule deck prices use (the cheapest printing that can be played;
+  MTGO, the cheapest tix). With no names, every card on an unticked `#mtg/buy` line, as the vault's
+  `_log/prices.md` had them. A name that isn't a card says `no card named '…'` and exits 1; a kept day that
+  can't be read is named, left out, and exits 1; with no days kept it says `riffle sync` keeps one a day.
+- `riffle decks` shows each deck's format, strategy, colors (`GU`, `C` for colorless), cards, and when its
+  list was last checked, sorted by name or by `--sort format|strategy|colors|cards|checked|to-buy`, and
+  narrows to `--format`, `--strategy`, `--archetype`, `--colors` (exactly these, in any order) and
+  `--to-buy N` (at most N cards still to buy, read from the collection, in a column of its own). A value no
+  deck has is refused with the ones there are (`no deck has format moden; the vault has commander, …`), or the
+  close ones among many; filters that together match nothing say `no decks match` and exit 1.
 - `riffle status`: what Riffle has kept, at a glance. Each source's last 14 days (`--days N`) as a strip, one
   cell a day by the source's own clock, read from what `riffle check` reads: Card Kingdom, Mana Pool,
   Cardmarket, MTGJSON, GoatBots, tcgcsv's prices and products (each game's day), Scryfall, and MTGO's events
@@ -220,6 +231,22 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The sync writes a generated note only when what it says changes: the notes no longer carry
+  `generated: <date>`, which made every sync of a new day rewrite all of them, 4,492 notes and 33.6 MB through
+  the sync service. A second sync on the same Scryfall day writes none; the first sync of a new price day
+  still rewrites most, since their prices move. Each note is written whole, to a temporary file renamed over
+  it, so a sync service or Obsidian never reads half of one.
+- The sync no longer appends to `_log/prices.md`, which grew by a line a buy card a day and was read whole by
+  every sync; `riffle prices log` prints the same history from the store. The first sync ends the log with a
+  line saying so, and the summary line drops `prices logged`. Buy lines are no longer read by the sync, so an
+  unmatched one is reported by `riffle prices log`.
+- The sync saves the state its version logs diff against once, after the last deck, instead of after each
+  deck whose list changed (up to 9 MB, written thousands of times a day when many lists changed); a run cut
+  off partway still saves the logs it appended.
+- Listing the deck notes, finding buy lines and `riffle sync --watch` never walk into `_generated/` and
+  `_log/`, which held thousands of files only to be skipped.
+- Own and buy are `✓` and `○`, apart by shape, in the notes and in `riffle own`; they were a green and a red
+  square, apart only by color.
 - The MTGO trickle paces itself by how mtgo.com answers. mtgo.com builds a page when it's first asked for; a build
   past about 30 seconds answers with a page without lists or a redirect to `/decklists`, and the page is ready for
   the next request for under an hour (of 104 failed answers to 2026-10-02, 38 took 29.5 to 31.5 s; of 246 whole
@@ -375,6 +402,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A sync service's conflict copy of a deck note (pCloud's `[conflicted]`, Dropbox's and Nextcloud's
+  `conflicted copy`, Syncthing's `.sync-conflict-`) was read as a deck of its own. Conflict copies of deck
+  notes and version logs are no longer read, and the sync names each: `sync-conflict copies, not read; merge
+  each by hand: …`. Those in `_generated/` are deleted, as before, since the notes are rebuilt.
+- `riffle decks` printed a `status` column deck notes stopped having on 2026-09-29.
 - A card's price was its cheapest paper printing of any kind, so a gold-bordered World Championship
   copy, a Collectors' Edition or 30th Anniversary one, an art card or an oversized one set it: Ancient Tomb
   was $56.21 (its 1999 World Championship printing) against $123.01 for the cheapest that can be played,

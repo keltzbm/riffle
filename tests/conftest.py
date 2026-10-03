@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from riffle import disk
-from riffle.models import CardRules, Prices, Printing
+from riffle.models import CardRules, PricedPrinting, Prices, Printing
 
 CARDS = {
     # card_id: (name, layout, usd, tix)
@@ -126,6 +126,10 @@ class FakeCatalog:
 
     def prices_day(self):
         return self.day
+
+    def price_printings(self, card_ids):
+        """One printing a card, playable, its Scryfall ID "s-" and the card's."""
+        return {c: [PricedPrinting(f"s-{c}", True, False)] for c in card_ids if c in CARDS}
 
     def printings(self, sids):
         return {s: PRINTINGS[s] for s in sids if s in PRINTINGS}

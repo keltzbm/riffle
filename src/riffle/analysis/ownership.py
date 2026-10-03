@@ -10,7 +10,7 @@ from riffle.models import Deck
 from riffle.store import Catalog
 
 OWN, BUY = "own", "buy"
-MARK = {OWN: "🟩", BUY: "🟥"}
+MARK = {OWN: "✓", BUY: "○"}  # apart by shape, not color: read the same in any terminal or vision
 RARITIES = ("mythic", "rare", "uncommon", "common")
 
 

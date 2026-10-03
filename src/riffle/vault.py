@@ -5,17 +5,27 @@ whose body holds a decklist in a fenced code block — preferably under a
 "Moxfield import" heading. Nothing here writes; see export/obsidian.py.
 """
 
+import os
 import re
+from collections.abc import Collection, Iterator
 from pathlib import Path
 
 from riffle.ingest.decklist import LINE, parse_text
 from riffle.models import Deck
 
 SKIP_DIRS = {"_generated", "_log", "archetypes", "matchups"}
+MACHINE = {"_generated", "_log"}  # what Riffle writes; never read for lists or buy lines
 
 Unreadable = list[tuple[Path, str]]  # a note that couldn't be read, and why
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 BUY_LINE = re.compile(r"^\s*- \[ \] .*?\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\].*#mtg/buy\b", re.M)
+# The copy a sync service keeps when a file changed in two places at once: pCloud's
+# "note [conflicted 2].md", Dropbox's and Nextcloud's "note (… conflicted copy …).md",
+# Syncthing's "note.sync-conflict-20261002-061151-ABCDEFG.md". A card named "Zuko,
+# Conflicted" is not one.
+CONFLICT = re.compile(
+    r" \[conflicted(?: \d+)?\]\.md$|\(.*conflicted copy.*\)\.md$|\.sync-conflict-\d{8}-\d{6}-\w+\.md$", re.I
+)
 
 
 def frontmatter(text: str) -> dict:
@@ -80,10 +90,32 @@ def read_deck(path: Path) -> Deck | None:
     return deck
 
 
+def is_conflict(path: Path) -> bool:
+    """Whether a sync service made this file as a conflict copy (see CONFLICT)."""
+    return CONFLICT.search(path.name) is not None
+
+
+def _notes(root: Path, skip: Collection[str]) -> Iterator[Path]:
+    """Every .md under root, never entering a folder named in skip: _generated/ holds a note
+    per deck, so a walk that only filtered it out would still list thousands."""
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in skip]
+        yield from (Path(folder, name) for name in files if name.endswith(".md"))
+
+
 def deck_notes(mtg_dir: Path) -> list[Path]:
-    return sorted(
-        p for p in mtg_dir.rglob("*.md") if not SKIP_DIRS.intersection(p.relative_to(mtg_dir).parts[:-1])
-    )
+    """Every note a deck may be in. A sync service's conflict copy isn't one: see conflicts()."""
+    return sorted(p for p in _notes(mtg_dir, SKIP_DIRS) if not is_conflict(p))
+
+
+def conflicts(mtg_dir: Path) -> list[Path]:
+    """The conflict copies among the deck notes and the version logs, for a person to merge.
+    _generated/'s are rebuilt, and pruned with the rest of what a sync didn't write."""
+    found = [p for p in _notes(mtg_dir, SKIP_DIRS) if is_conflict(p)]
+    logs = mtg_dir / "_log"
+    if logs.is_dir():
+        found += [p for p in logs.iterdir() if is_conflict(p)]
+    return sorted(found)
 
 
 def _why(e: OSError | UnicodeDecodeError) -> str:
@@ -129,8 +161,8 @@ def buy_cards(tcg_dir: Path, unreadable: Unreadable | None = None) -> list[str]:
     """Card names on every unticked #mtg/buy line in the vault, deduplicated. A note that
     can't be read raises, or is skipped and listed in unreadable, as in decks()."""
     seen: dict[str, None] = {}
-    for p in tcg_dir.rglob("*.md"):
-        if "_generated" in p.parts or "_log" in p.parts:
+    for p in _notes(tcg_dir, MACHINE):
+        if is_conflict(p):
             continue
         try:
             text = p.read_text(encoding="utf-8")

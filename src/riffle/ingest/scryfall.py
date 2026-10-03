@@ -516,6 +516,39 @@ def prices_dir() -> Path:
     return data_dir() / "scryfall" / "daily"
 
 
+class Unreadable(ValueError):
+    """A kept price day that can't be read: cut short, corrupt, or not JSON."""
+
+
+def price_days() -> list[tuple[date, Path]]:
+    """Every price day kept (snapshot_prices), oldest first."""
+    days = []
+    for path in prices_dir().glob("????-??-??.jsonl.gz"):
+        try:
+            days.append((date.fromisoformat(path.name[:10]), path))
+        except ValueError:
+            continue  # not a day's file
+    return sorted(days)
+
+
+ID_FROM = len('{"id":"')  # where snapshot_prices puts a printing's ID on its line
+
+
+def day_prices(path: Path, scryfall_ids: set[str]) -> dict[str, dict]:
+    """The prices a kept day gives these printings, by Scryfall ID. Only their lines are parsed:
+    a day holds every printing, about 118,000."""
+    found = {}
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            for line in f:
+                if line[ID_FROM : line.find('"', ID_FROM)] in scryfall_ids:
+                    card = json.loads(line)
+                    found[card["id"]] = card.get("prices") or {}
+    except (OSError, EOFError, zlib.error, ValueError, KeyError) as e:
+        raise Unreadable(f"{path.name} can't be read ({e or type(e).__name__})") from e
+    return found
+
+
 def bulk_file() -> Path | None:
     """The newest default-cards file kept, or the one kept before 0.4.0 until the first refresh
     moves it."""

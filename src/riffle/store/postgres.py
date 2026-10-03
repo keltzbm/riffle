@@ -25,7 +25,7 @@ from sqlalchemy.exc import OperationalError
 
 from riffle import db
 from riffle.db import migrate
-from riffle.models import CardRules, Prices, Printing
+from riffle.models import CardRules, PricedPrinting, Prices, Printing
 
 GAME = "mtg"
 BASICS = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
@@ -81,6 +81,17 @@ PRICES = text(f"""
         JOIN sets AS s ON s.set_id = p.set_id
         WHERE p.card_id = w.card_id AND p.retired_at IS NULL
     ) AS a
+""")
+
+# Each card's printings, whether each can be played, by its Scryfall ID: what a kept price day
+# is keyed by. pricing.on_day applies PRICES' rule to a day's prices.
+PRICED_PRINTINGS = text(f"""
+    SELECT p.card_id::text, e.external_id, ({_PLAYABLE}) AS playable, mp.digital
+    FROM printings AS p
+    JOIN external_ids AS e ON e.printing_id = p.printing_id AND e.source = 'scryfall'
+    JOIN mtg_printings AS mp ON mp.printing_id = p.printing_id
+    JOIN sets AS s ON s.set_id = p.set_id
+    WHERE p.card_id = ANY(CAST(:ids AS uuid[])) AND p.retired_at IS NULL
 """)
 
 # The cards asked for are joined as a list (unnest), so each is found by its key.
@@ -229,6 +240,14 @@ class PostgresCatalog:
             for card_id, usd, tix in self.conn.execute(PRICES, {"ids": wanted}):
                 self._prices[card_id] = Prices(usd=usd, tix=tix)
         return {c: p for c in card_ids if (p := self._prices.get(c)) is not None}
+
+    def price_printings(self, card_ids: Collection[str]) -> dict[str, list[PricedPrinting]]:
+        wanted = [c for c in set(card_ids) if c in self._cards]
+        found: dict[str, list[PricedPrinting]] = {c: [] for c in wanted}
+        if wanted:
+            for card_id, *printing in self.conn.execute(PRICED_PRINTINGS, {"ids": wanted}):
+                found[card_id].append(PricedPrinting(*printing))
+        return found
 
     def prices_day(self) -> date | None:
         from riffle.db.catalog import loaded_through

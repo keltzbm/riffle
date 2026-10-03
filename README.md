@@ -29,13 +29,15 @@ riffle sync --offline
 
 ```bash
 riffle sync                        # picks up a new ManaBox export from ~/Downloads, refreshes
-                                   # prices, rewrites _generated/, appends _log/
-riffle decks                       # deck notes the vault holds
-riffle own aesi-lands              # 🟥 what to buy (default); numbers are copies in the deck
-riffle own aesi-lands -a           # 🟥 buy, then 🟩 own
+                                   # prices, writes what changed in _generated/, appends _log/
+riffle decks                       # deck notes the vault holds: format, strategy, colors, cards
+riffle decks --format modern --strategy control --sort to-buy
+riffle own aesi-lands              # ○ what to buy (default); numbers are copies in the deck
+riffle own aesi-lands -a           # ○ buy, then ✓ own
 riffle own aesi-lands -s own       # just what you have
 riffle own aesi-lands --arena      # against your Arena collection, with wildcard counts
 riffle price yshtola-spellslinger --budget-tix 500
+riffle prices log "Gaea's Cradle"  # its price on every Scryfall day kept; no name: every buy card
 riffle export aesi-lands --to moxfield -o ~/Downloads/aesi.txt   # owned printings pinned
 riffle export all --to manabox -o ~/Downloads/mtg-exports        # every deck, one file each
 riffle export izzet-murktide --to mtgo

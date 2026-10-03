@@ -41,7 +41,7 @@ Both are the same bug: **name is not a key.**
 │   ├── <deck>.data.md          owned/buy counts, paper and MTGO totals, buy table
 │   └── collection-summary.md
 ├── _log/           append-only
-│   ├── prices.md               one snapshot per day of every unticked #mtg/buy card
+│   ├── prices.md               closed in 0.4.0: `riffle prices log` reads the store's days
 │   └── <deck>.versions.md      a +/- diff each time a list changes
 └── commander/ …    authored — read, never written
 ```

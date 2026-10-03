@@ -25,7 +25,7 @@ def run(*args):
 def test_own_lists_what_to_buy(deck, opened):
     result = run("own", deck)
     assert result.exit_code == 0, result.output
-    assert "🟥  4  Lightning Bolt" in result.output and "unmatched: Not A Card" in result.output
+    assert "○  4  Lightning Bolt" in result.output and "unmatched: Not A Card" in result.output
     assert opened == ["open", "close"]
 
 
@@ -79,8 +79,6 @@ def test_an_offline_sync_writes_the_vault_from_the_catalog(tmp_path, monkeypatch
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (tmp_path / "2026-09-26.jsonl.gz", False))
     result = run("sync", "--offline")
     assert result.exit_code == 0, result.output
-    assert (
-        "1 decks · 2 notes updated · 0 prices logged for 2026-09-21 · " in result.output
-    )  # the catalog's day
+    assert "1 decks · 2 notes updated · versions changed: burn" in result.output
     assert (mtg / "_generated" / "burn-data.md").exists()
     assert opened == ["open", "close"]

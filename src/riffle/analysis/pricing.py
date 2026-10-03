@@ -5,10 +5,12 @@ it's roughly what a Cardhoarder rental or purchase costs. MTGO totals use
 the whole list — a digital collection doesn't share your paper cards.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 from riffle.analysis.ownership import Row
-from riffle.models import Prices
+from riffle.models import PricedPrinting, Prices
 from riffle.store import Catalog
 
 
@@ -53,3 +55,33 @@ def price(rows: list[Row], catalog: Catalog) -> DeckPrice:
         p = prices.get(row.card_id, Prices())
         lines.append(Line(row.name, row.needed, row.shortfall, p.usd, p.tix))
     return DeckPrice(lines)
+
+
+def scryfall_ids(printings: Mapping[str, list[PricedPrinting]]) -> set[str]:
+    """Every printing a kept day must be read for, to price these cards."""
+    return {p.scryfall_id for found in printings.values() for p in found}
+
+
+def _amount(value: object) -> float | None:
+    """A price as Scryfall writes it, "1.23"; None for none, or one that isn't a number."""
+    if value is None:
+        return None
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return float(amount) if amount.is_finite() else None
+
+
+def on_day(printings: Mapping[str, list[PricedPrinting]], day: Mapping[str, Mapping]) -> dict[str, Prices]:
+    """Each card's price on a kept day (scryfall.day_prices), by Catalog.prices' rule: paper, the
+    cheapest printing that can be played, or for a card with none its cheapest paper printing;
+    a card whose playable printings have no price has none; MTGO, the cheapest tix of any."""
+    out = {}
+    for card_id, found in printings.items():
+        playable = [p for p in found if p.playable]
+        paper = playable or [p for p in found if not p.digital]
+        usd = [a for p in paper if (a := _amount(day.get(p.scryfall_id, {}).get("usd"))) is not None]
+        tix = [a for p in found if (a := _amount(day.get(p.scryfall_id, {}).get("tix"))) is not None]
+        out[card_id] = Prices(usd=min(usd, default=None), tix=min(tix, default=None))
+    return out
