@@ -124,6 +124,24 @@ CARDS = [
     card("bolt-1", "o-bolt", "Lightning Bolt", prices={"usd": "2.50", "tix": "0.05"}),
     card("bolt-2", "o-bolt", "Lightning Bolt", prices={"usd": "1.25", "tix": "0.50"}, set="m10"),
     card("bolt-mo", "o-bolt", "Lightning Bolt", digital=True, prices={"usd": "0.01", "tix": "0.02"}),
+    # a price is the cheapest printing that can be played (C48): not gold- or silver-bordered, not
+    # from a memorabilia set, not oversized; a card with none falls back to its cheapest
+    card("tomb-1", "o-tomb", "Ancient Tomb", prices={"usd": "123.01"}),
+    card(
+        "tomb-wc",
+        "o-tomb",
+        "Ancient Tomb",
+        set="wc99",
+        set_type="memorabilia",
+        border_color="gold",
+        prices={"usd": "56.21"},
+    ),
+    card("tomb-30a", "o-tomb", "Ancient Tomb", set="30a", set_type="memorabilia", prices={"usd": "60.00"}),
+    card("tomb-big", "o-tomb", "Ancient Tomb", set="ocmd", oversized=True, prices={"usd": "1.00"}),
+    card("tomb-un", "o-tomb", "Ancient Tomb", set="ptg", border_color="silver", prices={"usd": "2.00"}),
+    card("hans", "o-hans", '"Ach! Hans, Run!"', set="unh", border_color="silver", prices={"usd": "0.50"}),
+    card("lotus-1", "o-lotus", "Black Lotus", set="lea", prices={}),
+    card("lotus-ce", "o-lotus", "Black Lotus", set="ced", set_type="memorabilia", prices={"usd": "3000.00"}),
     # a Japanese printing with the English one's set and number
     card(
         "forest-ja", "o-forest", "Forest", lang="ja", collector_number="266", type_line="Basic Land — Forest"
@@ -227,6 +245,14 @@ def test_prices_are_the_cheapest_printing(cat):
     assert (bolt.usd, bolt.tix) == (1.25, 0.02)  # the digital printing's paper price doesn't count
     assert (sol.usd, sol.tix) == (1.0, 0.1)  # the art card's $0.25 is its own
     assert cat.prices([cid("o-sol")]) == {cid("o-sol"): sol} and cat.prices([]) == {}
+
+
+def test_a_price_is_the_cheapest_printing_that_can_be_played(cat):
+    found = cat.prices([cid("o-tomb"), cid("o-hans"), cid("o-lotus")])
+    tomb, hans, lotus = found[cid("o-tomb")], found[cid("o-hans")], found[cid("o-lotus")]
+    assert tomb.usd == 123.01  # not the gold border's $56.21, 30A's, the oversized or the silver
+    assert hans.usd == 0.5  # every printing silver-bordered: its cheapest
+    assert lotus.usd is None  # its playable printing has no price; Collectors' Edition's isn't it
 
 
 def test_arena_rarity(cat):

@@ -54,15 +54,31 @@ PRINTING_COUNTS = text("""
     ) AS a
 """)
 
-# The cheapest paper and MTGO price among these cards' printings. Digital printings have no
-# paper price of their own, so they're left out of the paper minimum.
-PRICES = text("""
+# A paper printing that can be played: not gold- or silver-bordered (World Championship decks,
+# Un-sets), not from a memorabilia set (Collectors' Edition, 30th Anniversary, art series), not
+# oversized. Those cost a fraction of a real copy: the 1999 World Championship Ancient Tomb was
+# $56.21 against $123.01 for the cheapest that can be played (C48).
+_PLAYABLE = """
+    NOT mp.digital
+    AND coalesce(mp.border_color, '') NOT IN ('gold', 'silver')
+    AND s.set_type IS DISTINCT FROM 'memorabilia'
+    AND NOT coalesce((p.extra ->> 'oversized')::boolean, false)
+"""
+
+# The cheapest paper price among these cards' printings that can be played; for a card with
+# none (an Un-card, a plane, a scheme), its cheapest paper printing. A card whose playable
+# printings have no price has none. Digital printings have no paper price of their own; the
+# MTGO price is the cheapest tix of any printing.
+PRICES = text(f"""
     SELECT w.card_id::text, a.usd, a.tix
     FROM unnest(CAST(:ids AS uuid[])) AS w (card_id)
     CROSS JOIN LATERAL (
-        SELECT (min(mp.usd) FILTER (WHERE NOT mp.digital))::float8 AS usd, min(mp.tix)::float8 AS tix
+        SELECT (CASE WHEN bool_or({_PLAYABLE}) THEN min(mp.usd) FILTER (WHERE {_PLAYABLE})
+                     ELSE min(mp.usd) FILTER (WHERE NOT mp.digital) END)::float8 AS usd,
+               min(mp.tix)::float8 AS tix
         FROM printings AS p
         JOIN mtg_printings AS mp ON mp.printing_id = p.printing_id
+        JOIN sets AS s ON s.set_id = p.set_id
         WHERE p.card_id = w.card_id AND p.retired_at IS NULL
     ) AS a
 """)

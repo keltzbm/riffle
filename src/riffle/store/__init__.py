@@ -19,7 +19,8 @@ class Catalog(Protocol):
     def name(self, card_id: str) -> str: ...
 
     def prices(self, card_ids: Collection[str]) -> dict[str, Prices]:
-        """Each card's cheapest paper and MTGO price across its printings; unknown IDs are left out."""
+        """Each card's paper price, its cheapest printing that can be played (or its cheapest, for a
+        card with none), and its cheapest MTGO price; unknown IDs are left out."""
 
     def prices_day(self) -> date | None:
         """The day of Scryfall's prices the catalog holds: the UTC date Scryfall published the
