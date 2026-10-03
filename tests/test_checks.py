@@ -477,6 +477,27 @@ def test_a_tcgcsv_game_kept_in_its_runs_is_checked_as_its_record_says(data):
     assert any(p.startswith("tcgcsv/daily/2026-09-27/mtg/kept.json: unreadable (") for p in problems)
 
 
+def test_a_tcgcsv_game_s_products_are_checked_as_their_record_says(data):
+    from riffle.ingest import tcgcsv
+
+    day = data / "tcgcsv" / "daily" / "2026-09-27"
+    (day / "mtg").mkdir(parents=True)
+    (day / "last-updated.txt").write_text("2026-09-27T20:04:59+0000")
+    at(day / "last-updated.txt", FETCHED)
+    line = '{"groupId": 1, "fetched": "2026-09-27T20:30:00+00:00", "lastModified": null, "modifiedOn": null, '
+    (day / "mtg" / tcgcsv.PRODUCTS_PART).write_text(line + '"response": null}\n')
+    tcgcsv._finish_products(day / "mtg", datetime(2026, 9, 27, 20, 4, 59, tzinfo=UTC))
+    (day / "op").mkdir()
+    (day / "op" / tcgcsv.PRODUCTS_KEPT).write_text("not JSON")
+    assert by_source()["tcgcsv"].problems == ["tcgcsv/daily/2026-09-27/op/products.json: unreadable"]
+    record = json.loads((day / "mtg" / tcgcsv.PRODUCTS_KEPT).read_text())
+    (data / record["file"]).write_bytes(b"damaged")
+    assert (
+        "tcgcsv/products/mtg/2026-09-27T200459Z/2026-09-27T200459Z.json.zst: changed since it was kept; "
+        "its other copy is whole, and the next list kept writes it again"
+    ) in by_source()["tcgcsv"].problems
+
+
 def tcgcsv_days(n: int, last: datetime) -> None:
     for k in range(n):
         made = last - timedelta(days=k)
