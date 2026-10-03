@@ -370,7 +370,8 @@ def _set_times(path: Path) -> list[tuple[int, datetime]]:
 
 
 def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: list[str]) -> None:
-    """A game's sets, each from no later refresh than its day's; and whether it's finished."""
+    """A game's sets, each from no later refresh than its day's; whether it's finished; and its
+    products kept that day, as kept."""
     day = date.fromisoformat(game.parent.name)
     kept, part, missing = (game / name for name in (tcgcsv.PRICES, tcgcsv.PART, tcgcsv.MISSING))
     record = game / tcgcsv.KEPT
@@ -381,6 +382,12 @@ def _tcgcsv_game(rep: Report, game: Path, stamp: datetime | None, unfinished: li
             days.append(record)
         except (ValueError, KeyError, TypeError):
             rep.problems.append(f"{_rel(record)}: unreadable")
+    products = game / tcgcsv.PRODUCTS_KEPT
+    if products.exists():
+        try:
+            _hashed(rep, json.loads(products.read_text(encoding="utf-8")))
+        except (ValueError, KeyError, TypeError):
+            rep.problems.append(f"{_rel(products)}: unreadable")
     for path in days:
         if stamp is None or not path.exists():
             continue

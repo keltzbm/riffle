@@ -114,6 +114,15 @@ returned it under `~/.local/share/riffle/`:
   naming the sets it never got. Each set goes under the day its own
   `Last-Modified` says. If tcgcsv stops answering, the rest of its games wait
   for the next run.
+- `tcgcsv/products/<game>/` — every set's products (each card's name, number,
+  rules text and rarity, in `extendedData`): the catalog that names a price's
+  `productId`, for every game tcgcsv carries. After the day's prices, a set's
+  products are asked when the set is new, when its `modifiedOn` changed, or
+  when they weren't asked since the day before's publish, so every set at least
+  every two days; each game's day is kept whole, every field, the sets not asked
+  that day as they were last asked. Every request to tcgcsv is counted under its
+  UTC day in `tcgcsv/requests.json`, and a day asks for at most 9,000; products
+  ask only what the day's prices leave.
 - `scryfall/bulk/<type>/<published>.jsonl.gz` — every bulk file Scryfall
   publishes, about twice a day, as served: default cards (each card in English,
   or the one language it was printed in), all cards (every language), oracle

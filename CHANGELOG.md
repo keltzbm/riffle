@@ -7,6 +7,21 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Each set's products from tcgcsv, kept in `tcgcsv/products/<game>/` by the run rule: the catalog that names a
+  price's `productId` (name, number, and `extendedData`: rules text, rarity, and for most games color, cost and
+  type), for every game tcgcsv carries. Only the prices were kept, so a One Piece, Lorcana, Star Wars: Unlimited
+  or Pokémon price couldn't be named, and a product TCGplayer drops before it's kept can't be named later. After
+  the day's prices, a set's products are asked when the set is new, when its `modifiedOn` on the day's set list
+  changed, or when they weren't asked since the day before's publish: every set at least every two days, new
+  sets first, then changed ones, then the longest unasked, across every game. Each game's day is one list, a
+  line a set with its fetch time, `Last-Modified`, `modifiedOn` and the file as served, the sets not asked that
+  day as they were last asked; it's kept once none of its sets is due, or as it stood at the next day's run.
+  The step says what it asked and why: `tcgcsv products: 2,361 sets asked (12 new, 9 with a new modifiedOn,
+  2,340 not asked for two days, 0 of those changed); 91 games kept`, and each run's counts go in
+  `tcgcsv/watch.jsonl`. Sets past what the day's requests leave are owed (`945 owed: today's requests are spent,
+  so the next day's run asks them`, a warning); a set that fails is named (`fab set 200 failed (not the expected
+  JSON; set aside as …), asked again at the next day's run`), and no answer ends the step. `riffle check` checks
+  each day's list against its record.
 - `riffle watch scryfall`: Scryfall's bulk files under a watch job of their own (`riffle schedule watch` installs
   it with the other six), so a publish is kept within minutes, not at the next sync. Each file is up only until
   the next replaces it, about 12 hours, and only the sync asked for them: a sync that didn't run, or failed at
@@ -349,6 +364,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- tcgcsv's request budget was per run, so two runs on one day could ask for 9,000 each, past tcgcsv's 10,000 a
+  day (audit C13). Every request, the watch's checks too, is now counted under its UTC day in
+  `tcgcsv/requests.json`, and a game's prices wait for the next day when they'd take the day past 9,000.
+  Products ask only what the day leaves, and while the day's prices are still to come they leave room for them:
+  the most a price day took lately and the last day's checks.
 - A notes folder without `mtg/` no longer fails the sync. Riffle reads decks from `mtg/` only for now, and a user
   who keeps only One Piece, FaB or Yu-Gi-Oh! lists had every sync fail with `no deck folder at …/mtg; set vault
   and notes in <config>`, advice that was wrong for settings that were right. The sync now says `vault: no MTG

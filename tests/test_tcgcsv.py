@@ -131,8 +131,8 @@ def test_snapshot_stores_a_game_as_returned_under_tcgcsv_day(data_dir, sleeps):
     assert (day / "fab" / "groups.json").read_bytes() == groups(200, 100)
     assert lines(day / "fab") == [row(100, prices(1, 2)), row(200, prices(3))]
     by_id = [f"{B}/tcgplayer/62/100/prices", f"{B}/tcgplayer/62/200/prices"]
-    assert asked[-2:] == by_id  # sorted by id, not in the listing's order
-    assert sleeps == [0.1, 0.1, 0.1]  # a pause before each request after the day's first two
+    assert [url for url in asked if url.endswith("/prices")] == by_id  # sorted by id, not as listed
+    assert sleeps == [0.1] * 5  # a pause before each request after the day's first two
     assert tcgcsv.stored_days(FAB) == [DAY]
     assert not list(day.rglob("*.part")) and not (day / "fab" / "missing.txt").exists()
 
@@ -223,8 +223,9 @@ def test_each_game_is_a_step(data_dir, sleeps, tracker):
     answers = fab_answers(**{f"{B}/tcgplayer/68/groups": net.FetchError("HTTP 503")})
     fetch, _ = fake_fetch(answers)
     tcgcsv.snapshot({"fab": "Flesh & Blood TCG", "op": "One Piece Card Game"}, fetch=fetch, tracker=tracker)
-    fab, op = tracker.steps
+    fab, op, products = tracker.steps
     assert (fab.label, fab.unit, fab.updates) == ("tcgcsv fab", "sets", [(0, 2), (1, None), (2, None)])
+    assert products.label == "tcgcsv products"  # fab's alone: op has no set list for the day
     assert plain(fab.outcome) == ("ok", "2 sets") and op.outcome == ("fail", "HTTP 503")
 
 
@@ -304,12 +305,15 @@ def test_by_default_every_game_is_a_step_of_its_own(data_dir, sleeps, tracker):
         "yugioh",
     ]  # played first, then by name
     assert snap.fetched == games and not snap.failed
-    assert [step.label for step in tracker.steps] == [f"tcgcsv {game}" for game in games]
+    assert [step.label for step in tracker.steps] == [
+        *(f"tcgcsv {game}" for game in games),
+        "tcgcsv products",
+    ]
     day = tcgcsv.daily_dir() / "2026-09-24"
     assert (day / "categories.json").read_bytes() == EVERY_CAT
     assert lines(day / "warhammer-box-sets") == [row(40, prices(4))]
     assert not [url for url in asked if "/69/" in url or "/70/" in url]  # comics are never asked for
-    yugioh = tracker.steps[-1]
+    yugioh = tracker.steps[-2]
     assert (yugioh.unit, yugioh.updates, plain(yugioh.outcome)) == (
         "sets",
         [(0, 2), (1, None), (2, None)],
@@ -488,7 +492,8 @@ def test_a_line_cut_off_mid_write_is_dropped_and_its_set_asked_again(data_dir, s
     (fab / "prices.jsonl.part").write_text(json.dumps(row(100, prices(1, 2))) + '\n{"groupId": 200, "fetc')
     fetch, asked = fake_fetch(fab_answers())
     tcgcsv.snapshot(FAB, fetch=fetch)
-    assert asked[-1] == f"{B}/tcgplayer/62/200/prices" and f"{B}/tcgplayer/62/100/prices" not in asked
+    priced = [url for url in asked if url.endswith("/prices")]
+    assert priced == [f"{B}/tcgplayer/62/200/prices"]
     assert lines(fab) == [row(100, prices(1, 2)), row(200, prices(3))]
 
 
@@ -659,12 +664,17 @@ def logged(data_dir) -> list[dict]:
     return [json.loads(line) for line in (data_dir / "tcgcsv" / "watch.jsonl").read_text().splitlines()]
 
 
+def last_day(data_dir) -> dict:
+    """The watch log's last entry for a day fetched."""
+    return [entry for entry in logged(data_dir) if entry["list"] == "day"][-1]
+
+
 def test_the_first_watch_asks_and_fetches_the_day(data_dir, sleeps):
     fetch, asked = fake_fetch(fab_answers())
     res = watch(fetch)
     assert res.asked and res.snap is not None and res.snap.fetched == ["fab"]
     assert asked.count(f"{B}/last-updated.txt") == 1  # the check is the day's first request
-    check, day = logged(data_dir)
+    check, day, products = logged(data_dir)
     assert check == {
         "at": "2026-09-24T220000Z",
         "list": "last-updated",
@@ -678,6 +688,20 @@ def test_the_first_watch_asks_and_fetches_the_day(data_dir, sleeps):
         "result": "whole",
         "requests": 5,
         "seconds": 0,
+    }
+    assert products == {
+        "at": "2026-09-24T220000Z",
+        "list": "products",
+        "made": "2026-09-24T200550Z",
+        "due": 2,
+        "asked": 2,
+        "new": 2,
+        "modified": 0,
+        "aged": 0,
+        "changed": 0,
+        "owed": 0,
+        "failed": 0,
+        "kept": 1,
     }
 
 
@@ -735,12 +759,12 @@ def test_a_failed_check_is_logged_and_fails_the_step(data_dir, sleeps, tracker):
 
 def test_a_day_not_yet_whole_is_asked_at_every_run(data_dir, sleeps):
     watch(fake_fetch(fab_answers(**{f"{B}/tcgplayer/62/100/prices": net.FetchError("HTTP 503")}))[0])
-    assert logged(data_dir)[-1]["result"] == "short"
+    assert last_day(data_dir)["result"] == "short"
     fetch, asked = fake_fetch(fab_answers())
     res = watch(fetch, at=NOW + timedelta(minutes=1))  # not due by the schedule, but the day isn't whole
     assert res.snap is not None and res.snap.fetched == ["fab"]
     assert asked == [f"{B}/last-updated.txt", f"{B}/tcgplayer/62/100/prices"]
-    assert logged(data_dir)[-1]["result"] == "whole"
+    assert last_day(data_dir)["result"] == "whole"
 
 
 def test_the_sync_asks_whether_or_not_a_day_is_due(data_dir, sleeps):
@@ -773,7 +797,7 @@ def test_a_day_that_can_t_be_fetched_is_logged_short(data_dir, sleeps, tracker):
 def test_a_day_tcgcsv_moves_past_mid_run_is_short(data_dir, sleeps):
     res = watch(fake_fetch(refreshing(NEXT))[0])
     assert res.snap is not None and res.snap.refreshed == date(2026, 9, 25)
-    assert logged(data_dir)[-1]["result"] == "short"
+    assert last_day(data_dir)["result"] == "short"
 
 
 def test_a_learned_day_is_asked_from_its_expected_time(data_dir, sleeps, tracker):
@@ -796,3 +820,401 @@ def test_a_learned_day_is_asked_from_its_expected_time(data_dir, sleeps, tracker
     said = "next asked 2026-09-25 20:05 UTC; its next day expected 2026-09-25 20:05 UTC"
     assert tracker.outcomes() == {"tcgcsv": ("ok", said)}
     assert watch(fetch, at=expected + timedelta(minutes=1)).asked
+
+
+# ---- each set's products (0045) ----------------------------------------------------
+
+ON = "2026-09-20T10:00:00.5"  # a set's modifiedOn: TCGplayer's time, no zone
+LATER = datetime(2026, 9, 25, 22, 0, tzinfo=UTC)  # the next day's run
+STAMP_26 = b"2026-09-26T20:05:20+0000"
+STAMP_27 = b"2026-09-27T20:05:30+0000"
+
+
+def listed(**on: str) -> bytes:
+    """A set list with each set's modifiedOn: listed(s100=ON)."""
+    results = [{"groupId": int(k[1:]), "name": k, "modifiedOn": v} for k, v in on.items()]
+    return json.dumps({"success": True, "errors": [], "results": results}).encode()
+
+
+def products(gid: int, *product_ids: int, text: str = "") -> bytes:
+    rows = [
+        {
+            "productId": p,
+            "name": f"card {p}",
+            "groupId": gid,
+            "presaleInfo": {"isPresale": False, "releasedOn": None, "note": None},
+            "extendedData": [{"name": "OracleText", "displayName": "Rules Text", "value": text}],
+        }
+        for p in product_ids
+    ]
+    return json.dumps({"totalItems": len(rows), "success": True, "errors": [], "results": rows}).encode()
+
+
+def fab_products(**overrides):
+    answers = fab_answers(
+        **{
+            f"{B}/tcgplayer/62/groups": listed(s200=ON, s100=ON),
+            f"{B}/tcgplayer/62/100/products": products(100, 1, 2),
+            f"{B}/tcgplayer/62/200/products": products(200, 3),
+        }
+    )
+    answers.update(overrides)
+    return answers
+
+
+def product_row(gid: int, body: bytes | None, on: str | None = ON, fetched: datetime = NOW) -> dict:
+    """A set's products line as kept."""
+    return {
+        "groupId": gid,
+        "fetched": fetched.isoformat(),
+        "lastModified": "2026-09-24T20:04:00+00:00",
+        "modifiedOn": on,
+        "response": None if body is None else json.loads(body),
+    }
+
+
+def kept_products(game_dir) -> list[dict]:
+    """A game's products for a day, as kept."""
+    record = json.loads((game_dir / tcgcsv.PRODUCTS_KEPT).read_text())
+    return [json.loads(line) for line in runs.rebuild(tcgcsv.data_dir() / record["file"]).splitlines()]
+
+
+def product_urls(asked: list[str]) -> list[str]:
+    return [url.removeprefix(f"{B}/tcgplayer/") for url in asked if url.endswith("/products")]
+
+
+def test_each_set_s_products_are_kept_after_its_prices_every_field(data_dir, sleeps, tracker):
+    fetch, asked = fake_fetch(fab_products())
+    snap = tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
+    assert product_urls(asked) == ["62/100/products", "62/200/products"]  # after the prices, by set
+    assert asked.index(f"{B}/tcgplayer/62/200/prices") < asked.index(f"{B}/tcgplayer/62/100/products")
+    fab = tcgcsv.day_dir(DAY, "fab")
+    assert kept_products(fab) == [product_row(100, products(100, 1, 2)), product_row(200, products(200, 3))]
+    record = json.loads((fab / tcgcsv.PRODUCTS_KEPT).read_text())
+    assert record["made"] == "2026-09-24T200550Z" and record["file"].startswith("tcgcsv/products/fab/")
+    assert (record["day"], record["sets"], record["asked"], record["missing"]) == ("2026-09-24", 2, 2, 0)
+    assert not (fab / tcgcsv.PRODUCTS_PART).exists()
+    assert snap.products is not None and (snap.products.new, snap.products.kept) == (2, ["fab"])
+    assert snap.requests == 5  # the run's price requests: the products are counted apart
+    step = tracker.steps[-1]
+    assert (step.label, step.unit, step.updates) == (
+        "tcgcsv products",
+        "sets",
+        [(0, 2), (1, None), (2, None)],
+    )
+    assert step.outcome == ("ok", "2 sets asked (2 new); 1 game kept")
+
+
+def test_products_asked_since_the_day_before_s_publish_aren_t_due(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    fetch, asked = fake_fetch(fab_products(**{f"{B}/last-updated.txt": NEXT}))
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker, clock=lambda: LATER)
+    assert product_urls(asked) == [] and tracker.steps[-1].outcome == ("ok", "no sets due")
+    assert not (tcgcsv.day_dir(date(2026, 9, 25), "fab") / tcgcsv.PRODUCTS_KEPT).exists()
+
+
+def test_a_set_with_a_new_modified_on_is_asked_and_the_rest_carried_over(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    changed = {
+        f"{B}/last-updated.txt": NEXT,
+        f"{B}/tcgplayer/62/groups": listed(s100="2026-09-25T09:00:00.25", s200=ON),
+        f"{B}/tcgplayer/62/100/products": products(100, 1, 2, 4),
+    }
+    fetch, asked = fake_fetch(fab_products(**changed))
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker, clock=lambda: LATER)
+    assert product_urls(asked) == ["62/100/products"]
+    assert kept_products(tcgcsv.day_dir(date(2026, 9, 25), "fab")) == [
+        product_row(100, products(100, 1, 2, 4), "2026-09-25T09:00:00.25", LATER),
+        product_row(200, products(200, 3)),  # as it was kept the day before
+    ]
+    assert tracker.steps[-1].outcome == ("ok", "1 set asked (1 with a new modifiedOn); 1 game kept")
+
+
+def test_a_set_gone_from_the_set_list_leaves_the_day_s_list(data_dir, sleeps):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    gone = {
+        f"{B}/last-updated.txt": NEXT,
+        f"{B}/tcgplayer/62/groups": listed(s100="2026-09-25T09:00:00.25"),
+    }
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products(**gone))[0], clock=lambda: LATER)
+    assert [row["groupId"] for row in kept_products(tcgcsv.day_dir(date(2026, 9, 25), "fab"))] == [100]
+    assert [row["groupId"] for row in kept_products(tcgcsv.day_dir(DAY, "fab"))] == [100, 200]
+
+
+def test_the_longest_unasked_go_first_and_the_rest_are_owed(data_dir, sleeps, tracker, monkeypatch):
+    first = {f"{B}/tcgplayer/62/groups": listed(s100=ON), f"{B}/tcgplayer/62/200/prices": None}
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products(**first))[0])  # set 100 alone, on the 24th
+    tcgcsv.snapshot(
+        FAB, fetch=fake_fetch(fab_products(**{f"{B}/last-updated.txt": NEXT}))[0], clock=lambda: LATER
+    )
+    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 6)  # the 27th's prices take 5: room for one set
+    on_27 = {
+        f"{B}/last-updated.txt": STAMP_27,
+        f"{B}/tcgplayer/62/100/products": products(100, 1, 2, text="errata"),
+    }
+    fetch, asked = fake_fetch(fab_products(**on_27))
+    later = datetime(2026, 9, 27, 22, 0, tzinfo=UTC)
+    snap = tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker, clock=lambda: later)
+    assert product_urls(asked) == ["62/100/products"]  # asked on the 24th; 200 on the 25th
+    assert snap.products is not None and (snap.products.aged, snap.products.changed) == (1, 1)
+    assert tracker.steps[-1].outcome == (
+        "warn",
+        "1 of 2 sets asked (1 not asked for two days, 1 of those changed); "
+        "1 owed: today's requests are spent, so the next day's run asks them; 0 games kept",
+    )
+    part = tcgcsv.day_dir(date(2026, 9, 27), "fab") / tcgcsv.PRODUCTS_PART
+    assert [json.loads(line)["groupId"] for line in part.read_text().splitlines()] == [100]
+
+
+def test_new_sets_go_first_then_modified_then_aged_across_games(data_dir, sleeps):
+    games = {"fab": "Flesh & Blood TCG", "op": "One Piece Card Game"}
+    empty_op = {f"{B}/tcgplayer/68/groups": groups()}
+    tcgcsv.snapshot(games, fetch=fake_fetch(fab_products(**empty_op))[0])
+    on_26 = {
+        f"{B}/last-updated.txt": STAMP_26,
+        f"{B}/tcgplayer/62/groups": listed(s100=ON, s200="2026-09-26T08:00:00.1"),
+        f"{B}/tcgplayer/68/groups": listed(s7=ON),
+        f"{B}/tcgplayer/68/7/prices": prices(9),
+    }
+    fetch, asked = fake_fetch(fab_products(**on_26))
+    tcgcsv.snapshot(games, fetch=fetch, clock=lambda: datetime(2026, 9, 26, 22, 0, tzinfo=UTC))
+    assert product_urls(asked) == ["68/7/products", "62/200/products", "62/100/products"]
+
+
+def test_a_products_file_served_broken_is_set_aside_and_asked_again(data_dir, sleeps, tracker):
+    broken = {f"{B}/tcgplayer/62/200/products": b"<html>busy</html>"}
+    snap = tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products(**broken))[0], tracker=tracker)
+    assert (
+        snap.products is not None and snap.products.kept == [] and not snap.failed
+    )  # the day's prices are whole
+    assert tracker.steps[-1].outcome == (
+        "fail",
+        "2 sets asked (1 new); fab set 200 failed (not the expected JSON; set aside as "
+        "tcgcsv/aside/fab-200-products-2026-09-24T220000Z.json), asked again at the next day's run; "
+        "0 games kept",
+    )
+    assert (data_dir / "tcgcsv" / "aside" / "fab-200-products-2026-09-24T220000Z.json").exists()
+    fetch, asked = fake_fetch(fab_products())
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
+    assert product_urls(asked) == ["62/200/products"]  # set 100 is in the day's part file
+    assert [row["groupId"] for row in kept_products(tcgcsv.day_dir(DAY, "fab"))] == [100, 200]
+
+
+def test_products_that_fail_are_counted_and_the_first_named(data_dir, sleeps, tracker, monkeypatch):
+    real = tcgcsv._append
+
+    def append(part, gid, fetched, modified, response, on=None):
+        if on is not None:
+            raise OSError("disk full")
+        real(part, gid, fetched, modified, response, on)
+
+    monkeypatch.setattr(tcgcsv, "_append", append)
+    failing = {f"{B}/tcgplayer/62/100/products": net.FetchError("HTTP 503")}
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products(**failing))[0], tracker=tracker)
+    assert tracker.steps[-1].outcome == (
+        "fail",
+        "2 sets asked; fab set 100 failed (HTTP 503), and 1 more set, asked again at the next day's run; "
+        "0 games kept",
+    )
+
+
+def test_no_answer_ends_the_products_step(data_dir, sleeps, tracker):
+    silent = {f"{B}/tcgplayer/62/100/products": net.NoAnswer("no answer after 3 tries")}
+    fetch, asked = fake_fetch(fab_products(**silent))
+    res = watch(fetch, tracker)
+    assert product_urls(asked) == ["62/100/products"]
+    assert tracker.steps[-1].outcome == (
+        "fail",
+        "1 of 2 sets asked; tcgcsv gave no answer (no answer after 3 tries), "
+        "the rest asked at the next day's run; 0 games kept",
+    )
+    assert res.snap is not None and not res.snap.failed and last_day(data_dir)["result"] == "whole"
+    assert logged(data_dir)[-1] | {"at": ""} == {
+        "at": "",
+        "list": "products",
+        "made": "2026-09-24T200550Z",
+        "due": 2,
+        "asked": 1,
+        "new": 0,
+        "modified": 0,
+        "aged": 0,
+        "changed": 0,
+        "owed": 0,
+        "failed": 0,
+        "kept": 0,
+        "silent": "no answer after 3 tries",
+    }
+
+
+def test_no_answer_for_the_prices_leaves_the_products_unasked(data_dir, sleeps, tracker):
+    silent = {f"{B}/tcgplayer/62/100/prices": net.NoAnswer("no answer after 3 tries")}
+    fetch, asked = fake_fetch(fab_products(**silent))
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
+    assert product_urls(asked) == []
+    assert tracker.outcomes()["tcgcsv products"] == ("fail", tcgcsv.NO_ANSWER)
+
+
+def test_requests_are_counted_by_utc_day_across_runs(data_dir, sleeps):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    assert tcgcsv.requests_on(DAY) == {"other": 5, "products": 2}
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])  # the day kept: only last-updated.txt
+    assert tcgcsv.requests_on(DAY) == {"other": 6, "products": 2}
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0], clock=lambda: LATER)  # past midnight UTC
+    assert tcgcsv.requests_on(DAY) == {"other": 6, "products": 2}
+    assert tcgcsv.requests_on(LATER.date()) == {"other": 1}
+    saved = (data_dir / "tcgcsv" / "requests.json").read_text()
+    assert saved == '{\n"2026-09-24": {"other": 6, "products": 2},\n"2026-09-25": {"other": 1}\n}\n'
+
+
+def test_a_watch_s_check_counts_against_the_day(data_dir, sleeps):
+    watch(fake_fetch(fab_products())[0])
+    watch(fake_fetch(fab_products())[0], at=NOW + timedelta(minutes=5), always=True)
+    assert tcgcsv.requests_on(DAY) == {"other": 6, "products": 2}
+
+
+def test_the_price_budget_is_the_day_s_not_the_run_s(data_dir, sleeps, monkeypatch):
+    path = data_dir / "tcgcsv" / "requests.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"2026-09-24": {"other": 7, "products": 1}}))
+    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 10)  # 8 asked by earlier runs; this one asks 2 first
+    snap = tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    assert snap.failed == [("fab", tcgcsv.OVER_BUDGET)] and snap.requests == 2
+
+
+def test_a_request_count_that_can_t_be_read_counts_none(data_dir):
+    path = data_dir / "tcgcsv" / "requests.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("not JSON")
+    assert tcgcsv.requests_on(DAY) == {}
+    path.write_text("[]")
+    assert tcgcsv.requests_on(DAY) == {}
+    path.write_text(json.dumps({"2026-09-24": {"other": "x", "products": 3}, "2026-09-23": 1}))
+    assert tcgcsv.requests_on(DAY) == {"products": 3}
+
+
+def day_logged(made: str, requests: int, at: str = "2026-09-20T220000Z") -> dict:
+    return {"at": at, "list": "day", "made": made, "result": "whole", "requests": requests}
+
+
+def test_products_leave_room_for_the_day_s_prices_still_to_come(data_dir, sleeps, tracker, monkeypatch):
+    morning = datetime(2026, 9, 25, 13, 0, tzinfo=UTC)  # the 25th's prices come at about 20:05
+    for entry in [
+        day_logged("2026-09-20T200500Z", 3),
+        day_logged("2026-09-21T200500Z", 2),
+        day_logged("2026-09-21T200500Z", 4),  # a day's runs together: 6
+        {"at": "2026-09-24T120000Z", "list": "last-updated", "result": "same"},  # over a day ago
+        {"at": "2026-09-24T140000Z", "list": "last-updated", "result": "same"},
+        {"at": "2026-09-25T120000Z", "list": "last-updated", "result": "same"},
+        {"at": "2026-09-25T120500Z", "list": "products", "made": "2026-09-21T200500Z"},
+    ]:
+        watching.log("tcgcsv", entry)
+    monkeypatch.setattr(
+        tcgcsv, "DAILY_REQUESTS", 14
+    )  # 5 for the 24th's prices, 6 kept for the 25th's, 2 checks
+    fetch, asked = fake_fetch(fab_products())
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker, clock=lambda: morning)
+    assert product_urls(asked) == ["62/100/products"]
+    assert tracker.steps[-1].outcome[0] == "warn" and "1 owed" in tracker.steps[-1].outcome[1]
+
+
+def test_with_no_price_day_logged_this_run_s_prices_are_the_room_kept(data_dir, sleeps, monkeypatch):
+    monkeypatch.setattr(tcgcsv, "DAILY_REQUESTS", 11)  # 5 asked; 5 kept for the 25th's
+    fetch, asked = fake_fetch(fab_products())
+    tcgcsv.snapshot(FAB, fetch=fetch, clock=lambda: datetime(2026, 9, 25, 13, 0, tzinfo=UTC))
+    assert product_urls(asked) == ["62/100/products"]
+
+
+def test_an_earlier_day_s_products_left_part_way_are_kept_as_they_stood(data_dir, sleeps, tracker):
+    before = tcgcsv.daily_dir() / "2026-09-23"
+    (before / "fab").mkdir(parents=True)
+    (before / "fab" / "groups.json").write_bytes(listed(s1=ON, s2=ON))
+    line = json.dumps(product_row(1, products(1, 5)))
+    (before / "fab" / tcgcsv.PRODUCTS_PART).write_text("\n" + line + '\n{"groupId": 2, "fetc')  # cut off
+    (before / "op").mkdir()
+    (before / "op" / tcgcsv.PRODUCTS_PART).write_text(json.dumps(product_row(7, None)) + "\n")  # no set list
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0], tracker=tracker)
+    assert tracker.outcomes()["tcgcsv 2026-09-23 products"] == (
+        "warn",
+        "kept 2 games as they stood; sets never asked, asked under 2026-09-24: fab 1",
+    )
+    assert kept_products(before / "fab") == [product_row(1, products(1, 5))]
+    assert kept_products(before / "op") == [product_row(7, None)]
+    record = json.loads((before / "fab" / tcgcsv.PRODUCTS_KEPT).read_text())
+    assert record["made"] == "2026-09-23T000000Z" and record["missing"] == 1  # no stamp kept: its midnight
+    assert [row["groupId"] for row in kept_products(tcgcsv.day_dir(DAY, "fab"))] == [100, 200]
+
+
+def test_an_earlier_day_s_products_already_kept_aren_t_kept_again(data_dir, sleeps, tracker):
+    before = tcgcsv.day_dir(date(2026, 9, 23), "fab")
+    before.mkdir(parents=True)
+    (before / tcgcsv.PRODUCTS_PART).write_text(json.dumps(product_row(1, None)) + "\n")
+    (before / tcgcsv.PRODUCTS_KEPT).write_text("{}")
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0], tracker=tracker)
+    assert not (before / tcgcsv.PRODUCTS_PART).exists()
+    assert tracker.outcomes()["tcgcsv 2026-09-23 products"] == ("ok", "kept 0 games as they stood")
+
+
+def test_products_that_can_t_be_kept_leave_their_part_file(data_dir, sleeps, tracker, monkeypatch):
+    before = tcgcsv.day_dir(date(2026, 9, 23), "fab")
+    before.mkdir(parents=True)
+    (before / tcgcsv.PRODUCTS_PART).write_text(json.dumps(product_row(1, None)) + "\n")
+    real = tcgcsv.runs.keep
+
+    def keep(folder, at, data):
+        if "products" in folder.parts:
+            raise OSError("disk full")
+        return real(folder, at, data)
+
+    monkeypatch.setattr(tcgcsv.runs, "keep", keep)
+    snap = tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0], tracker=tracker)
+    assert tracker.outcomes()["tcgcsv 2026-09-23 products"] == (
+        "fail",
+        "kept 0 games as they stood; not kept, the part file left: fab (disk full)",
+    )
+    assert (before / tcgcsv.PRODUCTS_PART).exists()
+    assert snap.products is not None and snap.products.unkept == [("fab", "disk full")]
+    assert tracker.steps[-1].outcome == (
+        "fail",
+        "2 sets asked (2 new); fab's products not kept (disk full); 0 games kept",
+    )
+    assert (tcgcsv.day_dir(DAY, "fab") / tcgcsv.PRODUCTS_PART).exists()
+
+
+def test_a_game_whose_kept_products_can_t_be_read_is_left_out(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_products())[0])
+    record = json.loads((tcgcsv.day_dir(DAY, "fab") / tcgcsv.PRODUCTS_KEPT).read_text())
+    (data_dir / record["file"]).write_bytes(b"damaged")
+    (data_dir / record["file"]).with_name("2026-09-24T200550Z.copy.json.zst").write_bytes(b"damaged")
+    fetch, asked = fake_fetch(fab_products(**{f"{B}/last-updated.txt": NEXT}))
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker, clock=lambda: LATER)
+    assert product_urls(asked) == []
+    label, said = tracker.steps[-1].outcome
+    assert label == "fail" and said.startswith("no sets due; fab's products not kept (")
+
+
+def test_a_day_whose_category_list_can_t_be_read_asks_no_products(data_dir, sleeps, tracker):
+    tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0])
+    (tcgcsv.daily_dir() / "2026-09-24" / "categories.json").write_bytes(b"oops")
+    (tcgcsv.day_dir(DAY, "fab") / tcgcsv.PRODUCTS_KEPT).unlink()
+    fetch, asked = fake_fetch(fab_products())
+    tcgcsv.snapshot(FAB, fetch=fetch, tracker=tracker)
+    assert product_urls(asked) == [] and "tcgcsv products" not in tracker.outcomes()
+
+
+def test_a_products_line_this_module_didn_t_write_is_asked_again():
+    assert tcgcsv._asked(json.dumps(row(1, prices(1))).encode()) is None  # a price line
+    bad = json.dumps(product_row(1, None) | {"fetched": "yesterday"}).encode()
+    assert tcgcsv._asked(bad) is None
+    line = json.dumps(product_row(1, products(1, 2))).encode()
+    found = tcgcsv._asked(line)
+    assert found is not None and (found.fetched, found.on) == (NOW, json.dumps(ON))
+
+
+def test_a_set_list_with_a_group_without_an_id_can_t_be_read(data_dir):
+    path = data_dir / "groups.json"
+    data_dir.mkdir(parents=True)
+    path.write_text(json.dumps({"results": [{"name": "no id", "modifiedOn": ON}]}))
+    with pytest.raises(net.FetchError, match="without a whole-number groupId"):
+        tcgcsv._set_list(path)
+    path.write_text(json.dumps({"results": [{"groupId": 4, "modifiedOn": 12}]}))
+    assert tcgcsv._set_list(path) == {4: "null"}  # a modifiedOn that isn't a time is none
