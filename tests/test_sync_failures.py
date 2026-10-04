@@ -99,6 +99,8 @@ def vault(tmp_path, monkeypatch, opened):
     """A one-deck vault under a fake HOME, the in-memory catalog, and a price snapshot kept."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # the default vault, under HOME
+    (tmp_path / "config" / "riffle").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text('notes = "games/tcg"\ncard_images = "link"\n')
     mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     (mtg / "modern" / "burn.md").write_text(NOTE)
@@ -177,6 +179,52 @@ def test_a_network_that_is_up_goes_unmentioned(vault, monkeypatch):
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 0, result.output
     assert "network" not in result.output
+
+
+def test_an_online_sync_keeps_the_card_pictures_and_shows_them_coming(vault, monkeypatch, tmp_path):
+    from riffle import cli
+
+    (tmp_path / "config" / "riffle" / "config.toml").write_text(
+        'notes = "games/tcg"\ncard_images = "cache"\n'
+    )
+    network(monkeypatch, up_after=0)
+    online_steps(monkeypatch, [])
+    fetched: list[str] = []
+
+    def picture(url, dest):
+        fetched.append(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"jpg")
+        return 3
+
+    monkeypatch.setattr(cli, "_picture", picture)
+    (vault / "ideas.md").write_text("[[Sol Ring]] [[Fire // Ice]]")
+    result = CliRunner().invoke(app, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert sorted(fetched) == [
+        "https://cards.scryfall.io/normal/front/s-fire.jpg",
+        "https://cards.scryfall.io/normal/front/s-o-bolt.jpg",
+        "https://cards.scryfall.io/normal/front/s-o-sol.jpg",
+    ]
+    assert "card pictures: 3 fetched" in result.output
+    assert "card notes: 3 (3 written, 0 removed)" in result.output
+    assert (
+        "  ! 1 card link can't open the card's note as written; riffle check vault lists them"
+        in result.output
+    )
+    note = vault / "_generated" / "cards" / "Lightning Bolt.md"
+    assert "![Lightning Bolt](img/s-o-bolt.jpg)" in note.read_text()
+
+
+def test_the_picture_fetch_asks_scryfall_for_an_image(monkeypatch, tmp_path):
+    from riffle import cli
+
+    asked = []
+    monkeypatch.setattr(net, "download", lambda url, dest, **kw: asked.append((url, dest, kw)) or 3)
+    assert cli._picture("https://cards.scryfall.io/x.jpg", tmp_path / "x.jpg") == 3
+    assert asked == [
+        ("https://cards.scryfall.io/x.jpg", tmp_path / "x.jpg", {"accept": "image/*", "timeout": 30})
+    ]
 
 
 def test_a_failed_download_doesnt_stop_the_sync(vault, monkeypatch):
@@ -428,3 +476,24 @@ def test_watch_says_when_something_changed_in_the_mac_s_time(monkeypatch, denver
     output = CliRunner().invoke(app, ["sync", "--watch"]).output
     assert "\n03:41:07 MDT changed: a.md\n" in output and output.rstrip().endswith("stopped")
     assert len(resyncs) == 2  # once at the start, once for the change
+
+
+@pytest.mark.parametrize(
+    ("lines", "shown"),
+    [
+        ('notes = "games/tcg"\ncard_notes = false\n', "card notes: off (1 removed)"),
+        ('notes = "games/tcg"\ncard_notes = false\n', None),  # off, with none to remove: not a word
+        (
+            'notes = "games/tcg"\ncard_images = "keep"\n',
+            "setting: card_images in ~/config/riffle/config.toml is 'keep', not one of",
+        ),
+    ],
+)
+def test_the_sync_says_what_the_card_note_settings_did(vault, monkeypatch, opened, tmp_path, lines, shown):
+    if shown:
+        (vault / "_generated" / "cards").mkdir(parents=True)
+        (vault / "_generated" / "cards" / "Sol Ring.md").write_text("old")
+    (tmp_path / "config" / "riffle" / "config.toml").write_text(lines)
+    result = CliRunner().invoke(app, ["sync", "--offline"])
+    assert result.exit_code == 0, result.output
+    assert shown in result.output if shown else "card notes" not in result.output

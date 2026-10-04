@@ -7,6 +7,28 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Card notes: every card a note links gets a note of its own, so hovering a card in any list shows it (with
+  Page Preview on). `riffle sync` writes them into `mtg/_generated/cards/`, one for each card linked anywhere
+  under the notes folder or in Riffle's own tables, named so the link opens it. A note holds the card's
+  picture (both faces of a double-faced card), links to its Scryfall, EDHREC and Gatherer pages, each face's
+  cost, type, stats and text, its price with the Scryfall day (kept while the price moves less than a cent),
+  its legality in the formats the vault has lists in, and the copies owned by printing; the lists running it
+  are its backlinks. The picture is the card's newest plain printing, English, sold without foil: never a
+  foil, and a card printed only in foil has none. Each note is written only when it changes, and a card no
+  note links any more loses its note. A link whose target is a note's name opens that note and gets no card
+  note. The sync says `card notes: 10,122 (12 written, 3 removed)`, warns when a link can't open its card's
+  note as written or a card has no note because another note or card has its name, and when pictures
+  couldn't be fetched. Two settings: `card_notes = false` removes the folder at the next
+  sync (`card notes: off (10,122 removed)`); `card_images = "cache"` (the default) keeps each picture in the
+  vault, about 100 KB a card, fetched once by an online sync and linked from Scryfall until then, `"link"`
+  shows Scryfall's, `"off"` none. A value that can't be read is named at the sync, and the default used.
+- `riffle check vault`: each card link that can't open the card's note as written, with the link that
+  would (`[[Fire // Ice]] in 3 notes: write [[Fire|Fire // Ice]]`), and each linked card with no note, since
+  another note or card has its name; exits 1 if any. Riffle's own notes aren't checked: its tables are
+  rewritten each sync, and the version logs keep the full names they were written with.
+- `riffle card NAME`: what the card's note holds, in the terminal: each face, the price, legality in the
+  formats your lists are in, the copies owned, and its Scryfall page; `--open` opens the page. A name no card
+  has says `no card named '…'` and exits 1.
 - `riffle prices log [CARD…]`: each card's price on every Scryfall day the store keeps, a line a card a
   day as `date | card | paper | tix`, by the rule deck prices use (the cheapest printing that can be played;
   MTGO, the cheapest tix). With no names, every card on an unticked `#mtg/buy` line, as the vault's
@@ -231,6 +253,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- Riffle's own tables link a card by a name a note can have: the front face without the characters a file
+  name can't hold, shown under the card's own name (`[[Fire|Fire // Ice]]`, `[[Summon Bahamut|Summon:
+  Bahamut]]`). The buy table, Not on MTGO, the collection summary and the version logs wrote the full name,
+  and a link with `/`, `:` or `"` in it could never open a note. Card names are read in that form too, so a
+  buy line linking `[[Summon Bahamut|Summon: Bahamut]]` is priced, and `riffle own` takes `Summon Bahamut`.
 - The sync writes a generated note only when what it says changes: the notes no longer carry
   `generated: <date>`, which made every sync of a new day rewrite all of them, 4,492 notes and 33.6 MB through
   the sync service. A second sync on the same Scryfall day writes none; the first sync of a new price day
@@ -402,6 +429,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A card whose name has a slash inside it (`Summon: Choco/Mog`, `SP//dr, Piloted by Peni`) couldn't be found
+  even by its full name: the slash was read as MTGO's way of writing a split card (`Fire/Ice`) before the
+  name was looked up. The name is looked up first.
 - A sync service's conflict copy of a deck note (pCloud's `[conflicted]`, Dropbox's and Nextcloud's
   `conflicted copy`, Syncthing's `.sync-conflict-`) was read as a deck of its own. Conflict copies of deck
   notes and version logs are no longer read, and the sync names each: `sync-conflict copies, not read; merge

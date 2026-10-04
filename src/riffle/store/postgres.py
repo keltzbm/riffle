@@ -25,11 +25,13 @@ from sqlalchemy.exc import OperationalError
 
 from riffle import db
 from riffle.db import migrate
-from riffle.models import CardRules, PricedPrinting, Prices, Printing
+from riffle.export.links import safe_name
+from riffle.models import CardRules, CardView, Face, PricedPrinting, Prices, Printing
 
 GAME = "mtg"
 BASICS = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 MYTHIC = {"mythic", "special", "bonus"}  # rarities Arena crafts with a mythic wildcard
+FULL, FRONT, SAFE = 0, 1, 2  # the names a card is known by, in the order resolve tries them
 STAND_INS = {"art_series", "token", "double_faced_token", "emblem"}  # never what a shared name means
 
 # Every card's name and layout: what name resolution and display need, for every card.
@@ -112,6 +114,43 @@ LEGALITIES = text("""
     JOIN legalities AS l ON l.game_id = f.game_id AND l.format = f.format AND l.card_id = w.card_id
 """)
 
+# A printing in a plain frame: not borderless, full art, showcase, extended art, etched or
+# inverted; not from a Secret Lair, a masterpiece or an Un-set; not from The List, whose
+# reprints carry a stamp.
+_PLAIN = """
+    coalesce(mp.border_color, '') <> 'borderless'
+    AND NOT coalesce((p.extra ->> 'full_art')::boolean, false)
+    AND NOT coalesce(p.extra -> 'frame_effects' ?| array['showcase', 'extendedart', 'etched', 'inverted'],
+                     false)
+    AND coalesce(s.set_type, '') NOT IN ('box', 'masterpiece', 'funny')
+    AND s.code <> 'plst'
+"""
+
+# Each card's faces and the printing its note pictures, much as Scryfall shows a card: one sold
+# without foil (never a foil), preferring one that can be played, then not a promo, a plain
+# frame, English, a high-resolution scan, released, the newest.
+CARD_VIEWS = text(f"""
+    SELECT c.card_id::text, c.name, c.type_line, c.rules_text, m.mana_cost, c.extra,
+           f.external_id, f.code, f.collector_number, f.image_url, f.extra
+    FROM unnest(CAST(:ids AS uuid[])) AS w (card_id)
+    JOIN cards AS c ON c.card_id = w.card_id
+    JOIN mtg_cards AS m ON m.card_id = c.card_id
+    LEFT JOIN LATERAL (
+        SELECT e.external_id, s.code, p.collector_number, p.image_url, p.extra
+        FROM printings AS p
+        JOIN external_ids AS e ON e.printing_id = p.printing_id AND e.source = 'scryfall'
+        JOIN mtg_printings AS mp ON mp.printing_id = p.printing_id
+        JOIN sets AS s ON s.set_id = p.set_id
+        WHERE p.card_id = w.card_id AND p.retired_at IS NULL AND p.image_url IS NOT NULL
+          AND 'nonfoil' = ANY(mp.finishes)
+        ORDER BY NOT ({_PLAYABLE}), mp.promo, NOT ({_PLAIN}), p.lang <> 'en',
+                 p.extra ->> 'image_status' IS DISTINCT FROM 'highres_scan',
+                 p.released_at > CURRENT_DATE, p.released_at DESC NULLS LAST, e.external_id
+        LIMIT 1
+    ) AS f ON true
+    WHERE c.game_id = :game AND c.retired_at IS NULL
+""")
+
 # The lowest rarity each card has among its Arena printings: the wildcard it costs.
 ARENA = text("""
     SELECT DISTINCT ON (p.card_id) p.card_id::text, p.rarity
@@ -190,26 +229,26 @@ class PostgresCatalog:
         return {card_id: Card(*rest) for card_id, *rest in rows}
 
     @cached_property
-    def _names(self) -> tuple[dict[str, str], dict[str, str]]:
-        """(full names, front faces), lowercased -> card_id. Where cards share a name, a real
-        card beats a token, emblem, or Art Series card, then the one with more printings wins."""
-        claims: dict[tuple[bool, str], list[str]] = {}  # (full name?, name) -> the cards it names
+    def _names(self) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        """(full names, front faces, safe names), lowercased -> card_id. Where cards share a name,
+        a real card beats a token, emblem, or Art Series card, then the one with more printings wins."""
+        claims: dict[tuple[int, str], list[str]] = {}  # (FULL, FRONT or SAFE, name) -> the cards it names
         for card_id, card in self._cards.items():
             full = card.name.lower()
-            claims.setdefault((True, full), []).append(card_id)
-            claims.setdefault((False, full.split(" // ")[0]), []).append(card_id)
+            claims.setdefault((FULL, full), []).append(card_id)
+            claims.setdefault((FRONT, full.split(" // ")[0]), []).append(card_id)
+            claims.setdefault((SAFE, safe_name(full)), []).append(card_id)
         shared = {key: self._real_first(ids) for key, ids in claims.items() if len(ids) > 1}
         tied = {c for ids in shared.values() if len(ids) > 1 for c in ids}
         counts: dict[str, int] = {}
         if tied:
             counts = {c: n for c, n in self.conn.execute(PRINTING_COUNTS, {"ids": list(tied)})}
-        exact: dict[str, str] = {}
-        front: dict[str, str] = {}
-        for (is_full, name), ids in claims.items():
-            finalists = shared.get((is_full, name), ids)
+        found: tuple[dict[str, str], dict[str, str], dict[str, str]] = ({}, {}, {})
+        for (kind, name), ids in claims.items():
+            finalists = shared.get((kind, name), ids)
             winner = finalists[0] if len(finalists) == 1 else min(finalists, key=lambda c: (-counts[c], c))
-            (exact if is_full else front)[name] = winner
-        return exact, front
+            found[kind][name] = winner
+        return found
 
     def _real_first(self, card_ids: list[str]) -> list[str]:
         """The real cards among these, or all of them if none is."""
@@ -222,12 +261,15 @@ class PostgresCatalog:
 
     def resolve(self, name: str) -> str | None:
         key = name.strip().lower()
-        exact, front = self._names
+        exact, front, safe = self._names
         if key.startswith("a-"):  # Arena rebalanced cards, "A-Name"
             key = key[2:]
+        if key in exact:  # before the slash is read as MTGO's: "Summon: Choco/Mog" is a name
+            return exact[key]
         if "/" in key and " // " not in key:  # MTGO writes split cards as "Fire/Ice"
             key = key.replace("/", " // ")
-        return exact.get(key) or front.get(key) or front.get(key.split(" // ")[0])
+        found = exact.get(key) or front.get(key) or front.get(key.split(" // ")[0])
+        return found or safe.get(" ".join(key.split()))
 
     def name(self, card_id: str) -> str:
         card = self._cards.get(card_id)
@@ -282,6 +324,23 @@ class PostgresCatalog:
             self._rules.update(found)
         return {c: r for c in card_ids if (r := self._rules.get(c)) is not None}
 
+    def card_views(self, card_ids: Collection[str]) -> dict[str, CardView]:
+        wanted = [c for c in set(card_ids) if c in self._cards]
+        found = {}
+        for card_id, name, type_line, text_, cost, extra, sid, code, number, image, printed in (
+            self.conn.execute(CARD_VIEWS, {"game": GAME, "ids": wanted}) if wanted else ()
+        ):
+            mv = (printed or {}).get("multiverse_ids") or [None]
+            found[card_id] = CardView(
+                _faces(name, type_line or "", text_ or "", cost or "", extra or {}),
+                _images(name, image, printed or {}),
+                sid or "",
+                code or "",
+                number or "",
+                mv[0],
+            )
+        return found
+
     def printings(self, scryfall_ids: Collection[str]) -> dict[str, Printing]:
         wanted = [s for s in set(scryfall_ids) if s not in self._printings]
         if wanted:
@@ -304,6 +363,40 @@ class PostgresCatalog:
             self._printings.setdefault(printing.scryfall_id, printing)
             found[asked[(code, number)]] = printing
         return found
+
+
+def _stats(fields: dict) -> str:
+    if "power" in fields:
+        return f"{fields['power']}/{fields.get('toughness', '')}"
+    if "loyalty" in fields:
+        return f"Loyalty {fields['loyalty']}"
+    return f"Defense {fields['defense']}" if "defense" in fields else ""
+
+
+def _faces(name: str, type_line: str, text_: str, cost: str, extra: dict) -> tuple[Face, ...]:
+    """Each face of a split, flip, adventure or double-faced card, else the card itself."""
+    faces = extra.get("card_faces") or []
+    if not faces:
+        return (Face(name, cost, type_line, text_, _stats(extra)),)
+    return tuple(
+        Face(
+            f.get("name", ""),
+            f.get("mana_cost", ""),
+            f.get("type_line", ""),
+            f.get("oracle_text", ""),
+            _stats(f),
+        )
+        for f in faces
+    )
+
+
+def _images(name: str, image: str | None, printed: dict) -> tuple[tuple[str, str], ...]:
+    """Each face's picture where the printing has one a face (a double-faced card), else its one."""
+    faces = printed.get("card_faces") or []
+    pictured = [(f.get("name", name), url) for f in faces if (url := f.get("image_url"))]
+    if pictured:
+        return tuple(pictured)
+    return ((name, image),) if image else ()
 
 
 def check(conn: Connection) -> None:

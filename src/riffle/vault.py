@@ -118,6 +118,35 @@ def conflicts(mtg_dir: Path) -> list[Path]:
     return sorted(found)
 
 
+def linking(notes_dir: Path) -> list[Path]:
+    """Every note whose card links are a person's: all under the notes folder but Riffle's own
+    (_generated/, _log/) and sync-conflict copies."""
+    return sorted(p for p in _notes(notes_dir, MACHINE) if not is_conflict(p))
+
+
+def riffle_notes(mtg_dir: Path) -> list[Path]:
+    """The notes Riffle writes that link cards: its tables in _generated/ (not the card notes,
+    a folder below) and the version logs in _log/."""
+    found: list[Path] = []
+    for folder in (mtg_dir / "_generated", mtg_dir / "_log"):
+        if folder.is_dir():
+            found += sorted(p for p in folder.glob("*.md") if not is_conflict(p))
+    return found
+
+
+def names(vault_dir: Path) -> dict[str, Path]:
+    """Every note in the vault by its name, casefolded, but Riffle's generated ones and those in
+    hidden folders (.obsidian, .trash): Obsidian opens the note a link names, whatever folder it's
+    in, so a card name one of these has gets no card note."""
+    found: dict[str, Path] = {}
+    for folder, dirs, files in os.walk(vault_dir):
+        dirs[:] = sorted(d for d in dirs if d != "_generated" and not d.startswith("."))
+        for name in sorted(files):
+            if name.endswith(".md"):
+                found.setdefault(name[:-3].casefold(), Path(folder, name))
+    return found
+
+
 def _why(e: OSError | UnicodeDecodeError) -> str:
     return "not UTF-8" if isinstance(e, UnicodeDecodeError) else e.strerror or str(e)
 
@@ -136,6 +165,20 @@ def decks(mtg_dir: Path, unreadable: Unreadable | None = None) -> list[Deck]:
             continue
         if deck:
             found.append(deck)
+    return found
+
+
+def formats(mtg_dir: Path) -> set[str]:
+    """The formats the deck notes are in, from their frontmatter alone (a deck's format is
+    commander when it names none). A note that can't be read is passed over."""
+    found = set()
+    for p in deck_notes(mtg_dir):
+        try:
+            meta = frontmatter(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if meta.get("game") == "mtg":
+            found.add(str(meta.get("format", "commander")).lower())
     return found
 
 

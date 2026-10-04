@@ -101,13 +101,17 @@ def test_with_no_names_every_buy_line_s_card(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("HOME", str(tmp_path))  # the default vault lives under it
     notes = tmp_path / "atelier" / "library" / "games" / "tcg"
     (notes / "mtg" / "_generated").mkdir(parents=True)
-    (notes / "shopping.md").write_text("- [ ] [[Sol Ring]] #mtg/buy\n- [ ] [[Not A Card]] #mtg/buy\n")
+    (notes / "shopping.md").write_text(
+        "- [ ] [[Sol Ring]] #mtg/buy\n- [ ] [[Not A Card]] #mtg/buy\n"
+        "- [ ] [[Summon Bahamut|Summon: Bahamut]] #mtg/buy\n"  # a card's link, by its safe name
+    )
     (notes / "mtg" / "_generated" / "x-data.md").write_text("- [ ] [[Cyclonic Rift]] #mtg/buy\n")  # Riffle's
     (notes / "latin.md").write_bytes(b"caf\xe9\n")
-    keep_day("2026-09-24", {"s-o-sol": {"usd": "1.00", "tix": "0.05"}})
+    keep_day("2026-09-24", {"s-o-sol": {"usd": "1.00", "tix": "0.05"}, "s-o-summon": {"usd": "4.00"}})
     result = run()
     assert result.exit_code == 0, result.output
     assert "2026-09-24 | Sol Ring | $1.00 | 0.05" in result.output.splitlines()
+    assert "2026-09-24 | Summon: Bahamut | $4.00 | —" in result.output.splitlines()
     assert "Cyclonic Rift" not in result.output
     assert "  ! buy list: unmatched Not A Card" in result.output
     assert f"  ! can't read {notes / 'latin.md'} (not UTF-8); its buy lines are left out" in result.output

@@ -159,7 +159,7 @@ def test_versions_log_records_changes_only(tmp_path, cat, monkeypatch):
     note.write_text(note.read_text().replace("1 Sol Ring\n", "1 Fire // Ice\n"))
     assert sync.run(mtg, inv, cat, today="2026-09-22").versions == ["aesi-lands"]
     log = (mtg / "_log" / "aesi-lands-versions.md").read_text()
-    assert "\\+ 1 [[Fire // Ice]]" in log and "\\- 1 [[Sol Ring]]" in log
+    assert "\\+ 1 [[Fire|Fire // Ice]]" in log and "\\- 1 [[Sol Ring]]" in log
 
 
 def test_generated_note_not_rewritten_when_unchanged(tmp_path, cat, monkeypatch):
@@ -246,9 +246,9 @@ def test_a_note_is_written_whole_or_not_at_all(tmp_path):
     from riffle.export import obsidian
 
     note = tmp_path / "x-data.md"
-    assert obsidian._write(note, "old\n")
+    assert obsidian.write_whole(note, "old\n")
     with pytest.raises(UnicodeEncodeError):
-        obsidian._write(note, "new \ud800\n")  # fails partway through writing
+        obsidian.write_whole(note, "new \ud800\n")  # fails partway through writing
     assert note.read_text() == "old\n"
     assert [p.name for p in tmp_path.iterdir()] == ["x-data.md"]  # no part file left behind
 
@@ -266,3 +266,97 @@ def test_a_note_that_went_missing_is_written_again_though_nothing_changed(tmp_pa
     assert (res.changed_notes, res.versions) == (1, [])
     assert res.removed == ["aesi-lands-data [conflicted 3].md"]
     assert note.read_text() == text
+
+
+def card_notes(mtg, **how):
+    return sync.CardNotes(mtg.parent.parent, mtg.parent, **{"pictures": "link", **how})
+
+
+def test_the_sync_writes_a_note_for_each_card_a_note_links(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    (mtg / "ideas.md").write_text("Try [[Fire // Ice]] and [[Lightning Bolt]], or [[Summon: Bahamut]].")
+    (mtg.parent.parent / "Lightning Bolt.md").write_text("a note of the user's, which the link opens")
+    (mtg.parent.parent / "Summon Bahamut.md").write_text("a note of the user's with the card's note name")
+    res = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-21", card_notes=card_notes(mtg))
+    folder = mtg / "_generated" / "cards"
+    # the deck's buy table links its three cards; the idea note one more
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "Aesi, Tyrant of Gyre Strait.md",
+        "Cyclonic Rift.md",
+        "Fire.md",
+        "Sol Ring.md",
+    ]
+    assert (res.cards.cards, res.cards.written) == (4, 4)
+    assert "Legal in commander." in (folder / "Sol Ring.md").read_text()
+    assert res.warnings == [
+        "1 card link can't open the card's note as written; riffle check vault lists them",
+        "1 linked card has no note, its name being another note's or card's; riffle check vault lists them",
+    ]
+    again = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-22", card_notes=card_notes(mtg))
+    assert again.cards.written == 0
+
+
+def test_card_notes_off_removes_them(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+    sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg))
+    res = sync.run(mtg, sync.Inventory([]), cat)
+    assert (res.cards, res.cards_removed) == (None, 3)
+    assert not (mtg / "_generated" / "cards").exists()
+
+
+def test_pictures_not_fetched_are_named(tmp_path, cat, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+
+    def down(url, dest):
+        raise OSError("no route to host")
+
+    offline = sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg, pictures="cache"))
+    assert offline.cards.unfetched == 3 and offline.warnings == []  # nothing tried, nothing to say
+    res = sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg, pictures="cache", fetch=down))
+    assert res.warnings == [
+        "card pictures: 3 not fetched yet (no route to host); "
+        "linked from Scryfall until the next sync fetches them"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "why"),
+    [
+        (PermissionError(13, "Permission denied"), "can't write {folder} (Permission denied)"),
+        (KeyError("faces"), "KeyError: 'faces' (unexpected; details in {log})"),
+    ],
+)
+def test_card_notes_that_fail_fail_their_step_alone(tmp_path, cat, monkeypatch, error, why):
+    from riffle.export import cards
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = _vault(tmp_path)
+
+    def fails(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cards, "write", fails)
+    res = sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg))
+    folder, log = mtg / "_generated" / "cards", tmp_path / "data" / "riffle" / "errors.log"
+    assert res.failed == [("card notes", why.format(folder=folder, log=log))]
+    assert res.decks == ["aesi-lands"] and (mtg / "_generated" / "aesi-lands-data.md").exists()
+
+
+def test_riffle_s_own_tables_link_each_card_by_its_safe_name(tmp_path, cat, monkeypatch):
+    from riffle.models import Holding
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    mtg = tmp_path / "library" / "tcg" / "mtg"
+    mtg.mkdir(parents=True)
+    note = "---\ngame: mtg\nformat: modern\n---\n\n```\n1 Fire // Ice\n1 Summon: Bahamut\n```\n"
+    (mtg / "split.md").write_text(note)
+    owned = [Holding("Summon: Bahamut", 1, scryfall_id="s-x", source="manabox", card_id="o-summon")]
+    sync.run(mtg, sync.Inventory(owned), cat)
+    data = (mtg / "_generated" / "split-data.md").read_text()
+    assert "| ○ 1 | [[Fire\\|Fire // Ice]] |" in data  # the buy table
+    assert "## Not on MTGO\n\n[[Summon Bahamut|Summon: Bahamut]]\n" in data
+    summary = (mtg / "_generated" / "collection-summary.md").read_text()
+    assert "| [[Summon Bahamut\\|Summon: Bahamut]] | 1 | $4.00 |" in summary
