@@ -302,3 +302,34 @@ def test_a_card_without_a_view_still_gets_its_links(cat):
     assert cards.pages("Sol Ring", None).startswith("[Scryfall](https://scryfall.com/search?q=")
     assert cards.picture_files(None) == []
     assert cards.note("Sol Ring", "Sol Ring", replace(view, faces=()), [], []).count("**") == 0
+
+
+def test_a_note_named_with_decomposed_accents_is_taken_over_not_deleted(tmp_path, cat):
+    """macOS opens "Andúril" whether its ú is one character or u and an accent; Python's strings
+    differ. The old script's notes had the second form: the sync wrote each, then pruned it."""
+    import unicodedata
+
+    folder = tmp_path / "cards"
+    folder.mkdir()
+    (folder / unicodedata.normalize("NFD", "Andúril, Flame of the West.md")).write_text(
+        "old", encoding="utf-8"
+    )
+    res = cards.write(tmp_path, links_to("o-anduril"), cat, [], [], pictures="off")
+    assert (res.written, res.removed) == (1, 0)
+    assert [unicodedata.normalize("NFC", p.name) for p in folder.iterdir()] == [
+        "Andúril, Flame of the West.md"
+    ]
+    assert "type: card" in (folder / "Andúril, Flame of the West.md").read_text(encoding="utf-8")
+
+
+def test_targets_and_note_names_compare_accents_composed(tmp_path):
+    import unicodedata
+
+    from riffle import vault
+    from riffle.export.links import note_key
+
+    nfd = unicodedata.normalize("NFD", "Andúril")
+    assert targets(f"[[{nfd}]]") == ["Andúril"]
+    assert note_key(nfd) == note_key("ANDÚRIL") == "andúril"
+    (tmp_path / f"{nfd}.md").write_text("", encoding="utf-8")
+    assert list(vault.names(tmp_path)) == ["andúril"]

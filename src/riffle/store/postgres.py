@@ -14,6 +14,7 @@ Only live rows count: a card or printing Scryfall stopped listing is retired,
 not deleted, and stays out of every answer here.
 """
 
+import unicodedata
 from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date
@@ -260,7 +261,7 @@ class PostgresCatalog:
         return {card_id: rarity for card_id, rarity in self.conn.execute(ARENA, {"game": GAME})}
 
     def resolve(self, name: str) -> str | None:
-        key = name.strip().lower()
+        key = unicodedata.normalize("NFC", name).strip().lower()
         exact, front, safe = self._names
         if key.startswith("a-"):  # Arena rebalanced cards, "A-Name"
             key = key[2:]

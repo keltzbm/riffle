@@ -10,6 +10,7 @@ import re
 from collections.abc import Collection, Iterator
 from pathlib import Path
 
+from riffle.export.links import note_key
 from riffle.ingest.decklist import LINE, parse_text
 from riffle.models import Deck
 
@@ -135,7 +136,7 @@ def riffle_notes(mtg_dir: Path) -> list[Path]:
 
 
 def names(vault_dir: Path) -> dict[str, Path]:
-    """Every note in the vault by its name, casefolded, but Riffle's generated ones and those in
+    """Every note in the vault by its name (links.note_key), but Riffle's generated ones and those in
     hidden folders (.obsidian, .trash): Obsidian opens the note a link names, whatever folder it's
     in, so a card name one of these has gets no card note."""
     found: dict[str, Path] = {}
@@ -143,7 +144,7 @@ def names(vault_dir: Path) -> dict[str, Path]:
         dirs[:] = sorted(d for d in dirs if d != "_generated" and not d.startswith("."))
         for name in sorted(files):
             if name.endswith(".md"):
-                found.setdefault(name[:-3].casefold(), Path(folder, name))
+                found.setdefault(note_key(name[:-3]), Path(folder, name))
     return found
 
 

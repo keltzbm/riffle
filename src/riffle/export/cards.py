@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import quote, quote_plus
 
 from riffle import net
-from riffle.export.links import card_link, safe_name, targets
+from riffle.export.links import card_link, note_key, safe_name, targets
 from riffle.export.obsidian import write_whole
 from riffle.models import CardRules, CardView, Face, Holding, Prices
 from riffle.store import Catalog
@@ -98,7 +98,7 @@ def sort(found: Counter[str], catalog: Catalog, names: dict[str, Path], own: Ite
     out = Links()
     every = dict.fromkeys(own, 0) | dict(found)  # notes linking each: none, for Riffle's alone
     for target, n in sorted(every.items()):
-        if target.casefold() in names:
+        if note_key(target) in names:
             continue
         card_id = catalog.resolve(target)
         if card_id is None:
@@ -110,12 +110,12 @@ def sort(found: Counter[str], catalog: Catalog, names: dict[str, Path], own: Ite
             if n:
                 out.clashes[name] = catalog.name(owner) if owner else safe
             continue
-        if safe.casefold() in names:
+        if note_key(safe) in names:
             if n:
-                out.taken[safe] = names[safe.casefold()]
+                out.taken[safe] = names[note_key(safe)]
             continue
         out.cards[card_id] = safe
-        if n and target.casefold() != safe.casefold():
+        if n and note_key(target) != note_key(safe):
             out.misses[target] = (card_link(name), n)
     return out
 
@@ -287,11 +287,11 @@ def write(
     elif img.is_dir():  # pictures no longer kept
         shutil.rmtree(img)
 
-    existing = {p.name.casefold(): p for p in folder.glob("*.md")} if folder.is_dir() else {}
+    existing = {note_key(p.name): p for p in folder.glob("*.md")} if folder.is_dir() else {}
     keep = set()
     for cid, safe in links.cards.items():
         path = folder / f"{safe}.md"
-        was = existing.get(path.name.casefold())
+        was = existing.get(note_key(path.name))
         old = was.read_text(encoding="utf-8") if was else None
         shown = [
             (face, f"{IMAGES}/{name}" if pictures == "cache" and (img / name).exists() else url)
@@ -303,10 +303,10 @@ def write(
             owned(copies.get(cid, [])),
         ]
         text = note(catalog.name(cid), safe, views.get(cid), shown, facts)
-        if was and was.name != path.name:  # the same name in another case: take its name
+        if was and was.name != path.name:  # the same name in another case or Unicode form: take its name
             was.unlink()
         res.written += write_whole(path, text)
-        keep.add(path.name.casefold())
+        keep.add(note_key(path.name))
     for key, p in existing.items():
         if key not in keep:
             p.unlink()

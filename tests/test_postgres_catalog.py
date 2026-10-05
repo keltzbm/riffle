@@ -461,3 +461,10 @@ def test_every_real_card_s_safe_name_resolves_to_it(cat):
 
     real = {c: card for c, card in cat._cards.items() if card.layout not in postgres.STAND_INS}
     assert all(cat.resolve(safe_name(card.name)) == c for c, card in real.items())
+
+
+def test_a_name_resolves_whatever_form_its_accents_take(pg):
+    import unicodedata
+
+    cat = load(pg, [*CARDS, card("vault", "o-vault", "Lim-Dûl's Vault")])
+    assert cat.resolve(unicodedata.normalize("NFD", "Lim-Dûl's Vault")) == cid("o-vault")
