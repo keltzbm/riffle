@@ -7,6 +7,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- A page at riffletcg.gg saying what Riffle is and where it stands, served by GitHub Pages from `docs/`
+  (`docs/CNAME` names the domain; `docs/.nojekyll` serves the files as they are).
 - Card notes: every card a note links gets a note of its own, so hovering a card in any list shows it (with
   Page Preview on). `riffle sync` writes them into `mtg/_generated/cards/`, one for each card linked anywhere
   under the notes folder or in Riffle's own tables, named so the link opens it. A note holds the card's
