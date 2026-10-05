@@ -183,6 +183,25 @@ def formats(mtg_dir: Path) -> set[str]:
     return found
 
 
+PRECON = "precon:"
+
+
+def precon_boxes(mtg_dir: Path) -> dict[str, list[Path]]:
+    """Each precon box the deck notes register, with the notes that do: a note's frontmatter
+    says source: precon:<box> for a box you own (riffle.ingest.precons). A note that can't be
+    read is passed over."""
+    found: dict[str, list[Path]] = {}
+    for p in deck_notes(mtg_dir):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        source = str(frontmatter(text).get("source", "")) if PRECON in text else ""
+        if source.startswith(PRECON) and (box := source.removeprefix(PRECON).strip()):
+            found.setdefault(box, []).append(p)
+    return found
+
+
 def find(mtg_dir: Path, ref: str) -> Deck:
     """A deck by slug ("aesi-lands") or by path to a .md or .txt file."""
     p = Path(ref).expanduser()

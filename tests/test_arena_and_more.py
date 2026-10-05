@@ -39,8 +39,8 @@ def test_arena_export_has_no_printings(cat):
 
 def test_newest_manabox_export(tmp_path):
     a, b = tmp_path / "ManaBox_Collection.csv", tmp_path / "ManaBox_Collection (1).csv"
-    a.write_text("x")
-    b.write_text("y")
+    a.write_text("Name,Quantity\nSol Ring,1\n")
+    b.write_text("Name,Quantity\nSol Ring,2\n")
     os.utime(a, (time.time() - 100, time.time() - 100))
     assert manabox.newest_export(tmp_path) == b
     assert manabox.newest_export(tmp_path / "nope") is None

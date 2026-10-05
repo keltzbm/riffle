@@ -126,10 +126,10 @@ def test_check_vault_names_each_link_that_cant_and_exits_1(notes, opened, tmp_pa
     ]
 
 
-def test_check_takes_prices_or_vault(plain):
+def test_check_takes_prices_vault_or_collection(plain):
     result = run("check", "decks")
     assert result.exit_code == 2
-    assert "what to check: prices or vault, not 'decks'" in plain(result.output)
+    assert "what to check: prices, vault, or collection, not 'decks'" in plain(result.output)
 
 
 def test_card_prints_what_its_note_holds(notes, opened, tmp_path, monkeypatch):

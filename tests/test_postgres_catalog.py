@@ -108,8 +108,8 @@ CARDS = [
         layout="modal_dfc",
         oracle_text=None,
         card_faces=[
-            {"name": "Valakut Awakening", "oracle_text": "Put cards."},
-            {"name": "Valakut Stoneforge"},
+            {"name": "Valakut Awakening", "oracle_text": "Put cards.", "illustration_id": "art-awakening"},
+            {"name": "Valakut Stoneforge", "illustration_id": "art-stoneforge"},
         ],
     ),
     card(
@@ -122,7 +122,14 @@ CARDS = [
     ),
     # prices: the cheapest paper printing that isn't digital, the cheapest tix of any
     card("bolt-1", "o-bolt", "Lightning Bolt", prices={"usd": "2.50", "tix": "0.05"}),
-    card("bolt-2", "o-bolt", "Lightning Bolt", prices={"usd": "1.25", "tix": "0.50"}, set="m10"),
+    card(
+        "bolt-2",
+        "o-bolt",
+        "Lightning Bolt",
+        prices={"usd": "1.25", "tix": "0.50"},
+        set="m10",
+        illustration_id="art-bolt",
+    ),
     card("bolt-mo", "o-bolt", "Lightning Bolt", digital=True, prices={"usd": "0.01", "tix": "0.02"}),
     # a price is the cheapest printing that can be played (C48): not gold- or silver-bordered, not
     # from a memorabilia set, not oversized; a card with none falls back to its cheapest
@@ -286,10 +293,18 @@ def test_arena_rarity(cat):
 def test_printings_by_scryfall_id(cat):
     found = cat.printings(["bolt-2", "sol-sld", "nope"])
     assert found == {
-        "bolt-2": Printing("bolt-2", cid("o-bolt"), "Lightning Bolt", "m10", "bolt-2", "", "", 1.25),
+        "bolt-2": Printing(
+            "bolt-2", cid("o-bolt"), "Lightning Bolt", "m10", "bolt-2", "", "", 1.25, "art-bolt"
+        ),
         "sol-sld": Printing("sol-sld", cid("o-sol"), "Sol Ring", "one", "sol-sld", "", "", 12.0),
     }
     assert cat.printings(["nope"]) == {} and cat.printings([]) == {}
+
+
+def test_a_printings_illustration_is_its_front_faces_on_a_two_faced_card(cat):
+    found = cat.printings(["valakut", "bolt-1"])
+    assert found["valakut"].illustration_id == "art-awakening"
+    assert found["bolt-1"].illustration_id == ""  # Scryfall gives it none
 
 
 def test_printings_at_a_set_and_number(cat):
