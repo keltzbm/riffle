@@ -70,7 +70,7 @@ class SyncResult:
     removed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (step, why), for the CLI to report
-    cards: cards.Result | None = None  # None when card notes are off
+    card_notes: cards.Result | None = None  # None when card notes are off
     cards_removed: int = 0  # with card notes off, the notes removed
 
 
@@ -154,7 +154,7 @@ def _card_notes(
         found = cards.gather(vault.linking(how.notes))
         own = cards.gather(vault.riffle_notes(mtg_dir))
         links = cards.sort(found, catalog, vault.names(how.vault), own)
-        res.cards = cards.write(
+        res.card_notes = cards.write(
             gen, links, catalog, inv.holdings, played, how.pictures, how.fetch, how.progress
         )
     except OSError as e:
@@ -163,7 +163,7 @@ def _card_notes(
     except Exception as e:  # a bug here fails this step alone: the decks' notes are written
         res.failed.append(("card notes", failure(e)))
         return
-    c = res.cards
+    c = res.card_notes
     if c.misses:
         n = len(c.misses)
         res.warnings.append(

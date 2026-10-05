@@ -287,14 +287,14 @@ def test_the_sync_writes_a_note_for_each_card_a_note_links(tmp_path, cat, monkey
         "Fire.md",
         "Sol Ring.md",
     ]
-    assert (res.cards.cards, res.cards.written) == (4, 4)
+    assert (res.card_notes.cards, res.card_notes.written) == (4, 4)
     assert "Legal in commander." in (folder / "Sol Ring.md").read_text()
     assert res.warnings == [
         "1 card link can't open the card's note as written; riffle check vault lists them",
         "1 linked card has no note, its name being another note's or card's; riffle check vault lists them",
     ]
     again = sync.run(mtg, sync.Inventory([]), cat, today="2026-09-22", card_notes=card_notes(mtg))
-    assert again.cards.written == 0
+    assert again.card_notes.written == 0
 
 
 def test_card_notes_off_removes_them(tmp_path, cat, monkeypatch):
@@ -302,7 +302,7 @@ def test_card_notes_off_removes_them(tmp_path, cat, monkeypatch):
     mtg = _vault(tmp_path)
     sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg))
     res = sync.run(mtg, sync.Inventory([]), cat)
-    assert (res.cards, res.cards_removed) == (None, 3)
+    assert (res.card_notes, res.cards_removed) == (None, 3)
     assert not (mtg / "_generated" / "cards").exists()
 
 
@@ -314,7 +314,7 @@ def test_pictures_not_fetched_are_named(tmp_path, cat, monkeypatch):
         raise OSError("no route to host")
 
     offline = sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg, pictures="cache"))
-    assert offline.cards.unfetched == 3 and offline.warnings == []  # nothing tried, nothing to say
+    assert offline.card_notes.unfetched == 3 and offline.warnings == []  # nothing tried, nothing to say
     res = sync.run(mtg, sync.Inventory([]), cat, card_notes=card_notes(mtg, pictures="cache", fetch=down))
     assert res.warnings == [
         "card pictures: 3 not fetched yet (no route to host); "

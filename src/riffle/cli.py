@@ -987,16 +987,16 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             else None
         )
         res = syncmod.run(cfg.mtg_dir, inv, cat, card_notes=card_notes)
-    if pictures and res.cards:
-        pictures[0].ok(f"{res.cards.fetched:,} fetched")
+    if pictures and res.card_notes:
+        pictures[0].ok(f"{res.card_notes.fetched:,} fetched")
     for label, why in res.failed:
         tracker.step(label).fail(why)
     _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
         f"versions changed: {', '.join(res.versions) or 'none'}"
     )
-    if res.cards:
-        c = res.cards
+    if res.card_notes:
+        c = res.card_notes
         _echo(f"card notes: {c.cards:,} ({c.written:,} written, {c.removed:,} removed)")
     elif res.cards_removed:
         _echo(f"card notes: off ({res.cards_removed:,} removed)")
