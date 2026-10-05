@@ -40,7 +40,7 @@ new day when it comes: each set is appended to the game's part file as it
 arrives, and a set that fails is asked for by the next run, which asks for
 nothing already kept. A game with every set is kept; one a day left unfinished
 is kept as it stood at the next day's run, with missing.txt. Every check and
-every day fetched goes in <data_dir>/tcgcsv/watch.jsonl. Each set goes under the day its own
+every day fetched goes in <data_dir>/tcgcsv/watch/<month>.jsonl. Each set goes under the day its own
 Last-Modified says: one from the next refresh moves the run on to that day.
 Days kept before resuming came in have no times on their lines. The games in
 GAMES are named by their tcgcsv category and resolved to IDs at run time; every
@@ -837,7 +837,7 @@ def _share(run: _Run) -> int:
     now = run.clock()
     room = DAILY_REQUESTS - run.spent()
     if run.day < now.astimezone(UTC).date():
-        log = watching.entries(STORE)
+        log = watching.read(STORE, now).entries
         since = now - timedelta(days=1)
         checks = sum(1 for when, _ in watching.checks(log, CHECKED) if when >= since)
         room -= max(_price_day(log), run.snap.requests) + checks
@@ -1035,12 +1035,12 @@ def watch(
             tracker.step("tcgcsv").ok("another run is asking for it")
             return res
         now = clock()
-        log = watching.entries(STORE)
+        got = watching.read(STORE, now, keep=True)
+        log = got.entries
         if not always and _whole(log) is not False:
             busy = watching.longest(log, DAY, now, lateness.WINDOW)
-            res.plan = cadence.plan(
-                made(), watching.checks(log, CHECKED), now, busy, watching.online(log, CHECKED)
-            )
+            online = watching.online(log, CHECKED, got.online.get(CHECKED))
+            res.plan = cadence.plan(made(), watching.checks(log, CHECKED), now, busy, online)
             if not res.plan.ask:
                 tracker.step("tcgcsv").ok(watching.waiting(res.plan, "day"))
                 return res

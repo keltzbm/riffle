@@ -13,7 +13,7 @@ as served in
 
     <data_dir>/scryfall/bulk/<type>/<published>.jsonl.gz   <published> its updated_at, in UTC
     <data_dir>/scryfall/bulk/checks.jsonl                  every publish seen, kept or not
-    <data_dir>/scryfall/watch.jsonl                        every check of each type
+    <data_dir>/scryfall/watch/<month>.jsonl                every check of each type
                                                            (riffle.watching)
 
 unless its contents, uncompressed, are byte for byte those of the newest file kept of its

@@ -145,22 +145,23 @@ def store(lists: tuple[pricelists.PriceList, ...]) -> Report:
     return rep
 
 
-def _kept_entries(rep: Report, store: str) -> list[dict]:
-    """The lists a store's watch log says it kept."""
-    path = watching.log_path(store)
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return []
+def _kept_entries(rep: Report, store: str) -> list[tuple[Path, dict]]:
+    """The lists a store's watch log says it kept, each with the file that says so: every month's,
+    and the one file kept before 0054 while it's still there."""
     found = []
-    for n, line in enumerate(lines, 1):
+    for path in watching.files(store):
         try:
-            entry = json.loads(line)
-        except ValueError:
-            rep.problems.append(f"{_rel(path)}: line {n} isn't JSON")
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
             continue
-        if isinstance(entry, dict) and entry.get("result") == "kept":
-            found.append(entry)
+        for n, line in enumerate(lines, 1):
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                rep.problems.append(f"{_rel(path)}: line {n:,} isn't JSON")
+                continue
+            if isinstance(entry, dict) and entry.get("result") == "kept":
+                found.append((path, entry))
     return found
 
 
@@ -183,11 +184,11 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
     """A store's lists kept since 2026-09-29: each file as kept, each list made before its
     fetch; and each list's usual gap, and whether it's late."""
     named = {plist.name: plist for plist in lists}
-    for entry in _kept_entries(rep, lists[0].store):
+    for path, entry in _kept_entries(rep, lists[0].store):
         plist = named.get(entry.get("list", ""))
         made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
         if plist is None or made is None or got is None or "file" not in entry:
-            rep.problems.append(f"{_rel(watching.log_path(lists[0].store))}: an entry it can't read: {entry}")
+            rep.problems.append(f"{_rel(path)}: an entry it can't read: {entry}")
             continue
         rep.files += 1
         rep.days.add(pricelists.day_of(made, plist).isoformat())
@@ -256,11 +257,11 @@ def cardmarket_guides() -> Report:
 def _logged(rep: Report, store: str, day: Callable[[dict, datetime], date | None]) -> None:
     """Each list a store's log says it kept: its files as kept, made before its fetch, and its
     day, which day gives from the entry and when the list was made."""
-    for entry in _kept_entries(rep, store):
+    for path, entry in _kept_entries(rep, store):
         made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
         when = None if made is None else day(entry, made)
         if made is None or got is None or when is None or "file" not in entry:
-            rep.problems.append(f"{_rel(watching.log_path(store))}: an entry it can't read: {entry}")
+            rep.problems.append(f"{_rel(path)}: an entry it can't read: {entry}")
             continue
         rep.files += 1
         rep.days.add(when.isoformat())

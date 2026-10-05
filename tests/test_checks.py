@@ -434,17 +434,20 @@ def test_a_watched_list_made_after_its_fetch_means_the_clock_isn_t_pacific(data)
     )
 
 
-def test_a_watch_log_it_can_t_read_is_named(data):
+def test_a_watch_log_it_can_t_read_is_named_by_its_month(data):
     three_lists()
-    log = watching.log_path("cardkingdom")
+    log = watching.log_path("cardkingdom", datetime(2026, 9, 27, tzinfo=UTC))
     with log.open("a") as f:
         f.write(json.dumps({"result": "unchanged", "list": "singles"}) + "\n")  # a check, not a list
         f.write("{not json\n")
         f.write(json.dumps({"result": "kept", "list": "singles"}) + "\n")
+    old = '{"result": "unchanged", "list": "singles"}\n' * 4011 + "{not json\n"
+    (data / "cardkingdom" / "watch.jsonl").write_text(old)  # not moved yet
     problems = by_source()["Card Kingdom"].problems
     assert problems == [
-        "cardkingdom/watch.jsonl: line 5 isn't JSON",
-        "cardkingdom/watch.jsonl: an entry it can't read: {'result': 'kept', 'list': 'singles'}",
+        "cardkingdom/watch.jsonl: line 4,012 isn't JSON",
+        "cardkingdom/watch/2026-09.jsonl: line 5 isn't JSON",
+        "cardkingdom/watch/2026-09.jsonl: an entry it can't read: {'result': 'kept', 'list': 'singles'}",
     ]
 
 
@@ -548,6 +551,12 @@ def cardmarket_guides(games: tuple[str, ...], days: int, last: datetime) -> None
             )
 
 
+def test_a_log_file_moved_while_check_reads_is_passed_over(data, monkeypatch):
+    three_lists()
+    monkeypatch.setattr(watching, "files", lambda store: [data / store / "watch.jsonl"])
+    assert by_source()["Card Kingdom"].files == 0
+
+
 def test_cardmarket_guides_kept_in_runs_are_checked_as_their_log_says(data, monkeypatch):
     last = datetime(2026, 9, 28, 0, 47, 45, tzinfo=UTC)
     cardmarket_guides(("mtg", "fab"), 2, last)
@@ -557,7 +566,7 @@ def test_cardmarket_guides_kept_in_runs_are_checked_as_their_log_says(data, monk
     assert rep.notes == ["2 guides: lateness judged from 14 gaps, 1 so far at the fewest"]
     watching.log("cardmarket", {"at": "2026-09-28T010000Z", "list": "op", "result": "kept"})
     assert by_source()["Cardmarket"].problems == [
-        "cardmarket/watch.jsonl: an entry it can't read:"
+        "cardmarket/watch/2026-09.jsonl: an entry it can't read:"
         " {'at': '2026-09-28T010000Z', 'list': 'op', 'result': 'kept'}"
     ]
 
@@ -617,7 +626,7 @@ def test_mtgjson_builds_kept_in_runs_are_checked_as_their_log_says(data, monkeyp
     rep = by_source()["MTGJSON"]
     assert rep.notes[0] == "1 set aside in mtgjson/aside, not kept as any list"
     assert rep.problems == [
-        "mtgjson/watch.jsonl: an entry it can't read:"
+        "mtgjson/watch/2026-09.jsonl: an entry it can't read:"
         " {'at': '2026-09-29T141500Z', 'list': 'prices-today', 'result': 'kept', 'day': 'x'}"
     ]
 

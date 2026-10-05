@@ -144,7 +144,7 @@ def kept(data_dir) -> dict:
 
 
 def logged(data_dir) -> list[dict]:
-    return [json.loads(line) for line in (data_dir / "mtgjson" / "watch.jsonl").read_text().splitlines()]
+    return watching.entries(mtgjson.STORE)
 
 
 def have() -> set[date]:

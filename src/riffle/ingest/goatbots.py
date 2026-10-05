@@ -26,7 +26,7 @@ are set aside once a publish. The yearly archives are kept as returned, by the s
 
     <data_dir>/goatbots/lists/prices/<run>/        the price files, by the run rule
     <data_dir>/goatbots/lists/cards/<run>/         the definitions, by the run rule
-    <data_dir>/goatbots/watch.jsonl                every check; for a list kept, its day, the
+    <data_dir>/goatbots/watch/<month>.jsonl        every check; for a list kept, its day, the
                                                    price file's name and time, and the zip's
                                                    SHA-256, size and ETag (riffle.watching)
     <data_dir>/goatbots/aside/<zip>-<UTC time>.zip  a zip with more than one price file, none,

@@ -3,18 +3,28 @@ kept in a run (riffle.runs) is logged and said, what's set aside, and the watch 
 lists, each asked when it's due.
 
     <data_dir>/<store>/watch.lock          one run at a time a store
-    <data_dir>/<store>/watch.jsonl         every check: when, which list, what came; for a list
-                                           kept, its stamp, file, size, and the SHA-256 of the
-                                           list and of the file, which riffle.ingest.checks checks
+    <data_dir>/<store>/watch/<month>.jsonl every check made in that month (UTC): when, which list,
+                                           what came; for a list kept, its stamp, file, size, and
+                                           the SHA-256 of the list and of the file, which
+                                           riffle.ingest.checks checks
+    <data_dir>/<store>/watch/<month>.summary.json
+                                           what a run needs of a month it no longer reads (summarize)
     <data_dir>/<store>/watch-etags.json    the ETag of each list last kept
     <data_dir>/<store>/aside/              what a watch fetched and couldn't keep as a list,
                                            named by when it was fetched
+
+Until 0054 the log was one file, <store>/watch.jsonl, read whole at every firing and walked once
+for each list: Cardmarket's took 41 seconds a firing on 2026-10-05, a week in. The first run that
+holds a store's lock moves it to the month file of its last entry (moved). A run reads the
+months from lateness.WINDOW before it on (read): two files, three on 1 and 2 March. What its
+rules need from before that, each list's last check and when each list it got in the last
+lateness.HISTORY could first have been online, comes from the summaries.
 """
 
 import json
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -38,8 +48,28 @@ class Watch:
     waiting: list[str] = field(default_factory=list)  # not due, so not asked (riffle.cadence)
 
 
-def log_path(store: str) -> Path:
+def log_path(store: str, when: datetime) -> Path:
+    """The month file a check made at `when` is logged in."""
+    return data_dir() / store / "watch" / f"{when.astimezone(UTC):%Y-%m}.jsonl"
+
+
+def _old_path(store: str) -> Path:
     return data_dir() / store / "watch.jsonl"
+
+
+def _summary_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.summary.json")
+
+
+def _months(store: str) -> list[Path]:
+    return sorted((data_dir() / store / "watch").glob("????-??.jsonl"))
+
+
+def files(store: str) -> list[Path]:
+    """The store's log files, oldest first: the one file kept before 0054 while it's still
+    there (moved), then each month's."""
+    old = _old_path(store)
+    return [old, *_months(store)] if old.exists() else _months(store)
 
 
 def _tags_path(store: str) -> Path:
@@ -48,8 +78,11 @@ def _tags_path(store: str) -> Path:
 
 @contextmanager
 def held(store: str) -> Iterator[bool]:
-    """Whether this run holds the store's watch lock (riffle.locks.held)."""
+    """Whether this run holds the store's watch lock (riffle.locks.held). A run that holds it
+    first moves the log kept before 0054 (moved)."""
     with locks.held(data_dir() / store / "watch.lock") as mine:
+        if mine:
+            moved(store)
         yield mine
 
 
@@ -59,21 +92,18 @@ def at(now: datetime) -> str:
 
 
 def log(store: str, entry: dict) -> None:
-    path = log_path(store)
+    """Log an entry in the month file of its time, or of now when it has none."""
+    path = log_path(store, runs.parse(str(entry.get("at", ""))) or times.now())
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 
-def entries(store: str) -> list[dict]:
-    """The store's log, oldest first; a line that isn't a JSON object is left out
+def _parsed(text: str) -> list[dict]:
+    """A log file's entries, oldest first; a line that isn't a JSON object is left out
     (riffle.ingest.checks names it)."""
-    try:
-        lines = log_path(store).read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return []
     found = []
-    for line in lines:
+    for line in text.splitlines():
         try:
             entry = json.loads(line)
         except ValueError:
@@ -81,6 +111,177 @@ def entries(store: str) -> list[dict]:
         if isinstance(entry, dict):
             found.append(entry)
     return found
+
+
+def _lines(path: Path) -> list[dict]:
+    try:
+        return _parsed(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+
+
+def entries(store: str) -> list[dict]:
+    """The store's whole log, oldest first. A run reads only what it needs (read)."""
+    return [entry for path in files(store) for entry in _lines(path)]
+
+
+def back(store: str) -> Iterator[dict]:
+    """The store's log newest first, a month at a time, read only as far as it's taken."""
+    for path in reversed(files(store)):
+        yield from reversed(_lines(path))
+
+
+def moved(store: str) -> None:
+    """Move the log kept in one file before 0054 to the month file of its last entry. A month
+    file there already keeps its lines, after the old file's; the old file goes last, so a move
+    cut off is finished by the next run, with no line lost or doubled."""
+    old = _old_path(store)
+    try:
+        text = old.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    stamps = (runs.parse(str(entry.get("at", ""))) for entry in reversed(_parsed(text)))
+    dest = log_path(store, next(filter(None, stamps), None) or times.now())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        there = dest.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        old.replace(dest)
+        return
+    if not there.startswith(text):
+        part = dest.with_name(dest.name + ".part")
+        part.write_text(text + ("\n" if text and not text.endswith("\n") else "") + there, encoding="utf-8")
+        part.replace(dest)
+    old.unlink()
+
+
+def _carried(carry: Mapping[str, dict]) -> list[dict]:
+    """The entries a summary carries, oldest first: each list's last check answered, when that
+    isn't its last check, and its last check."""
+    found = []
+    for kept in carry.values():
+        last, ok = kept.get("last"), kept.get("ok")
+        if isinstance(ok, dict) and ok != last:
+            found.append(ok)
+        if isinstance(last, dict):
+            found.append(last)
+    return sorted(found, key=lambda entry: str(entry.get("at", "")))
+
+
+def by_list(found: Iterable[dict]) -> dict[str, list[dict]]:
+    """A log's entries by list name, each list's oldest first."""
+    out: dict[str, list[dict]] = {}
+    for entry in found:
+        name = entry.get("list")
+        if isinstance(name, str):
+            out.setdefault(name, []).append(entry)
+    return out
+
+
+def summarize(found: list[dict], carry: Mapping[str, dict]) -> dict:
+    """What a run needs of a month's entries once it no longer reads them, with what the
+    summary of the month before carries. Per list, in lists: its checks, failures, longest
+    fetch in seconds, and when each list got that month could first have been online, by its
+    made (online; a list got again in a later month has a bound in each, and read keeps the
+    first); in carry: its last check and its last check answered (not failed), this month or
+    before. A run's last check of each list, tcgcsv's last whole day and Cardmarket's lists
+    never served read the carry for what came before the months they read."""
+    before = by_list(_carried(carry))
+    lists: dict[str, dict] = {}
+    out = {name: dict(kept) for name, kept in carry.items()}
+    for name, mine in by_list(found).items():
+        made = checks(mine, name)
+        seen = {runs.parse(str(entry.get("made", ""))) for entry in before.get(name, [])}
+        bounds = online(before.get(name, []) + mine, name)
+        fetches = [float(entry["seconds"]) for entry in mine if _seconds(entry)]
+        lists[name] = {
+            "checks": len(made),
+            "failures": sum(failed for _, failed in made),
+            "longest": max(fetches, default=0.0),
+            "online": {runs.name(m): runs.name(b) for m, b in bounds.items() if m not in seen},
+        }
+        for entry in mine:
+            if "result" in entry and runs.parse(str(entry.get("at", ""))) is not None:
+                kept = out.setdefault(name, {})
+                kept["last"] = entry
+                if entry["result"] != "failed":
+                    kept["ok"] = entry
+    return {"lists": lists, "carry": out}
+
+
+def _seconds(entry: dict) -> bool:
+    seconds = entry.get("seconds")
+    return isinstance(seconds, int | float) and not isinstance(seconds, bool)
+
+
+def _readable(found: object) -> bool:
+    """Whether a summary read back has the shape summarize gives it."""
+    if not isinstance(found, dict):
+        return False
+    lists, carry = found.get("lists"), found.get("carry")
+    return (
+        isinstance(lists, dict)
+        and isinstance(carry, dict)
+        and all(isinstance(each, dict) and isinstance(each.get("online"), dict) for each in lists.values())
+        and all(isinstance(kept, dict) for kept in carry.values())
+    )
+
+
+def _summary(months: list[Path], i: int, keep: bool, made: dict[int, dict]) -> dict:
+    """The summary of months[i] (summarize): its .summary.json, or, when that's missing or
+    can't be read, made from the month and the summary of the month before, and written when
+    keep (the run holds the store's lock). made holds those a read has already."""
+    if i in made:
+        return made[i]
+    path = _summary_path(months[i])
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        found = None
+    if not _readable(found):
+        carry = _summary(months, i - 1, keep, made)["carry"] if i else {}
+        found = summarize(_lines(months[i]), carry)
+        if keep:
+            part = path.with_name(path.name + ".part")
+            part.write_text(json.dumps(found), encoding="utf-8")
+            part.replace(path)
+    made[i] = found
+    return found
+
+
+@dataclass(frozen=True)
+class Read:
+    """What a run reads of a store's log (read)."""
+
+    entries: list[dict]  # what the summary before the months read carries, then their entries
+    online: dict[str, dict[datetime, datetime]]  # by list: online bounds from the summaries
+
+
+def read(store: str, now: datetime, keep: bool = False) -> Read:
+    """The store's log as a run at `now` needs it: the month files from lateness.WINDOW before
+    now on, whole, after what the summary of the month before them carries; and, from the
+    summaries of the months in the lateness.HISTORY before them, when each list got could first
+    have been online, the oldest month's for a list got twice. A summary missing is made
+    (_summary), and written when keep."""
+    months = _months(store)
+    first = f"{(now - lateness.WINDOW).astimezone(UTC):%Y-%m}"
+    year = f"{(now - lateness.HISTORY).astimezone(UTC):%Y-%m}"
+    older = [path for path in months if path.stem < first]
+    made: dict[int, dict] = {}
+    bounds: dict[str, dict[datetime, datetime]] = {}
+    for i, path in enumerate(older):
+        if path.stem < year:
+            continue
+        for name, summed in _summary(months, i, keep, made)["lists"].items():
+            found = bounds.setdefault(name, {})
+            for m, b in summed["online"].items():
+                when, bound = runs.parse(str(m)), runs.parse(str(b))
+                if when is not None and bound is not None:
+                    found.setdefault(when, bound)
+    entries = _carried(_summary(months, len(older) - 1, keep, made)["carry"]) if older else []
+    entries += _lines(_old_path(store))
+    entries += [entry for path in months[len(older) :] for entry in _lines(path)]
+    return Read(entries, bounds)
 
 
 def checks(found: list[dict], name: str) -> list[tuple[datetime, bool]]:
@@ -96,11 +297,14 @@ def checks(found: list[dict], name: str) -> list[tuple[datetime, bool]]:
 FOUND = ("kept", "new")  # a check that got a new list: tcgcsv's says "new"
 
 
-def online(found: list[dict], name: str) -> dict[datetime, datetime]:
+def online(
+    found: list[dict], name: str, known: Mapping[datetime, datetime] | None = None
+) -> dict[datetime, datetime]:
     """When each list a check of it got could first have been online, by when it was made: the
     last check before that got nothing new, or its made if that came later. A failed check tells
-    nothing, so it's passed over."""
-    out: dict[datetime, datetime] = {}
+    nothing, so it's passed over. known holds those got before found (read's online), and a list
+    got again keeps when it was first got."""
+    out: dict[datetime, datetime] = dict(known or {})
     last: datetime | None = None  # the last check that got nothing new
     for entry in found:
         when = runs.parse(str(entry.get("at", "")))
@@ -300,7 +504,7 @@ def broken(
     The error to raise, its facts for the log (publish, and aside or not_kept)."""
     sha256 = runs.file_sha256(fresh)
     facts: dict = {"publish": publish, "served_sha256": sha256, "served_size": fresh.stat().st_size}
-    for entry in reversed(entries(store)):
+    for entry in back(store):
         if entry.get("list") != name or not entry.get("aside"):
             continue
         if entry.get("served_sha256") == sha256 or (publish is not None and entry.get("publish") == publish):
@@ -344,7 +548,8 @@ def _count(n: int, noun: str) -> str:
 class Pass:
     """One run of a store's watch over its lists, holding the store's lock: each list asked
     when riffle.cadence says it's due (from when its lists kept were made, its checks, and
-    when each went online), or always (the sync), and each check logged. A list still learning
+    when each went online, read once and sorted by list), or always (the sync), and each check
+    logged. A list still learning
     says how many gaps it has (learning). Once the source gives no answer at all, the lists
     after it fail without asking; any other error fails only its own list's step."""
 
@@ -354,7 +559,8 @@ class Pass:
         self.store, self.source, self.tracker, self.clock, self.always = store, source, tracker, clock, always
         self.res = Watch()
         self.tags = load_tags(store)
-        self.log = entries(store)
+        self.log = read(store, clock(), keep=True)
+        self.lists = by_list(self.log.entries)
         self.answering = True
         self._waiting: list[tuple[cadence.Plan, Listed]] = []
         self._learning: dict[str, str] = {}  # what each list due while learning adds, by name
@@ -364,10 +570,11 @@ class Pass:
         if self.always:
             return True
         now = self.clock()
-        busy = longest(self.log, item.name, now, lateness.WINDOW)
-        found = self.log
+        found = self.lists.get(item.name, [])
+        busy = longest(found, item.name, now, lateness.WINDOW)
         kept = item.history() if item.history else made(item.folder)
-        plan = cadence.plan(kept, checks(found, item.name), now, busy, online(found, item.name))
+        bounds = online(found, item.name, self.log.online.get(item.name))
+        plan = cadence.plan(kept, checks(found, item.name), now, busy, bounds)
         if not plan.ask:
             self.res.waiting.append(item.label)
             self._waiting.append((plan, item))
@@ -407,7 +614,7 @@ class Pass:
             sorts.get(entry["result"], self.res.same).append(item.label)
         entry["seconds"] = round(time.monotonic() - started, 1)
         log(self.store, entry)
-        self.log.append(entry)
+        self.lists.setdefault(item.name, []).append(entry)
         return entry
 
     def each(self, lists: Iterable[Listed]) -> None:

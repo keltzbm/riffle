@@ -255,6 +255,18 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- A watch's log is a file a month, `<store>/watch/<month>.jsonl`, and a run reads only what its rules
+  need. Each store's log had been one file, read whole at every firing and walked once for each list:
+  a Cardmarket firing took 41 seconds a week in, about 7 more each day, and on 2026-10-04 33 of its 288
+  firings didn't run. Now a run reads the months from 30 days back (two files, three on 1 and 2 March),
+  each list's checks sorted out in one pass; what it needs from before that (each list's last check,
+  and when each list it got in the last year could first have been online) comes from a small summary
+  each month gets once it's out of those 30 days, `<month>.summary.json`. On a copy of Cardmarket's log
+  of 2026-10-05, 85,290 checks, a firing's reading went from 38.4 seconds to 0.9, every list's schedule
+  the same. The first run of each watch after updating moves `<store>/watch.jsonl` to the month of its
+  last check, `watch/2026-10.jsonl`; a move cut off is finished by the next run. A summary missing or
+  unreadable is made again from its month. `riffle check` reads every month and names the file and line
+  it can't read (`cardmarket/watch/2026-11.jsonl: line 4,012 isn't JSON`).
 - The README and the package's description say what Riffle is for, card game analytics on data it
   collects itself, as the page at riffletcg.gg does, and link the page.
 - The page at riffletcg.gg says plainly what Riffle is for, card game analytics on data it collects itself,

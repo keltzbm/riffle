@@ -661,7 +661,7 @@ def watch(fetch, tracker=None, at: datetime = NOW, **kw) -> tcgcsv.Watched:
 
 
 def logged(data_dir) -> list[dict]:
-    return [json.loads(line) for line in (data_dir / "tcgcsv" / "watch.jsonl").read_text().splitlines()]
+    return watching.entries(tcgcsv.STORE)
 
 
 def last_day(data_dir) -> dict:
