@@ -1,5 +1,7 @@
 # Riffle
 
+<img src="docs/banner.svg" width="100%" alt="Riffle: card game analytics, with the math shown. The logo and name beside two packets of cards, purple and orange, interleaving in a riffle shuffle.">
+
 [![CI](https://github.com/keltzbm/riffle/actions/workflows/ci.yml/badge.svg)](https://github.com/keltzbm/riffle/actions/workflows/ci.yml)
 
 Card game analytics: metagame share, deck-building odds, and price history, with the math
