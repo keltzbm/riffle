@@ -7,6 +7,7 @@ note (export/cards.py), so every link resolves. In a table the bar is escaped.
 """
 
 import re
+import unicodedata
 
 # What a note's file name can't hold: the union of what macOS, Linux, Windows, Obsidian and
 # the sync services refuse, so one vault works on every machine.
@@ -35,6 +36,11 @@ def written(target: str) -> str:
     return f"[[{target}]]"
 
 
+def note_key(name: str) -> str:
+    """A note's name as macOS and Obsidian compare it: an accent composed or decomposed, any case."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def targets(text: str) -> list[str]:
-    """Every link target in text, as written."""
-    return [t.strip() for t in LINK.findall(text)]
+    """Every link target in text, its accents composed."""
+    return [unicodedata.normalize("NFC", t.strip()) for t in LINK.findall(text)]

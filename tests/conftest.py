@@ -35,6 +35,7 @@ CARDS = {
     "o-lurrus": ("Lurrus of the Dream-Den", "normal", 3.0, 0.4),
     "o-delver": ("Delver of Secrets // Insectile Aberration", "transform", 0.25, 0.02),
     "o-summon": ("Summon: Bahamut", "normal", 4.0, None),
+    "o-anduril": ("Andúril, Flame of the West", "normal", 2.0, None),
 }
 
 _CMDR = {"commander": "legal", "duel": "legal"}

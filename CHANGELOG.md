@@ -431,6 +431,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A card note whose name has an accent was deleted by the sync that wrote it, when the old note's name spelled
+  the accent decomposed (u and a combining mark rather than ú): macOS opens either spelling as one file,
+  but the names compared as different, so the note was pruned as unlinked. 57 notes went this way on the first
+  sync of 0049. Note names and link targets are compared with their accents composed, and a card name in
+  either form resolves.
 - A card whose name has a slash inside it (`Summon: Choco/Mog`, `SP//dr, Piloted by Peni`) couldn't be found
   even by its full name: the slash was read as MTGO's way of writing a split card (`Fire/Ice`) before the
   name was looked up. The name is looked up first.
