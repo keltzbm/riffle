@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Riffle</title>
 <meta name="description" content="Card game analytics: metagame share, deck-building odds, and price history, with the math shown.">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://riffletcg.gg/">
+<meta property="og:title" content="Riffle">
+<meta property="og:description" content="Card game analytics: metagame share, deck-building odds, and price history, with the math shown.">
+<meta property="og:image" content="https://riffletcg.gg/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Riffle logo and name, and two packets of cards, purple and orange, interleaving in a riffle shuffle.">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   :root {
     --bg: #fbfaf8;
@@ -34,13 +46,9 @@
     margin: 0 auto;
     padding: 4.5rem 1.25rem 3rem;
   }
-  h1 {
-    margin: 0 0 2.5rem;
-    font: 600 1rem/1 system-ui, -apple-system, sans-serif;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
+  h1 { margin: 0 0 2rem; line-height: 0; }
+  h1 img { height: 2.75rem; width: auto; }
+  .shuffle { display: block; width: 100%; max-width: 26rem; height: auto; margin: 0 auto 2.5rem; }
   p { margin: 0 0 1.25rem; }
   .first { font-size: 1.3rem; line-height: 1.5; }
   a { color: var(--link); text-underline-offset: 0.15em; }
@@ -57,7 +65,10 @@
 </head>
 <body>
 <main>
-  <h1>Riffle</h1>
+  <h1><img src="wordmark.svg" alt="Riffle" width="181" height="48"></h1>
+
+  <img class="shuffle" src="shuffle.svg" width="440" height="300" alt="Two packets of cards, purple and orange,
+  bend into an arch and interleave, the way a riffle shuffle does, and fall into one deck below.">
 
   <p class="first">Card game analytics: metagame share, deck-building odds, and price history, with
   the math shown.</p>

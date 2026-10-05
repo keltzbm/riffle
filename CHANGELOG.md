@@ -7,6 +7,14 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- A logo, favicon and banner. The mark is nested arches in purple and orange whose halves take turns
+  crossing at the top, the way two packets of cards interleave in a riffle shuffle; the colors stay
+  distinct for red-green and blue-yellow color blindness, and the shapes show the interleaving without
+  them. riffletcg.gg shows the logo and name at the top and a large drawing of the shuffle under it; the
+  browser tab shows the favicon (`favicon.svg`, with `favicon.ico` for older browsers and
+  `apple-touch-icon.png` for a phone's home screen); a shared link shows a 1200 by 630 card (`og.png`).
+  The README opens with the banner. Every file is drawn by `docs/art/draw.py`, with the lettering as
+  outlines from Inter (SIL Open Font License) so it looks the same on every computer.
 - Misread printings corrected by their art. ManaBox's scanner matches a card by its art and often records a
   precon's card under an earlier printing of the reprint (most of the Foundations Commander boxes' cards went
   under TDC, SOC, M3C and others rather than FDC). A box you own is registered by its deck note's
