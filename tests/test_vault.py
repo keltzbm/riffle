@@ -119,3 +119,52 @@ def test_a_vault_without_logs_has_no_conflicts_there(tmp_path):
     (tmp_path / "commander").mkdir()
     (tmp_path / "commander" / "x [conflicted].md").write_text("")
     assert vault.conflicts(tmp_path) == [tmp_path / "commander" / "x [conflicted].md"]
+
+
+def test_the_notes_card_links_count_in_and_every_note_s_name(tmp_path):
+    notes = tmp_path / "games" / "tcg"
+    for rel in [
+        "mtg/commander/aesi.md",
+        "mtg/_generated/aesi-data.md",
+        "mtg/_generated/cards/Sol Ring.md",
+        "mtg/_log/aesi-versions.md",
+        "mtg/aesi [conflicted 2].md",
+        "one-piece/zoro.md",
+        "Doomsday.md",
+    ]:
+        (notes / rel).parent.mkdir(parents=True, exist_ok=True)
+        (notes / rel).write_text("")
+    (tmp_path / ".obsidian").mkdir()
+    (tmp_path / ".obsidian" / "hidden.md").write_text("")
+    (tmp_path / "Lightning Bolt.md").write_text("")
+    (tmp_path / "Sol Ring.jpg").write_bytes(b"")  # not a note
+    assert [p.relative_to(notes).as_posix() for p in vault.linking(notes)] == [
+        "Doomsday.md",
+        "mtg/commander/aesi.md",
+        "one-piece/zoro.md",
+    ]
+    assert [p.relative_to(notes).as_posix() for p in vault.riffle_notes(notes / "mtg")] == [
+        "mtg/_generated/aesi-data.md",
+        "mtg/_log/aesi-versions.md",
+    ]
+    assert vault.riffle_notes(notes / "one-piece") == []
+    names = vault.names(tmp_path)
+    assert set(names) == {
+        "lightning bolt",
+        "doomsday",
+        "aesi",
+        "aesi-versions",
+        "zoro",
+        "aesi [conflicted 2]",
+    }
+    assert names["doomsday"] == notes / "Doomsday.md"
+
+
+def test_formats_come_from_the_deck_notes_frontmatter(tmp_path):
+    mtg = tmp_path / "mtg"
+    mtg.mkdir()
+    (mtg / "a.md").write_text("---\ngame: mtg\nformat: Modern\n---\n")
+    (mtg / "b.md").write_text("---\ngame: mtg\n---\n")
+    (mtg / "c.md").write_text("---\ngame: one-piece\nformat: standard\n---\n")
+    (mtg / "d.md").write_bytes(b"\xff")
+    assert vault.formats(mtg) == {"modern", "commander"}

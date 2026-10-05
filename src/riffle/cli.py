@@ -15,7 +15,7 @@ from riffle import config, disk, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
 from riffle.models import Deck
-from riffle.progress import Tracker, Watched, contained, elapsed, failure, open_tracker
+from riffle.progress import Step, Tracker, Watched, contained, elapsed, failure, open_tracker
 from riffle.store import Catalog
 
 app = typer.Typer(help="Collection, decks, prices, and the Obsidian vault.", no_args_is_help=True)
@@ -963,6 +963,8 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         )
     if cfg0.old_notes:
         tracker.step("vault setting").warn(cfg0.old_notes)
+    for why in cfg0.unread:
+        tracker.step("setting").warn(why)
     if not cfg0.notes.is_dir():  # a missing or mistyped vault: nothing is written there
         tracker.step("vault").fail(
             f"no notes folder at {cfg0.notes}; set vault and notes in {config.config_path()}"
@@ -971,18 +973,42 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     if not cfg0.mtg_dir.is_dir():  # a user of other games only: not a fault
         tracker.step("vault").ok(f"no MTG decks in {cfg0.notes}; Riffle reads MTG decks only for now")
         return
+    pictures: list[Step] = []
+
+    def progress(done: int, total: int | None) -> None:
+        if not pictures:
+            pictures.append(tracker.step("card pictures", total, "pictures"))
+        pictures[0].update(done, total)
+
     with _setup() as (cfg, cat, inv):
-        res = syncmod.run(cfg.mtg_dir, inv, cat)
+        card_notes = (
+            syncmod.CardNotes(cfg.vault, cfg.notes, cfg.card_images, None if offline else _picture, progress)
+            if cfg.card_notes
+            else None
+        )
+        res = syncmod.run(cfg.mtg_dir, inv, cat, card_notes=card_notes)
+    if pictures and res.card_notes:
+        pictures[0].ok(f"{res.card_notes.fetched:,} fetched")
     for label, why in res.failed:
         tracker.step(label).fail(why)
     _echo(
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
         f"versions changed: {', '.join(res.versions) or 'none'}"
     )
+    if res.card_notes:
+        c = res.card_notes
+        _echo(f"card notes: {c.cards:,} ({c.written:,} written, {c.removed:,} removed)")
+    elif res.cards_removed:
+        _echo(f"card notes: off ({res.cards_removed:,} removed)")
     if res.removed:
         _echo(f"removed stale generated notes: {', '.join(res.removed)}")
     for w in res.warnings:
         _echo(f"  ! {w}", err=True)
+
+
+def _picture(url: str, dest: Path) -> int | None:
+    """A card's picture from Scryfall's image server, written whole to dest."""
+    return net.download(url, dest, accept="image/*", timeout=30)
 
 
 NETWORK_WAIT = 120.0  # seconds a sync waits for the network before carrying on offline
@@ -1077,12 +1103,23 @@ def status_cmd(
         raise typer.Exit(1)
 
 
+CHECKS = ("prices", "vault")
+
+
 @app.command("check")
-def check_cmd() -> None:
+def check_cmd(
+    what: str = typer.Argument("prices", help=" | ".join(CHECKS), autocompletion=_choices(*CHECKS)),
+) -> None:
     """Check every kept price file: filed under the day its own stamp says, and made before it
-    was fetched. Reads only; exits 1 if any file isn't."""
+    was fetched. With vault, check every card link in the notes opens the card's note. Reads
+    only; exits 1 if anything is wrong."""
     from riffle.ingest import checks
 
+    if what not in CHECKS:
+        raise typer.BadParameter(f"what to check: {' or '.join(CHECKS)}, not {what!r}")
+    if what == "vault":
+        _check_vault()
+        return
     wrong = 0
     for rep in checks.run():
         typer.echo(f"{rep.source:<14}{rep.summary()}")
@@ -1094,6 +1131,77 @@ def check_cmd() -> None:
     if wrong:
         typer.echo(f"{wrong} price file{'s' * (wrong != 1)} dated wrong", err=True)
         raise typer.Exit(1)
+
+
+def _check_vault() -> None:
+    """Each card link that can't open the card's note as written, with the link that would, and
+    each card name another note has."""
+    from riffle.export import cards
+    from riffle.export.links import safe_name, written
+
+    cfg = config.load()
+    with _catalog() as cat:
+        found = cards.gather(vault.linking(cfg.notes))
+        own = cards.gather(vault.riffle_notes(cfg.mtg_dir))
+        links = cards.sort(found, cat, vault.names(cfg.vault), own)
+    n = len(links.cards)
+    typer.echo(f"card links: {n:,} card{'s' * (n != 1)} linked in {config.tilde(cfg.notes)}")
+    for target, (fix, notes) in links.misses.items():
+        typer.echo(f"  ! {written(target)} in {notes} note{'s' * (notes != 1)}: write {fix}", err=True)
+    for name, path in links.taken.items():
+        typer.echo(f"  ! {name}: {config.tilde(path)} has that name, so the card has no note", err=True)
+    for name, other in links.clashes.items():
+        typer.echo(f"  ! {name}: its note would be {safe_name(name)}, which names {other}; no note", err=True)
+    misses, without = len(links.misses), len(links.taken) + len(links.clashes)
+    if misses or without:
+        typer.echo(
+            f"{misses} link{'s' * (misses != 1)} can't open the card's note; "
+            f"{without} linked card{'s' * (without != 1)} without a note",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo("every card link opens the card's note")
+
+
+@app.command("card")
+def card_cmd(
+    name: str = typer.Argument(..., help="The card's name, full, front face, or as a link writes it"),
+    open_page: bool = typer.Option(False, "--open", help="Open the card's page on Scryfall"),
+) -> None:
+    """What a card's note holds: each face's text, the price, legality in the formats your lists
+    are in, and the copies you own. Reads only."""
+    import webbrowser
+
+    from riffle.export import cards
+
+    with _setup() as (cfg, cat, inv):
+        card_id = cat.resolve(name)
+        if card_id is None:
+            typer.echo(f"no card named {name!r}", err=True)
+            raise typer.Exit(1)
+        view = cat.card_views([card_id]).get(card_id)
+        day = cat.prices_day()
+        facts = [
+            cards.price_line(cat.prices([card_id]).get(card_id), day.isoformat() if day else None),
+            cards.legality(cat.rules([card_id]).get(card_id), vault.formats(cfg.mtg_dir)),
+            cards.owned([h for h in inv.holdings if h.card_id == card_id]),
+        ]
+        full = cat.name(card_id)
+    faces = view.faces if view else ()
+    if len(faces) != 1:
+        typer.echo(full)
+    for face in faces:
+        head, *rest = cards.face_lines(face)
+        typer.echo(head)
+        for line in rest:
+            typer.echo(f"  {line}")
+    for fact in facts:
+        if fact:
+            typer.echo(fact)
+    url = cards.scryfall_url(full, view)
+    typer.echo(url)
+    if open_page:
+        webbrowser.open(url)
 
 
 def _watch_vault(interval: float) -> None:

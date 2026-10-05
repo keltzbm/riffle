@@ -38,6 +38,30 @@ class CardRules:
     oracle_text: str = ""  # all faces, newline-joined
 
 
+@dataclass(frozen=True)
+class Face:
+    """One face of a card as its note shows it; a card with one face has one."""
+
+    name: str
+    mana_cost: str = ""
+    type_line: str = ""
+    text: str = ""
+    stats: str = ""  # power/toughness, loyalty or defense
+
+
+@dataclass(frozen=True)
+class CardView:
+    """What a card's note shows beyond its rules: its faces, and the printing pictured, which
+    is never a foil (see Catalog.card_views)."""
+
+    faces: tuple[Face, ...]
+    images: tuple[tuple[str, str], ...] = ()  # (face name, image URL), front first
+    scryfall_id: str = ""  # the pictured printing's; "" when the card has none to picture
+    set_code: str = ""
+    collector_number: str = ""
+    multiverse_id: int | None = None  # Gatherer's ID for that printing, when it has one
+
+
 _RANK = {"banned": 3, "restricted": 2, "legal": 1, "not_legal": 0}
 
 

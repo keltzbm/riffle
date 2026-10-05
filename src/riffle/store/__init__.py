@@ -9,12 +9,12 @@ from collections.abc import Collection
 from datetime import date
 from typing import Protocol
 
-from riffle.models import CardRules, PricedPrinting, Prices, Printing
+from riffle.models import CardRules, CardView, PricedPrinting, Prices, Printing
 
 
 class Catalog(Protocol):
     def resolve(self, name: str) -> str | None:
-        """Card name (full or front face, any case) -> card_id."""
+        """Card name (full, front face, or safe name as export.links writes it; any case) -> card_id."""
 
     def name(self, card_id: str) -> str: ...
 
@@ -46,3 +46,9 @@ class Catalog(Protocol):
 
     def rules(self, card_ids: Collection[str]) -> dict[str, CardRules]:
         """Legalities, color identity, type line, and oracle text of these cards; unknown IDs are left out."""
+
+    def card_views(self, card_ids: Collection[str]) -> dict[str, CardView]:
+        """Each card's faces, and the printing its note pictures: one that comes without foil,
+        preferring one that can be played, then not a promo, a plain frame, English, a
+        high-resolution scan, released, the newest. A card printed only in foil has no picture.
+        Unknown IDs are left out."""

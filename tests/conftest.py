@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from riffle import disk
-from riffle.models import CardRules, PricedPrinting, Prices, Printing
+from riffle.export.links import safe_name
+from riffle.models import CardRules, CardView, Face, PricedPrinting, Prices, Printing
 
 CARDS = {
     # card_id: (name, layout, usd, tix)
@@ -32,6 +33,8 @@ CARDS = {
     "o-dwarves": ("Seven Dwarves", "normal", 0.25, 0.01),
     "o-teferi": ("Teferi, Hero of Dominaria", "normal", 15.0, 3.0),
     "o-lurrus": ("Lurrus of the Dream-Den", "normal", 3.0, 0.4),
+    "o-delver": ("Delver of Secrets // Insectile Aberration", "transform", 0.25, 0.02),
+    "o-summon": ("Summon: Bahamut", "normal", 4.0, None),
 }
 
 _CMDR = {"commander": "legal", "duel": "legal"}
@@ -102,6 +105,35 @@ RULES = {
         "Companion — Each permanent card in your starting deck has mana value 2 or less.",
     ),
 }
+FRONT = "https://cards.scryfall.io/normal/front"
+VIEWS = {
+    # card_id: what its note shows; any other card shows its rules and is pictured by "s-<id>"
+    "o-fire": CardView(
+        (
+            Face("Fire", "{1}{R}", "Instant", "Fire deals 2 damage."),
+            Face("Ice", "{1}{U}", "Instant", "Tap.\nDraw."),
+        ),
+        (("Fire // Ice", f"{FRONT}/s-fire.jpg?1662"),),
+        "s-fire",
+        "dmr",
+        "215",
+        599089,
+    ),
+    "o-delver": CardView(
+        (
+            Face("Delver of Secrets", "{U}", "Creature — Human Wizard", "Transform it.", "1/1"),
+            Face("Insectile Aberration", "", "Creature — Human Insect", "Flying", "3/2"),
+        ),
+        (
+            ("Delver of Secrets", f"{FRONT}/s-delver.jpg?1"),
+            ("Insectile Aberration", "https://cards.scryfall.io/normal/back/s-delver.jpg?1"),
+        ),
+        "s-delver",
+        "inr",
+        "60",
+    ),
+    "o-crypt": CardView((Face("Mana Crypt", "{0}", "Artifact"),)),  # printed only in foil: no picture
+}
 PRINTINGS = {
     "s-sol-m3c": Printing("s-sol-m3c", "o-sol", "Sol Ring", "m3c", "283"),
     "s-rift-2x2": Printing("s-rift-2x2", "o-rift", "Cyclonic Rift", "2x2", "45"),
@@ -115,6 +147,9 @@ class FakeCatalog:
         key = name.strip().lower()
         for oid, (n, *_) in CARDS.items():
             if n.lower() == key or n.lower().split(" // ")[0] == key.split(" // ")[0]:
+                return oid
+        for oid, (n, *_) in CARDS.items():
+            if safe_name(n).lower() == " ".join(key.split()):
                 return oid
         return None
 
@@ -153,6 +188,18 @@ class FakeCatalog:
     def rules(self, card_ids):
         return {c: CardRules(*RULES[c]) for c in card_ids if c in RULES}
 
+    def card_views(self, card_ids):
+        views = {}
+        for c in card_ids:
+            if c in VIEWS:
+                views[c] = VIEWS[c]
+            elif c in CARDS:
+                name, (_, _, kind, text) = CARDS[c][0], RULES.get(c, ({}, (), "", ""))
+                views[c] = CardView(
+                    (Face(name, "", kind, text),), ((name, f"{FRONT}/s-{c}.jpg?7"),), f"s-{c}", "tst", "1"
+                )
+        return views
+
 
 @pytest.fixture
 def cat():
@@ -185,6 +232,7 @@ def isolated(tmp_path_factory, monkeypatch):
     (home / "config" / "riffle").mkdir(parents=True)
     (home / "config" / "riffle" / "config.toml").write_text(
         'notes = "games/tcg"\ndatabase_url = "postgresql+psycopg://tcg@127.0.0.1:1/unreachable"\n'
+        'card_images = "link"\n'  # no test fetches a card's picture unless it says so
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))

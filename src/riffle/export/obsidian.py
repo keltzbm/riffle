@@ -24,6 +24,7 @@ from riffle import times
 from riffle.analysis.ownership import BUY, MARK, OWN, Row, summary
 from riffle.analysis.pricing import DeckPrice
 from riffle.config import data_dir
+from riffle.export.links import card_link
 from riffle.models import Deck, Holding, Prices
 from riffle.store import Catalog
 
@@ -36,7 +37,7 @@ def _tix(x: float | None) -> str:
     return f"{x:,.2f}" if x is not None else "—"
 
 
-def _write(path: Path, text: str) -> bool:
+def write_whole(path: Path, text: str) -> bool:
     """Write only if different, so a sync service doesn't upload unchanged files, and whole:
     a sync service or Obsidian reading the note mid-write sees the old one, never half."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,12 +85,12 @@ def deck_data(
         for row, line in sorted(buy, key=lambda pair: -(pair[1].usd or 0)):
             note = f" (own {row.owned} of {row.needed})" if row.partial else ""
             out.append(
-                f"| {MARK[BUY]} {row.shortfall} | [[{row.name}]]{note} "
+                f"| {MARK[BUY]} {row.shortfall} | {card_link(row.name, table=True)}{note} "
                 f"| {_money(line.usd)} | {_tix(line.tix)} |"
             )
         out.append("")
     if dp.missing_on_mtgo:
-        out += ["## Not on MTGO", "", ", ".join(f"[[{n}]]" for n in dp.missing_on_mtgo), ""]
+        out += ["## Not on MTGO", "", ", ".join(card_link(n) for n in dp.missing_on_mtgo), ""]
     if unresolved:
         out += ["> [!bug] Names that didn't match any card", "> " + ", ".join(unresolved), ""]
     for title, text in (imports or {}).items():
@@ -127,7 +128,10 @@ def collection_summary(holdings: list[Holding], catalog: Catalog) -> str:
         "",
     ]
     lines += ["## Most valuable", "", "| Card | Copies | Value |", "|---|---|---|"]
-    lines += [f"| [[{catalog.name(card_id)}]] | {h.quantity} | {_money(v)} |" for v, (card_id, h) in top]
+    lines += [
+        f"| {card_link(catalog.name(card_id), table=True)} | {h.quantity} | {_money(v)} |"
+        for v, (card_id, h) in top
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -151,7 +155,7 @@ def close_price_log(log: Path, today: str) -> bool:
         f"\nNot appended to since {today}: {CONTINUES} prints every buy card's price for each "
         "Scryfall day the store keeps.\n"
     )
-    return _write(log, text + ("" if text.endswith("\n") else "\n") + end)
+    return write_whole(log, text + ("" if text.endswith("\n") else "\n") + end)
 
 
 def _state_path() -> Path:
@@ -221,15 +225,15 @@ def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str, stat
         old = Counter(prev["cards"])
         added, removed = cards - old, old - cards
         text += f"\n## {today}\n\n"
-        text += "".join(f"- \\+ {n} [[{c}]]\n" for c, n in sorted(added.items()))
-        text += "".join(f"- \\- {n} [[{c}]]\n" for c, n in sorted(removed.items()))
-    _write(log, text)
+        text += "".join(f"- \\+ {n} {card_link(c)}\n" for c, n in sorted(added.items()))
+        text += "".join(f"- \\- {n} {card_link(c)}\n" for c, n in sorted(removed.items()))
+    write_whole(log, text)
     state[deck.slug] = {"hash": digest, "cards": dict(cards)}
     return True
 
 
 def write_deck(gen_dir: Path, deck: Deck, text: str) -> bool:
-    return _write(gen_dir / f"{deck.slug}-data.md", text)
+    return write_whole(gen_dir / f"{deck.slug}-data.md", text)
 
 
 def prune(gen_dir: Path, keep: set[str]) -> list[str]:
@@ -243,7 +247,7 @@ def prune(gen_dir: Path, keep: set[str]) -> list[str]:
 
 
 def write_summary(gen_dir: Path, text: str) -> bool:
-    return _write(gen_dir / "collection-summary.md", text)
+    return write_whole(gen_dir / "collection-summary.md", text)
 
 
 def today() -> str:

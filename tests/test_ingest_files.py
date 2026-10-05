@@ -95,6 +95,35 @@ def test_config_defaults_and_xdg(tmp_path, monkeypatch):
     assert cfg.notes == cfg.vault / "games" / "tcg"
     assert cfg.mtg_dir == cfg.vault / "games" / "tcg" / "mtg"
     assert cfg.collection_csv == tmp_path / "data" / "riffle" / "collection.csv"
+    assert (cfg.card_notes, cfg.card_images, cfg.unread) == (True, "cache", [])
+
+
+@pytest.mark.parametrize(
+    ("lines", "notes", "images", "unread"),
+    [
+        ('card_notes = false\ncard_images = "link"\n', False, "link", []),
+        ('card_images = "off"\n', True, "off", []),
+        (
+            'card_notes = "no"\ncard_images = "keep"\n',
+            True,
+            "cache",
+            [
+                "card_notes in {cfg} is 'no', not true or false; true is used",
+                'card_images in {cfg} is \'keep\', not one of "cache", "link", "off"; "cache" is used',
+            ],
+        ),
+    ],
+)
+def test_the_card_note_settings(tmp_path, monkeypatch, lines, notes, images, unread):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.write_default().write_text(lines)
+    cfg = config.load()
+    path = config.tilde(config.config_path())
+    assert (cfg.card_notes, cfg.card_images, cfg.unread) == (
+        notes,
+        images,
+        [u.format(cfg=path) for u in unread],
+    )
 
 
 def test_config_file_is_read_and_never_overwritten(tmp_path, monkeypatch):

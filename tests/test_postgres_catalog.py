@@ -151,6 +151,7 @@ CARDS = [
     card("oko-1", "o-oko", "Oko, Thief of Crowns", rarity="mythic", games=["paper", "arena"]),
     card("oko-2", "o-oko", "Oko, Thief of Crowns", rarity="rare", games=["paper"]),
     card("mox", "o-mox", "Mox Amber", rarity="special", games=["arena"]),
+    card("choco", "o-choco", "Summon: Choco/Mog"),
 ]
 
 
@@ -203,6 +204,12 @@ def test_unknown_cards_have_no_rules(cat):
         ("Sol Ring", "o-sol"),
         ("Sol Ring // Sol Ring", "o-sol-art"),
         ("Not A Card", None),
+        # a safe name, as a card's link writes it (export/links.py)
+        ("Ach! Hans, Run!", "o-hans"),
+        ("ach!  hans, run! ", "o-hans"),
+        ("Summon ChocoMog", "o-choco"),
+        # a slash inside a name is the name's, not MTGO's way of writing a split card
+        ("Summon: Choco/Mog", "o-choco"),
     ],
 )
 def test_resolve(cat, name, oracle):
@@ -334,3 +341,123 @@ def test_a_command_reads_one_read_only_snapshot(pg_engine, monkeypatch):
             text("SELECT current_setting('transaction_read_only'), current_setting('transaction_isolation')")
         ).one()
     assert tuple(settings) == ("on", "repeatable read")
+
+
+# ---- what a card's note shows (card_views) ---------------------------------------------
+
+
+def pictured(sid, **fields):
+    """A printing of one card, with a picture and a high-resolution scan unless fields say not."""
+    image = {"normal": f"https://cards.scryfall.io/normal/front/{sid}.jpg?1"}
+    return card(sid, "o-pic", "Pictured", **{"image_uris": image, "image_status": "highres_scan", **fields})
+
+
+# Best first: the note pictures the first of these that's loaded. Never a foil: a printing
+# sold only in foil is loaded with every one of them and never pictured.
+PICTURE_ORDER = [
+    pictured("pic-new", released_at="2020-01-01", multiverse_ids=[456]),
+    pictured("pic-old", released_at="2010-01-01"),
+    pictured("pic-soon", released_at="2099-01-01"),
+    pictured("pic-low", image_status="lowres"),
+    pictured("pic-ja", lang="ja"),
+    pictured("pic-list", set="plst"),
+    pictured("pic-showcase", frame_effects=["showcase"]),
+    pictured("pic-sld", set="sld", set_type="box"),
+    pictured("pic-promo", promo=True),
+    pictured("pic-gold", set="wc97", border_color="gold"),
+]
+FOIL = pictured("pic-foil", released_at="2026-09-01", finishes=["foil"])
+
+
+@pytest.mark.parametrize("first", range(len(PICTURE_ORDER)), ids=[c["id"] for c in PICTURE_ORDER])
+def test_a_note_pictures_the_plainest_newest_printing_never_a_foil(pg, first):
+    cat = load(pg, [FOIL, *PICTURE_ORDER[first:]])
+    view = cat.card_views([cid("o-pic")])[cid("o-pic")]
+    best = PICTURE_ORDER[first]
+    assert view.scryfall_id == best["id"]
+    assert view.images == (("Pictured", f"https://cards.scryfall.io/normal/front/{best['id']}.jpg?1"),)
+    assert (view.set_code, view.collector_number) == (best.get("set", "one"), best["id"])
+    assert view.multiverse_id == (456 if best["id"] == "pic-new" else None)
+
+
+def test_a_card_printed_only_in_foil_has_no_picture(pg):
+    view = load(pg, [FOIL]).card_views([cid("o-pic")])[cid("o-pic")]
+    assert (view.images, view.scryfall_id, view.set_code) == ((), "", "")
+    assert view.faces[0].name == "Pictured"
+
+
+def test_a_view_shows_each_face_with_its_cost_and_stats(pg):
+    jace = card(
+        "jace",
+        "o-jace",
+        "Jace, Vryn's Prodigy // Jace, Telepath Unbound",
+        layout="transform",
+        type_line="Legendary Creature — Human Wizard // Legendary Planeswalker — Jace",
+        oracle_text=None,
+        card_faces=[
+            {
+                "name": "Jace, Vryn's Prodigy",
+                "mana_cost": "{1}{U}",
+                "type_line": "Legendary Creature — Human Wizard",
+                "oracle_text": "Loot.",
+                "power": "0",
+                "toughness": "2",
+                "image_uris": {"normal": "https://cards.scryfall.io/normal/front/jace.jpg?1"},
+            },
+            {
+                "name": "Jace, Telepath Unbound",
+                "mana_cost": "",
+                "type_line": "Legendary Planeswalker — Jace",
+                "oracle_text": "+1: Up.",
+                "loyalty": "5",
+                "image_uris": {"normal": "https://cards.scryfall.io/normal/back/jace.jpg?1"},
+            },
+        ],
+    )
+    bear = card(
+        "bear",
+        "o-bear",
+        "Grizzly Bears",
+        mana_cost="{1}{G}",
+        type_line="Creature — Bear",
+        power="2",
+        toughness="2",
+    )
+    siege = card("siege", "o-siege", "Invasion of Ergamon", type_line="Battle — Siege", defense="5")
+    cat = load(pg, [*CARDS, jace, bear, siege])
+    views = cat.card_views(
+        [cid("o-jace"), cid("o-bear"), cid("o-siege"), cid("o-fire"), cid("o-lib"), "nope"]
+    )
+    assert views.keys() == {cid(o) for o in ("o-jace", "o-bear", "o-siege", "o-fire", "o-lib")}
+    front, back = views[cid("o-jace")].faces
+    assert (front.name, front.mana_cost, front.text, front.stats) == (
+        "Jace, Vryn's Prodigy",
+        "{1}{U}",
+        "Loot.",
+        "0/2",
+    )
+    assert (back.name, back.type_line, back.stats) == (
+        "Jace, Telepath Unbound",
+        "Legendary Planeswalker — Jace",
+        "Loyalty 5",
+    )
+    assert [face for face, _ in views[cid("o-jace")].images] == [
+        "Jace, Vryn's Prodigy",
+        "Jace, Telepath Unbound",
+    ]
+    (bears,) = views[cid("o-bear")].faces
+    assert (bears.mana_cost, bears.type_line, bears.stats) == ("{1}{G}", "Creature — Bear", "2/2")
+    assert views[cid("o-siege")].faces[0].stats == "Defense 5"
+    assert [f.name for f in views[cid("o-fire")].faces] == ["Fire", "Ice"]
+    assert views[cid("o-fire")].images == ()  # the fixture's printings have no picture
+    assert views[cid("o-lib")].faces[0].stats == ""
+    assert cat.card_views([]) == {}
+
+
+def test_every_real_card_s_safe_name_resolves_to_it(cat):
+    """A card's note is named by its safe name: it must lead back to the card. Art cards and
+    tokens that share a real card's name lead to the real card, as their full names do."""
+    from riffle.export.links import safe_name
+
+    real = {c: card for c, card in cat._cards.items() if card.layout not in postgres.STAND_INS}
+    assert all(cat.resolve(safe_name(card.name)) == c for c, card in real.items())
