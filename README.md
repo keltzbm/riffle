@@ -2,8 +2,12 @@
 
 [![CI](https://github.com/keltzbm/riffle/actions/workflows/ci.yml/badge.svg)](https://github.com/keltzbm/riffle/actions/workflows/ci.yml)
 
-What I own, what I'm building, what the gap costs — in paper and on MTGO —
-rendered into my Obsidian vault. Design: [DESIGN.md](DESIGN.md).
+Card game analytics: metagame share, deck-building odds, and price history, with the math
+shown. So far Riffle collects its own data every day (card data, prices from the stores and
+price sites, and MTGO decklists), reads a collection and its decks, and writes what each deck
+is missing, and what finishing it costs, into an Obsidian vault.
+
+Site: [riffletcg.gg](https://riffletcg.gg). Design: [DESIGN.md](DESIGN.md).
 
 ## Install
 

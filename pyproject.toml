@@ -1,7 +1,7 @@
 [project]
 name = "riffle"
 version = "0.4.0.dev0"
-description = "Collection, decks, paper and MTGO prices, rendered into an Obsidian vault"
+description = "Card game analytics: metagame share, deck-building odds, and price history, on data it collects itself"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
