@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riffle</title>
+<meta name="description" content="Riffle keeps a card player's collection, decks and prices on their own computer, and writes them into their notes.">
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #1c1b1f;
+    --muted: #55525c;
+    --accent: #7e22ce;
+    --rule: #e4e1ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141218;
+      --text: #ece8f1;
+      --muted: #b4afbd;
+      --accent: #c084fc;
+      --rule: #2e2a35;
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 3rem 1rem 4rem;
+  }
+  h1 {
+    margin: 0 0 0.25rem;
+    font-size: 2.5rem;
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    margin: 0 0 2rem;
+    font-size: 1.2rem;
+    color: var(--muted);
+  }
+  h2 {
+    margin: 2rem 0 0.5rem;
+    font-size: 1.1rem;
+  }
+  a {
+    color: var(--accent);
+  }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  ul {
+    padding-left: 1.2rem;
+  }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Riffle</h1>
+  <p class="lede">What you own, what you're building, and what the gap costs, for the card games you play.</p>
+
+  <p>Riffle keeps your collection, your decks and every day's card prices on your own computer, and writes
+  them into your notes: what each deck still needs, what it costs to finish, and a page behind every card
+  you link.</p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Reads your collection from the app you scan cards with.</li>
+    <li>Keeps every day's prices from the stores and price sites, so no price day is lost.</li>
+    <li>Checks each deck against what you own and lists what to buy, cheapest first.</li>
+    <li>Writes it all into an Obsidian vault, with a note behind every card: its picture, text, price and the copies you own.</li>
+  </ul>
+
+  <h2>Where it is</h2>
+  <p>Riffle is in development and runs from the command line. A public beta comes later. Magic: The Gathering
+  first; more games follow.</p>
+  <p>The code is open source under the AGPL: <a href="https://github.com/keltzbm/riffle">github.com/keltzbm/riffle</a>.</p>
+
+  <footer>
+    <p>Riffle is made by Brandon M. Keltz. It is not affiliated with or endorsed by any card game's publisher.
+    Card data from Scryfall, MTGJSON and the stores named in the code. Magic: The Gathering is a trademark of
+    Wizards of the Coast.</p>
+  </footer>
+</main>
+</body>
+</html>
