@@ -87,8 +87,7 @@ def kept(data_dir, store: str = "cardkingdom", name: str = "singles") -> dict:
 
 def logged(data_dir, store: str = "cardkingdom") -> list[dict]:
     """The store's log, without how long each check took (seconds)."""
-    found = [json.loads(line) for line in (data_dir / store / "watch.jsonl").read_text().splitlines()]
-    return [{k: v for k, v in entry.items() if k != "seconds"} for entry in found]
+    return [{k: v for k, v in entry.items() if k != "seconds"} for entry in watching.entries(store)]
 
 
 @pytest.fixture
@@ -156,8 +155,7 @@ def test_every_list_kept_is_logged_with_its_hashes(data_dir):
         "sha256": runs.hashlib.sha256(ck()).hexdigest(),
         "file_sha256": runs.file_sha256(path),
     }
-    raw = (data_dir / "cardkingdom" / "watch.jsonl").read_text().splitlines()[0]
-    assert "seconds" in json.loads(raw)  # how long it took, as every watched store logs
+    assert "seconds" in watching.entries("cardkingdom")[0]  # how long it took, as every watched store logs
 
 
 def test_mana_pool_s_etag_is_sent_and_a_304_asks_nothing_more(data_dir, tracker):
@@ -337,7 +335,7 @@ def test_a_run_finding_the_store_s_lock_held_asks_nothing(data_dir, tracker):
     with locks.held(data_dir / "cardkingdom" / "watch.lock") as mine:
         assert mine
         res = run(store, tracker)
-    assert res.busy and store.asked == [] and not (data_dir / "cardkingdom" / "watch.jsonl").exists()
+    assert res.busy and store.asked == [] and watching.files("cardkingdom") == []
     assert tracker.outcomes() == {"Card Kingdom": ("ok", "another run is asking for its lists")}
 
 

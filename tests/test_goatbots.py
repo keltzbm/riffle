@@ -146,7 +146,7 @@ def cards(data_dir) -> dict:
 
 
 def logged(data_dir) -> list[dict]:
-    return [json.loads(line) for line in (data_dir / "watch.jsonl").read_text().splitlines()]
+    return watching.entries(goatbots.STORE)
 
 
 TODAY = date(2026, 9, 28)  # UTC

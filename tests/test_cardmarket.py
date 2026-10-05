@@ -95,7 +95,7 @@ def run(source: Source, tracker=None, now: datetime = NOW, always: bool = True) 
 
 
 def logged(data_dir) -> list[dict]:
-    return [json.loads(line) for line in (data_dir / "watch.jsonl").read_text().splitlines()]
+    return watching.entries(cardmarket.STORE)
 
 
 def test_every_game_is_kept_as_returned_under_its_created_time(data_dir, few, tracker):

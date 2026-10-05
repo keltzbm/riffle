@@ -53,7 +53,7 @@ later one as a difference against it, under the UTC time the store made it:
 minutes, and the sync does the same. One request a list: it carries the ETag of the list last
 kept, so Mana Pool answers 304 when nothing's new, and Card Kingdom, which sends no ETag, is
 hung up on once the list's first bytes show its stamp is kept. A list comes gzipped, a seventh
-of its size, and is kept as served. Every check goes in <store>/watch.jsonl: when, which list,
+of its size, and is kept as served. Every check goes in <store>/watch/<month>.jsonl: when, which list,
 what came, and for each list kept its stamp, file, size, and the SHA-256 of the list and of
 the file kept, which riffle.ingest.checks checks.
 

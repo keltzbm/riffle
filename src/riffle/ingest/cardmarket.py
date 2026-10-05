@@ -50,7 +50,7 @@ checks (at every firing until it has 14 gaps), carrying the ETag of the guide la
 not new costs a 304 and no body.
 Its product lists likewise. Each list asked for is a step of its own; the lists not due share
 one line. Every check goes
-in <data_dir>/cardmarket/watch.jsonl. Until 2026-09-29 Riffle kept one guide a day, gzipped,
+in <data_dir>/cardmarket/watch/<month>.jsonl. Until 2026-09-29 Riffle kept one guide a day, gzipped,
 under the day of its createdAt; those stay:
 
     <data_dir>/cardmarket/daily/<day>/<game>.json.gz
@@ -110,7 +110,7 @@ OTHERS: dict[str, int | str] = {
 # 2026-09-01), so there's nothing to learn it from. Five leaves room for IDs taken before their
 # guide goes up, each a 403 at a look.
 PAST = 5
-LOOK = "new games"  # a look's entries in watch.jsonl
+LOOK = "new games"  # a look's entries in the watch log
 KINDS = ("singles", "nonsingles")  # each game's product lists: products_<kind>_<id>.json
 CREATED = re.compile(rb'"createdAt"\s*:\s*"([^"]+)"')
 CATEGORY = re.compile(rb'"categoryName"\s*:\s*("(?:[^"\\]|\\.)*")')
@@ -502,7 +502,7 @@ def watch(
             f"{game} {kind}", f"Cardmarket {game} {kind}", folder, ask, noun="product list"
         )
 
-    log = watching.entries(STORE)
+    log = watching.read(STORE, clock()).entries
     known = games()
     lists = [guide(game, ref) for game, ref in known.items()]
     deferred: list[watching.Listed] = []

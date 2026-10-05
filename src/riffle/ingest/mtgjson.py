@@ -23,7 +23,7 @@ covers: the two disagree about the same day in some cards.
 
     <data_dir>/mtgjson/lists/<list>/<run>/         each file's lists, by the run rule:
                                                    prices-today, all-printings, and the rest
-    <data_dir>/mtgjson/watch.jsonl                 every check; for a file kept, its day (its
+    <data_dir>/mtgjson/watch/<month>.jsonl         every check; for a file kept, its day (its
                                                    meta's date, or the day it was built), its
                                                    version, and the served file's SHA-256,
                                                    size and ETag (riffle.watching)
