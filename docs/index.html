@@ -4,94 +4,80 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Riffle</title>
-<meta name="description" content="Riffle keeps a card player's collection, decks and prices on their own computer, and writes them into their notes.">
+<meta name="description" content="Card game analytics: metagame share, deck-building odds, and price history, with the math shown.">
 <style>
   :root {
-    --bg: #ffffff;
-    --text: #1c1b1f;
-    --muted: #55525c;
-    --accent: #7e22ce;
-    --rule: #e4e1ea;
+    --bg: #fbfaf8;
+    --text: #222024;
+    --muted: #6b6670;
+    --link: #7e22ce;
+    --line: #e7e3ea;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #141218;
-      --text: #ece8f1;
-      --muted: #b4afbd;
-      --accent: #c084fc;
-      --rule: #2e2a35;
+      --bg: #161419;
+      --text: #e9e6ee;
+      --muted: #a39dab;
+      --link: #c084fc;
+      --line: #2d2933;
     }
   }
+  * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 18px/1.65 Charter, "Iowan Old Style", Georgia, serif;
   }
   main {
-    max-width: 40rem;
+    max-width: 36rem;
     margin: 0 auto;
-    padding: 3rem 1rem 4rem;
+    padding: 4.5rem 1.25rem 3rem;
   }
   h1 {
-    margin: 0 0 0.25rem;
-    font-size: 2.5rem;
-    letter-spacing: -0.02em;
-  }
-  .lede {
-    margin: 0 0 2rem;
-    font-size: 1.2rem;
+    margin: 0 0 2.5rem;
+    font: 600 1rem/1 system-ui, -apple-system, sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--muted);
   }
-  h2 {
-    margin: 2rem 0 0.5rem;
-    font-size: 1.1rem;
-  }
-  a {
-    color: var(--accent);
-  }
-  a:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  ul {
-    padding-left: 1.2rem;
-  }
+  p { margin: 0 0 1.25rem; }
+  .first { font-size: 1.3rem; line-height: 1.5; }
+  a { color: var(--link); text-underline-offset: 0.15em; }
+  a:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
   footer {
-    margin-top: 3rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--rule);
-    font-size: 0.9rem;
+    margin-top: 3.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+    font: 0.8rem/1.6 system-ui, -apple-system, sans-serif;
     color: var(--muted);
   }
+  footer p { margin: 0 0 0.5rem; }
 </style>
 </head>
 <body>
 <main>
   <h1>Riffle</h1>
-  <p class="lede">What you own, what you're building, and what the gap costs, for the card games you play.</p>
 
-  <p>Riffle keeps your collection, your decks and every day's card prices on your own computer, and writes
-  them into your notes: what each deck still needs, what it costs to finish, and a page behind every card
-  you link.</p>
+  <p class="first">Card game analytics: metagame share, deck-building odds, and price history, with
+  the math shown.</p>
 
-  <h2>What it does</h2>
-  <ul>
-    <li>Reads your collection from the app you scan cards with.</li>
-    <li>Keeps every day's prices from the stores and price sites, so no price day is lost.</li>
-    <li>Checks each deck against what you own and lists what to buy, cheapest first.</li>
-    <li>Writes it all into an Obsidian vault, with a note behind every card: its picture, text, price and the copies you own.</li>
-  </ul>
+  <p>Riffle collects its own data every day: card data, prices from the stores and price sites, and
+  tournament decklists. A player's collection and decks go in too, so it can say what a deck is missing
+  and what finishing it costs.</p>
 
-  <h2>Where it is</h2>
-  <p>Riffle is in development and runs from the command line. A public beta comes later. Magic: The Gathering
-  first; more games follow.</p>
-  <p>The code is open source under the AGPL: <a href="https://github.com/keltzbm/riffle">github.com/keltzbm/riffle</a>.</p>
+  <p>The methods and the code are public, on <a href="https://github.com/keltzbm/riffle">GitHub</a>
+  under the AGPL. Riffle is in development.</p>
 
   <footer>
-    <p>Riffle is made by Brandon M. Keltz. It is not affiliated with or endorsed by any card game's publisher.
-    Card data from Scryfall, MTGJSON and the stores named in the code. Magic: The Gathering is a trademark of
-    Wizards of the Coast.</p>
+    <p>By Brandon M. Keltz.</p>
+    <p>Riffle is an independent project. It isn't affiliated with, endorsed by, or sponsored by any card
+    game publisher, store, or data source, including Wizards of the Coast, Legend Story Studios, Bandai, The Pokémon
+    Company, Konami, Ravensburger, Disney, Fantasy Flight Games, Scryfall, MTGJSON, TCGplayer, Card Kingdom,
+    Cardmarket, Mana Pool, GoatBots, and ManaBox.</p>
+    <p>Magic: The Gathering is a trademark of Wizards of the Coast. Flesh and Blood, the One Piece Card Game,
+    the Digimon Card Game, the Pokémon Trading Card Game, Yu-Gi-Oh!, Disney Lorcana, and Star Wars: Unlimited
+    are trademarks of their owners. Card names and images belong to their publishers.</p>
   </footer>
 </main>
 </body>

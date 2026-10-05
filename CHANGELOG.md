@@ -255,6 +255,8 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The page at riffletcg.gg says plainly what Riffle is for, card game analytics on data it collects itself,
+  in a quieter layout, and names every publisher, store, and data source it isn't affiliated with.
 - Riffle's own tables link a card by a name a note can have: the front face without the characters a file
   name can't hold, shown under the card's own name (`[[Fire|Fire // Ice]]`, `[[Summon Bahamut|Summon:
   Bahamut]]`). The buy table, Not on MTGO, the collection summary and the version logs wrote the full name,
