@@ -13,6 +13,7 @@ class Printing:
     frame: str = ""
     border_color: str = ""
     usd: float | None = None  # paper, nonfoil
+    illustration_id: str = ""  # Scryfall's, the front face's on a two-faced card; "" when it has none
 
     @property
     def is_old_border(self) -> bool:

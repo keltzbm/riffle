@@ -14,6 +14,7 @@ import typer
 from riffle import config, disk, net, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
+from riffle.ingest import manabox, precons
 from riffle.models import Deck
 from riffle.progress import Step, Tracker, Watched, contained, elapsed, failure, open_tracker
 from riffle.store import Catalog
@@ -186,11 +187,24 @@ def _run(title: str) -> Iterator[Tracker]:
         yield tracker
 
 
+def _inventory(cfg: config.Config, cat: Catalog, boxes: precons.Boxes | None = None) -> syncmod.Inventory:
+    """The collection, its misread printings corrected by the precon boxes given, or else by those
+    the last sync read; exit 1 if it isn't a ManaBox export."""
+    try:
+        return syncmod.inventory(cfg.collection_csv, cat, precons.cached() if boxes is None else boxes)
+    except manabox.NotExport as e:
+        _echo(
+            f"{e}; export the collection from ManaBox again, then: riffle ingest manabox <export>", err=True
+        )
+        raise typer.Exit(1) from e
+
+
 @contextmanager
-def _setup() -> Iterator[tuple[config.Config, Catalog, syncmod.Inventory]]:
+def _setup(boxes: precons.Boxes | None = None) -> Iterator[tuple[config.Config, Catalog, syncmod.Inventory]]:
+    """The config, the catalog and the collection (_inventory)."""
     cfg = config.load()
     with _catalog() as cat:
-        yield cfg, cat, syncmod.inventory(cfg.collection_csv, cat)
+        yield cfg, cat, _inventory(cfg, cat, boxes)
 
 
 @app.command()
@@ -248,11 +262,12 @@ def ingest_manabox(
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
 ) -> None:
     """Copy a ManaBox collection export into the data folder."""
-    from riffle.ingest import manabox
-
     src = csv_path or manabox.newest_export(config.load().downloads)
     if src is None:
-        raise typer.BadParameter("no ManaBox*.csv in ~/Downloads — pass a path")
+        raise typer.BadParameter("no ManaBox export in ~/Downloads — pass a path")
+    why = manabox.why_not(src.expanduser())
+    if why:
+        raise typer.BadParameter(f"{src.name} isn't a ManaBox export: {why}")
     typer.echo(f"{src.name} -> {_copy_manabox(src)}")
     if not no_sync:
         _resync()
@@ -803,10 +818,7 @@ def own(
     if on_arena and not cfg.arena_list.exists():
         raise typer.BadParameter("no Arena collection yet — run: riffle ingest arena <file>")
     with _catalog() as cat:
-        if on_arena:
-            inv = syncmod.arena_inventory(cfg.arena_list, cat)
-        else:
-            inv = syncmod.inventory(cfg.collection_csv, cat)
+        inv = syncmod.arena_inventory(cfg.arena_list, cat) if on_arena else _inventory(cfg, cat)
         rep = syncmod.analyse(vault.find(cfg.mtg_dir, deck), inv, cat)
         wc = wildcards(rep.rows, cat) if on_arena else {}
     buy_word = "Craft" if on_arena else "Buy"
@@ -941,8 +953,6 @@ def export_deck(
 
 def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     """Everything the data affects: collection pickup, prices, generated notes, logs."""
-    from riffle.ingest import manabox
-
     cfg0 = config.load()
     if not offline:
         offline = not _online(tracker)
@@ -951,11 +961,7 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     _snapshot_prices(tracker, online=not offline)
     if not offline:
         disk.check(tracker)
-    newest = manabox.newest_export(cfg0.downloads)
-    stored = cfg0.collection_csv
-    if newest and (not stored.exists() or newest.stat().st_mtime > stored.stat().st_mtime):
-        _copy_manabox(newest)
-        _echo(f"picked up {newest.name} from Downloads")
+    _pick_up(tracker, cfg0)
     if not cfg0.collection_csv.exists():
         _echo(
             "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
@@ -973,6 +979,16 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     if not cfg0.mtg_dir.is_dir():  # a user of other games only: not a fault
         tracker.step("vault").ok(f"no MTG decks in {cfg0.notes}; Riffle reads MTG decks only for now")
         return
+    not_export = manabox.why_not(cfg0.collection_csv) if cfg0.collection_csv.exists() else None
+    if not_export:  # the notes as they were beat notes that say nothing is owned
+        tracker.step("vault").fail(
+            f"not written: {config.tilde(cfg0.collection_csv)} isn't a ManaBox export ({not_export}); "
+            "riffle ingest manabox <export>"
+        )
+        return
+    boxes = precons.load(vault.precon_boxes(cfg0.mtg_dir))
+    for problem in boxes.problems:
+        tracker.step("precon boxes").warn(problem)
     pictures: list[Step] = []
 
     def progress(done: int, total: int | None) -> None:
@@ -980,7 +996,9 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             pictures.append(tracker.step("card pictures", total, "pictures"))
         pictures[0].update(done, total)
 
-    with _setup() as (cfg, cat, inv):
+    with _setup(boxes) as (cfg, cat, inv):
+        if inv.corrected:
+            tracker.step("precon boxes").ok(_corrected(inv.corrected, len(boxes.boxes)))
         card_notes = (
             syncmod.CardNotes(cfg.vault, cfg.notes, cfg.card_images, None if offline else _picture, progress)
             if cfg.card_notes
@@ -1004,6 +1022,36 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         _echo(f"removed stale generated notes: {', '.join(res.removed)}")
     for w in res.warnings:
         _echo(f"  ! {w}", err=True)
+
+
+def _pick_up(tracker: Tracker, cfg: config.Config) -> None:
+    """The newest ManaBox export in Downloads, when it's newer than the collection kept. A
+    ManaBox*.csv newer still that isn't an export is named, and left where it is."""
+    stored = cfg.collection_csv
+    since = stored.stat().st_mtime if stored.exists() else None
+    for path in manabox.exports(cfg.downloads):
+        if since is not None and path.stat().st_mtime <= since:
+            return
+        why = manabox.why_not(path)
+        if why is None:
+            _copy_manabox(path)
+            _echo(f"picked up {path.name} from Downloads")
+            return
+        tracker.step("collection").warn(
+            f"not picked up: {path.name} in Downloads isn't a ManaBox export ({why})"
+        )
+
+
+def _copies(n: int) -> str:
+    return f"{n:,} cop{'y' if n == 1 else 'ies'}"
+
+
+def _corrected(c: precons.Corrected, boxes: int) -> str:
+    fixed, short = sum(f.copies for f in c.fixes), sum(s.copies for s in c.short)
+    said = f"{boxes} registered; {_copies(fixed)} read as a box's printing"
+    if short:
+        said += f"; {_copies(short)} the boxes hold not recorded as theirs (riffle check collection)"
+    return said
 
 
 def _picture(url: str, dest: Path) -> int | None:
@@ -1067,8 +1115,6 @@ def sync_cmd(
 
 def _watched(cfg: config.Config) -> dict[str, float]:
     """Everything whose change should trigger a resync, with its mtime."""
-    from riffle.ingest import manabox
-
     paths = [p for p in vault.deck_notes(cfg.mtg_dir)]
     paths += [cfg.collection_csv, cfg.arena_list, config.config_path()]
     newest = manabox.newest_export(cfg.downloads)
@@ -1103,7 +1149,7 @@ def status_cmd(
         raise typer.Exit(1)
 
 
-CHECKS = ("prices", "vault")
+CHECKS = ("prices", "vault", "collection")
 
 
 @app.command("check")
@@ -1111,14 +1157,19 @@ def check_cmd(
     what: str = typer.Argument("prices", help=" | ".join(CHECKS), autocompletion=_choices(*CHECKS)),
 ) -> None:
     """Check every kept price file: filed under the day its own stamp says, and made before it
-    was fetched. With vault, check every card link in the notes opens the card's note. Reads
-    only; exits 1 if anything is wrong."""
+    was fetched. With vault, check every card link in the notes opens the card's note. With
+    collection, list the copies read as their precon box's printing, and those a box holds that
+    the collection doesn't record as it. Reads only, but for the precon boxes' lists Riffle keeps;
+    exits 1 if anything is wrong."""
     from riffle.ingest import checks
 
     if what not in CHECKS:
-        raise typer.BadParameter(f"what to check: {' or '.join(CHECKS)}, not {what!r}")
+        raise typer.BadParameter(f"what to check: {', '.join(CHECKS[:-1])}, or {CHECKS[-1]}, not {what!r}")
     if what == "vault":
         _check_vault()
+        return
+    if what == "collection":
+        _check_collection()
         return
     wrong = 0
     for rep in checks.run():
@@ -1161,6 +1212,43 @@ def _check_vault() -> None:
         )
         raise typer.Exit(1)
     typer.echo("every card link opens the card's note")
+
+
+def _check_collection() -> None:
+    """Each copy read as its precon box's printing, then each copy a box holds that isn't
+    recorded as the box's printing, with where the card is recorded instead. A box that can't be
+    read is wrong; a copy not found isn't, since a card may have left its box."""
+    cfg = config.load()
+    if not cfg.collection_csv.exists():
+        _echo(
+            "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
+            err=True,
+        )
+        raise typer.Exit(1)
+    boxes = precons.load(vault.precon_boxes(cfg.mtg_dir))
+    with _setup(boxes) as (_, _, inv):
+        copies = sum(h.quantity for h in inv.holdings)
+        typer.echo(f"collection: {copies:,} copies in {config.tilde(cfg.collection_csv)}")
+        c = inv.corrected
+        if c is None and not boxes.problems:
+            typer.echo("precon boxes: none registered (a deck note's source: precon:<box> registers one)")
+        elif c is not None:
+            typer.echo(f"precon boxes: {len(boxes.boxes)}, {c.printings:,} printings, basic lands aside")
+            fixed = sum(f.copies for f in c.fixes)
+            typer.echo(f"read as their box's printing, recorded under another with the same art: {fixed:,}")
+            for f in c.fixes:
+                typer.echo(f"  {f.name}: {f.recorded} → {f.read_as}, {f.copies} ({', '.join(f.boxes)})")
+            short = sum(s.copies for s in c.short)
+            typer.echo(f"not found as their box's printing: {short:,}")
+            for s in c.short:
+                where = f"recorded as {', '.join(s.elsewhere)}, other art" if s.elsewhere else "no other copy"
+                typer.echo(f"  {s.name}: {s.place}, {s.copies} ({', '.join(s.boxes)}); {where}")
+    for problem in boxes.problems:
+        typer.echo(f"  ! {problem}", err=True)
+    if boxes.problems:
+        n = len(boxes.problems)
+        typer.echo(f"{n} precon box{'es' * (n != 1)} can't be read", err=True)
+        raise typer.Exit(1)
 
 
 @app.command("card")

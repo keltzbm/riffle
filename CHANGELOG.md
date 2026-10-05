@@ -7,6 +7,23 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- Misread printings corrected by their art. ManaBox's scanner matches a card by its art and often records a
+  precon's card under an earlier printing of the reprint (most of the Foundations Commander boxes' cards went
+  under TDC, SOC, M3C and others rather than FDC). A box you own is registered by its deck note's
+  `source: precon:<box>`, named as MTGJSON names it or without its parenthesised part (`Counter Blitz` for
+  `Counter Blitz (FINAL FANTASY X)`), or with its set where MTGJSON has two of one name. A card a registered
+  box holds, recorded under another printing with the same illustration (Scryfall's, the front face's on a
+  two-faced card), is read as the box's printing, never more copies than the boxes hold; basic lands and
+  copies with other art stay as recorded, and the export itself is never changed. Each box's list comes from
+  MTGJSON's deck files in the store, kept in `precons.json` in the data folder and read again only when a box
+  is registered or a newer build is kept. Card notes and the pinned imports then show the box's printing,
+  and the collection summary values the copy at its price. The sync says `precon boxes: 13 registered; 482
+  copies read as a box's printing; 14 copies the boxes hold not recorded as theirs (riffle check
+  collection)`, and names a box it can't find or that names two decks.
+- `riffle check collection`: each copy read as its box's printing (`Arasta of the Endless Web: TDC 244 → FDC
+  188, 1 (Tramplesaurus Rex)`), and each copy a box holds that the collection doesn't record as the box's
+  printing, with where the card is recorded instead; exits 1 only for a box it can't read, since a card may
+  have left its box.
 - A page at riffletcg.gg saying what Riffle is and where it stands, served by GitHub Pages from `docs/`
   (`docs/CNAME` names the domain; `docs/.nojekyll` serves the files as they are).
 - Card notes: every card a note links gets a note of its own, so hovering a card in any list shows it (with
@@ -447,6 +464,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   the sync result.
 
 ### Fixed
+- A CSV in Downloads named like a ManaBox export but not one was read as the collection: on 2026-10-05 the
+  sync took a list of corrections, `ManaBox_Collection-5-fixes.csv`, found no Name column, read no cards
+  without a word, and rewrote every deck note and card note as owning nothing. An export is a CSV with a
+  Name column. The sync passes over any other, saying `collection: not picked up: … isn't a ManaBox export
+  (no Name column)`; `riffle ingest manabox` refuses one; and a collection already kept that isn't an export
+  fails the sync's vault step, writing no notes, while every other command exits 1 saying so.
 - A card note whose name has an accent was deleted by the sync that wrote it, when the old note's name spelled
   the accent decomposed (u and a combining mark rather than ú): macOS opens either spelling as one file,
   but the names compared as different, so the note was pruned as unlinked. 57 notes went this way on the first

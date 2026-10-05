@@ -167,7 +167,8 @@ ARENA = text("""
 _PRINTING = """
     SELECT e.external_id, p.card_id::text, c.name, s.code, p.collector_number,
            coalesce(mp.frame, '') AS frame, coalesce(mp.border_color, '') AS border_color,
-           mp.usd::float8 AS usd
+           mp.usd::float8 AS usd,
+           coalesce(p.extra->>'illustration_id', p.extra->'card_faces'->0->>'illustration_id', '')
     FROM printings AS p
     JOIN external_ids AS e ON e.printing_id = p.printing_id AND e.source = 'scryfall'
     JOIN sets AS s ON s.set_id = p.set_id

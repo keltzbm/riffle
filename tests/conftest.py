@@ -138,6 +138,17 @@ VIEWS = {
 PRINTINGS = {
     "s-sol-m3c": Printing("s-sol-m3c", "o-sol", "Sol Ring", "m3c", "283"),
     "s-rift-2x2": Printing("s-rift-2x2", "o-rift", "Cyclonic Rift", "2x2", "45"),
+    # a precon box's printings, and others with their art or not (riffle.ingest.precons)
+    "s-sol-fdc": Printing("s-sol-fdc", "o-sol", "Sol Ring", "fdc", "286", illustration_id="art-sol"),
+    "s-sol-c21": Printing("s-sol-c21", "o-sol", "Sol Ring", "c21", "263", illustration_id="art-sol"),
+    "s-sol-lea": Printing("s-sol-lea", "o-sol", "Sol Ring", "lea", "270", illustration_id="art-sol-lea"),
+    "s-rift-fdc": Printing("s-rift-fdc", "o-rift", "Cyclonic Rift", "fdc", "100", illustration_id="art-rift"),
+    "s-forest-fdc": Printing(
+        "s-forest-fdc", "o-forest", "Forest", "fdc", "279", illustration_id="art-forest"
+    ),
+    "s-forest-m3c": Printing(
+        "s-forest-m3c", "o-forest", "Forest", "m3c", "300", illustration_id="art-forest"
+    ),
 }
 
 

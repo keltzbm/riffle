@@ -9,7 +9,7 @@ from riffle import vault
 from riffle.analysis import ownership, pricing
 from riffle.analysis.resolve import counts, resolve_deck, resolve_holdings
 from riffle.export import cards, formats, obsidian
-from riffle.ingest import arena, manabox
+from riffle.ingest import arena, manabox, precons
 from riffle.models import Deck, Holding
 from riffle.progress import failure
 from riffle.store import Catalog
@@ -19,6 +19,7 @@ from riffle.store import Catalog
 class Inventory:
     holdings: list[Holding]
     unresolved: list[str] = field(default_factory=list)
+    corrected: precons.Corrected | None = None  # None: no precon box registered
 
     @cached_property
     def owned(self) -> Counter:
@@ -27,9 +28,16 @@ class Inventory:
         return counts(self.holdings)
 
 
-def inventory(collection_csv: Path, catalog: Catalog) -> Inventory:
+def inventory(collection_csv: Path, catalog: Catalog, boxes: precons.Boxes | None = None) -> Inventory:
+    """The collection as the export records it, each copy a precon box's printing was misread
+    from read as that printing (riffle.ingest.precons). manabox.NotExport for a file that isn't
+    an export."""
     holdings = manabox.load(collection_csv) if collection_csv.exists() else []
-    return Inventory(holdings, resolve_holdings(holdings, catalog))
+    unresolved = resolve_holdings(holdings, catalog)
+    if not (boxes and boxes.boxes):
+        return Inventory(holdings, unresolved)
+    corrected = precons.correct(holdings, boxes, catalog)
+    return Inventory(corrected.holdings, unresolved, corrected)
 
 
 def arena_inventory(arena_list: Path, catalog: Catalog) -> Inventory:
