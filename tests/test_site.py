@@ -1,6 +1,7 @@
 """The site at riffletcg.gg (docs/) and the README link only files that are in the repository."""
 
 import re
+import struct
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,10 +15,10 @@ def test_every_file_the_page_links_is_in_docs():
     assert sorted(name for name in linked if not (DOCS / name).is_file()) == []
 
 
-def test_the_social_card_and_the_readme_logo_are_in_the_repository():
+def test_the_link_preview_and_the_readme_logo_are_in_the_repository():
     page = (DOCS / "index.html").read_text(encoding="utf-8")
-    assert '<meta property="og:image" content="https://riffletcg.gg/og.png">' in page
-    assert (DOCS / "og.png").is_file()
+    assert '<meta property="og:image" content="https://riffletcg.gg/link-preview.png">' in page
+    assert (DOCS / "link-preview.png").is_file()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert '<img src="docs/wordmark.svg"' in readme and (DOCS / "wordmark.svg").is_file()
 
@@ -49,3 +50,20 @@ def test_the_not_found_page_links_from_the_site_root():
     linked = set(re.findall(r'(?:href|src)="([^"#]+)"', page))
     assert linked and all(name.startswith("/") for name in linked)
     assert sorted(name for name in linked if not (DOCS / (name.lstrip("/") or "index.html")).is_file()) == []
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    """Return the width and height a PNG file's header gives."""
+    width, height = struct.unpack(">II", path.read_bytes()[16:24])
+    return width, height
+
+
+def test_the_link_previews_are_the_sizes_they_say():
+    page = (DOCS / "index.html").read_text(encoding="utf-8")
+    width = int(re.findall(r'<meta property="og:image:width" content="(\d+)">', page)[0])
+    height = int(re.findall(r'<meta property="og:image:height" content="(\d+)">', page)[0])
+    assert png_size(DOCS / "link-preview.png") == (width, height)
+    # GitHub fits a repository's preview to 2:1 and takes a file of at most 1 MB.
+    github = DOCS / "art" / "github-preview.png"
+    across, down = png_size(github)
+    assert across == 2 * down and github.stat().st_size < 1_000_000
