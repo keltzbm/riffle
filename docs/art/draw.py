@@ -3,8 +3,10 @@
 Every file comes from one drawing of the mark: nested arches, each made of a left half (one packet
 of cards) and a right half (the other packet). At the top of each arch one half runs past the middle
 and the other stops short of it, and the arches take turns, which is how two packets interleave in a
-riffle shuffle. The lettering is drawn as outlines from Inter, so it looks the same on every computer
-whatever fonts it has.
+riffle shuffle. The small mark, three arches, goes beside the name, and alone where space is tight:
+the browser tab and a phone's home screen. The large drawing, ten arches, goes wherever there's room
+for it. The lettering is drawn as outlines from Inter, so it looks the same on every computer whatever
+fonts it has.
 
 The colors are the brand's: purple #A855F7 and orange #F97316 for the two packets, deep purple
 #3B0764 for the lettering. They were chosen to stay distinct for people with red-green or blue-yellow
@@ -83,20 +85,9 @@ def tile_arches() -> str:
     return arches(60, 86, [42, 30, 18], 8, 8, 4)
 
 
-def deck(x: float, y: float, width: float, cards: int) -> str:
-    """The cards after the shuffle: thin card edges, purple and orange in turn, squared up a little
-    unevenly, as a deck is."""
-    return "".join(
-        f'<rect x="{x + (i * 7) % 12}" y="{y + i * 6}" width="{width}" height="4" rx="2" '
-        f'fill="{PURPLE if i % 2 == 0 else ORANGE}"/>'
-        for i in range(cards)
-    )
-
-
 def illustration(cx: float = 955, cy: float = 300) -> str:
-    """Two packets bending into the riffle's arch, and the deck they fall into below it."""
-    radii = [190 - 13 * i for i in range(10)]
-    return arches(cx, cy, radii, 7, 5, 7) + deck(cx - 143, cy + 16, 276, 10)
+    """Two packets bending into the riffle's arch, ten arches deep, with nothing under them."""
+    return arches(cx, cy, [190 - 13 * i for i in range(10)], 7, 5, 7)
 
 
 class Lettering:
@@ -141,46 +132,46 @@ def lockup(bold: Lettering) -> tuple[str, float]:
     return drawn, 196 + width
 
 
-def banner(bold: Lettering, regular: Lettering) -> str:
-    """The banner for the README: the name and what Riffle is on the left, the shuffle on the right."""
-    tagline, _ = regular.path("Card game analytics, with the math shown.", 30, 74, 252)
-    topics, _ = regular.path("Metagame share · Deck-building odds · Price history", 22, 74, 300)
+def banner(bold: Lettering) -> str:
+    """The banner for the README: the logo and name on the left, the shuffle on the right."""
     # The banner always sits on its own light card, so its lettering keeps the light-page colors.
     name = lockup(bold)[0].replace('class="ink"', f'fill="{INK}"')
+    # The logo and name at 1.3 times their usual size, centred on the same height as the drawing:
+    # their ink starts at x 77.6 and is centred at y 146, the drawing's at y 205. The margins left of
+    # the logo and right of the drawing are both 103.
+    scale, margin = 1.3, 103
+    place = f"translate({number(margin - 77.6 * scale)} {number(205 - 146 * scale)}) scale({scale})"
     body = (
         f'<rect x="1" y="1" width="1278" height="418" rx="28" fill="{PAPER}" '
         f'stroke="{EDGE}" stroke-width="2"/>'
-        f"{illustration()}"
-        f'<line x1="740" y1="384" x2="1170" y2="384" stroke="{EDGE}" stroke-width="2"/>'
-        f'{name}<path fill="{INK}" d="{tagline}"/><path fill="{MUTED}" d="{topics}"/>'
+        f"{illustration(cx=1280 - margin - 193.5)}"
+        f'<g transform="{place}">{name}</g>'
     )
     return svg(
         1280,
         420,
         body,
-        "Riffle: card game analytics, with the math shown",
-        "The Riffle logo and name, and the line Card game analytics, with the math shown: metagame share, "
-        "deck-building odds and price history. Beside them, two packets of cards, purple and orange, bend "
-        "into an arch and interleave, the way a riffle shuffle does, and fall into one deck below.",
+        "Riffle",
+        "The Riffle logo and name beside two packets of cards, purple and orange, that bend into an arch "
+        "and interleave, the way a riffle shuffle does.",
     )
 
 
-def social(bold: Lettering, regular: Lettering) -> str:
+def social(bold: Lettering) -> str:
     """The card a link to riffletcg.gg shows when it's shared: the banner on a 1200 by 630 page."""
-    inner = banner(bold, regular)
+    inner = banner(bold)
     inner = inner[inner.index("</desc>") + len("</desc>") : inner.rindex("</svg>")]
     # The banner's own rounded card is left out: the social card's background fills its whole page.
     card = inner[: inner.index("/>") + 2]
     body = (
         f'<rect width="1200" height="630" fill="{PAPER}"/>'
-        f'<g transform="translate(-4 85) scale(.94)">{inner.replace(card, "")}</g>'
+        f'<g transform="translate(-2 122) scale(.94)">{inner.replace(card, "")}</g>'
     )
-    title = "Riffle: card game analytics, with the math shown"
-    return svg(1200, 630, body, title, "The Riffle banner, for link previews.")
+    return svg(1200, 630, body, "Riffle", "The Riffle banner, for link previews.")
 
 
 def main(fonts: Path) -> None:
-    bold, regular = Lettering(fonts / "Inter-Bold.ttf"), Lettering(fonts / "Inter-Regular.ttf")
+    bold = Lettering(fonts / "Inter-Bold.ttf")
     files = {
         "logo.svg": svg(
             120, 120, mark(), "Riffle", "The Riffle logo: purple and orange arches interleaving at the top."
@@ -201,15 +192,15 @@ def main(fonts: Path) -> None:
             "Riffle",
             "The Riffle logo on a deep purple square, for a phone's home screen.",
         ),
-        "banner.svg": banner(bold, regular),
-        "art/social.svg": social(bold, regular),
+        "banner.svg": banner(bold),
+        "art/social.svg": social(bold),
         "shuffle.svg": svg(
-            440,
-            300,
-            f'<g transform="translate(-735 -95)">{illustration()}</g>',
+            410,
+            210,
+            f'<g transform="translate(-750 -100)">{illustration()}</g>',
             "A riffle shuffle",
             "Two packets of cards, purple and orange, bend into an arch and interleave, the way a riffle "
-            "shuffle does, and fall into one deck below.",
+            "shuffle does.",
         ),
     }
     name, right = lockup(bold)

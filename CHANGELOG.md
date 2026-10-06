@@ -280,6 +280,13 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- riffletcg.gg and the README open with what Riffle is: "Riffle is a free, open-source tool for the
+  math of trading card games, and shows its work." What sets Riffle apart is the math shown in full,
+  not the prices or the decklists it collects. The README then lists what Riffle does so far. The
+  banner and the social card show the logo and name beside the large drawing, which is now the arch
+  of cards alone, with nothing under it. The page's footer says that Riffle is an independent project
+  by Brandon M. Keltz, gives Wizards of the Coast's Fan Content Policy notice word for word, and names
+  the other publishers and data sources that don't endorse it.
 - A watch's log is a file a month, `<store>/watch/<month>.jsonl`, and a run reads only what its rules
   need. Each store's log had been one file, read whole at every firing and walked once for each list:
   a Cardmarket firing took 41 seconds a week in, about 7 more each day, and on 2026-10-04 33 of its 288
