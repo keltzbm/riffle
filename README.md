@@ -1,10 +1,12 @@
-# Riffle
+<p align="center">
+  <a href="https://riffletcg.gg"><img src="docs/wordmark.svg" width="420" alt="Riffle"></a>
+</p>
 
-<img src="docs/banner.svg" width="100%" alt="The Riffle logo and name beside two packets of cards, purple and orange, interleaving in a riffle shuffle.">
+<p align="center">
+  <a href="https://github.com/keltzbm/riffle/actions/workflows/ci.yml"><img src="https://github.com/keltzbm/riffle/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
-[![CI](https://github.com/keltzbm/riffle/actions/workflows/ci.yml/badge.svg)](https://github.com/keltzbm/riffle/actions/workflows/ci.yml)
-
-Riffle is a free, open-source tool for the math of trading card games, and shows its work.
+Riffle is a free, open-source tool for trading card game data and math.
 
 Riffle is in development. So far it:
 

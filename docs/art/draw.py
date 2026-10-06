@@ -1,12 +1,11 @@
-"""Draw Riffle's logo, favicon, banner and social card into docs/.
+"""Draw Riffle's logo, favicon, wordmark and social card into docs/.
 
 Every file comes from one drawing of the mark: nested arches, each made of a left half (one packet
 of cards) and a right half (the other packet). At the top of each arch one half runs past the middle
 and the other stops short of it, and the arches take turns, which is how two packets interleave in a
-riffle shuffle. The small mark, three arches, goes beside the name, and alone where space is tight:
-the browser tab and a phone's home screen. The large drawing, ten arches, goes wherever there's room
-for it. The lettering is drawn as outlines from Inter, so it looks the same on every computer whatever
-fonts it has.
+riffle shuffle. The mark is three arches everywhere: beside the name, as tall as its R, and alone in
+the browser tab and on a phone's home screen. The lettering is drawn as outlines from Inter, so it
+looks the same on every computer whatever fonts it has.
 
 The colors are the brand's: purple #A855F7 and orange #F97316 for the two packets, deep purple
 #3B0764 for the lettering. They were chosen to stay distinct for people with red-green or blue-yellow
@@ -34,14 +33,10 @@ from fontTools.pens.transformPen import TransformPen
 from fontTools.ttLib import TTFont
 from PIL import Image
 
-PURPLE, ORANGE, INK, MUTED = "#A855F7", "#F97316", "#3B0764", "#6B6670"
-PAPER, EDGE = "#FBFAF8", "#E7E3EA"
+PURPLE, ORANGE, INK, PAPER = "#A855F7", "#F97316", "#3B0764", "#FBFAF8"
 DOCS = Path(__file__).resolve().parent.parent
 # Light lettering when the page around the image is dark.
-DARK = (
-    "<style>.ink{fill:#3B0764}.muted{fill:#6B6670}"
-    "@media (prefers-color-scheme:dark){.ink{fill:#EDE9F5}.muted{fill:#A39DAB}}</style>"
-)
+DARK = "<style>.ink{fill:#3B0764}@media (prefers-color-scheme:dark){.ink{fill:#EDE9F5}}</style>"
 
 
 def number(v: float) -> str:
@@ -85,11 +80,6 @@ def tile_arches() -> str:
     return arches(60, 86, [42, 30, 18], 8, 8, 4)
 
 
-def illustration(cx: float = 955, cy: float = 300) -> str:
-    """Two packets bending into the riffle's arch, ten arches deep, with nothing under them."""
-    return arches(cx, cy, [190 - 13 * i for i in range(10)], 7, 5, 7)
-
-
 class Lettering:
     """Text drawn as outlines from one of Inter's static fonts, shaped by HarfBuzz for kerning."""
 
@@ -126,48 +116,34 @@ def svg(width: float, height: float, body: str, title: str, desc: str, box: str 
 
 
 def lockup(bold: Lettering) -> tuple[str, float]:
-    """The mark and the name side by side, as at the banner's top left, and the name's right edge."""
-    name, width = bold.path("Riffle", 92, 196, 178, tracking=-1)
-    drawn = f'<g transform="translate(70 90) scale(.95)">{mark()}</g><path class="ink" d="{name}"/>'
-    return drawn, 196 + width
+    """The mark and the name side by side, and the name's right edge.
 
-
-def banner(bold: Lettering) -> str:
-    """The banner for the README: the logo and name on the left, the shuffle on the right."""
-    # The banner always sits on its own light card, so its lettering keeps the light-page colors.
-    name = lockup(bold)[0].replace('class="ink"', f'fill="{INK}"')
-    # The logo and name at 1.3 times their usual size, centred on the same height as the drawing:
-    # their ink starts at x 77.6 and is centred at y 146, the drawing's at y 205. The margins left of
-    # the logo and right of the drawing are both 103.
-    scale, margin = 1.3, 103
-    place = f"translate({number(margin - 77.6 * scale)} {number(205 - 146 * scale)}) scale({scale})"
-    body = (
-        f'<rect x="1" y="1" width="1278" height="418" rx="28" fill="{PAPER}" '
-        f'stroke="{EDGE}" stroke-width="2"/>'
-        f"{illustration(cx=1280 - margin - 193.5)}"
-        f'<g transform="{place}">{name}</g>'
-    )
-    return svg(
-        1280,
-        420,
-        body,
-        "Riffle",
-        "The Riffle logo and name beside two packets of cards, purple and orange, that bend into an arch "
-        "and interleave, the way a riffle shuffle does.",
-    )
+    The name is set at 92 pixels on a baseline at y 178, so its R runs from y 111.1 to the baseline.
+    The mark's ink, from y 40 to 96 and x 8 to 112 in its own square, is scaled to run the same
+    height, starts at x 77.6, and stands 30 pixels left of the R's ink, which starts 6.1 pixels right
+    of where the name is placed.
+    """
+    scale = 66.9 / 56
+    mark_right = 77.6 + 104 * scale
+    x = mark_right + 30 - 6.1
+    name, width = bold.path("Riffle", 92, x, 178, tracking=-1)
+    place = f"translate({number(77.6 - 8 * scale)} {number(178 - 96 * scale)}) scale({scale:.4f})"
+    return f'<g transform="{place}">{mark()}</g><path class="ink" d="{name}"/>', x + width
 
 
 def social(bold: Lettering) -> str:
-    """The card a link to riffletcg.gg shows when it's shared: the banner on a 1200 by 630 page."""
-    inner = banner(bold)
-    inner = inner[inner.index("</desc>") + len("</desc>") : inner.rindex("</svg>")]
-    # The banner's own rounded card is left out: the social card's background fills its whole page.
-    card = inner[: inner.index("/>") + 2]
-    body = (
-        f'<rect width="1200" height="630" fill="{PAPER}"/>'
-        f'<g transform="translate(-2 122) scale(.94)">{inner.replace(card, "")}</g>'
-    )
-    return svg(1200, 630, body, "Riffle", "The Riffle banner, for link previews.")
+    """The card a link to riffletcg.gg shows when it's shared: the logo and name, centred, on a 1200
+    by 630 page."""
+    # The card always has its own light background, so its lettering keeps the light-page colors.
+    name, right = lockup(bold)
+    name = name.replace('class="ink"', f'fill="{INK}"')
+    # The lockup's ink runs from x 77.6 to the name's right edge, and from the i's dot at y 107.4 to
+    # the e's curve just under the baseline, at 179.3.
+    scale = 1.9
+    middle_x, middle_y = (77.6 + right) / 2, (107.4 + 179.3) / 2
+    place = f"translate({number(600 - middle_x * scale)} {number(315 - middle_y * scale)}) scale({scale})"
+    body = f'<rect width="1200" height="630" fill="{PAPER}"/><g transform="{place}">{name}</g>'
+    return svg(1200, 630, body, "Riffle", "The Riffle logo and name, for link previews.")
 
 
 def main(fonts: Path) -> None:
@@ -192,25 +168,17 @@ def main(fonts: Path) -> None:
             "Riffle",
             "The Riffle logo on a deep purple square, for a phone's home screen.",
         ),
-        "banner.svg": banner(bold),
         "art/social.svg": social(bold),
-        "shuffle.svg": svg(
-            410,
-            210,
-            f'<g transform="translate(-750 -100)">{illustration()}</g>',
-            "A riffle shuffle",
-            "Two packets of cards, purple and orange, bend into an arch and interleave, the way a riffle "
-            "shuffle does.",
-        ),
     }
+    # The wordmark's box leaves about 8 pixels around the ink on every side, so it centres evenly.
     name, right = lockup(bold)
     files["wordmark.svg"] = svg(
         right - 70 + 8,
-        96,
+        87,
         DARK + name,
         "Riffle",
         "The Riffle logo and name.",
-        box=f"70 100 {number(right - 70 + 8)} 96",
+        box=f"70 100 {number(right - 70 + 8)} 87",
     )
     for path, text in files.items():
         (DOCS / path).write_text(text, encoding="utf-8")
