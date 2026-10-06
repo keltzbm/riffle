@@ -280,6 +280,12 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The README and riffletcg.gg open with the logo and name centered, larger, and linked to the site,
+  as Gymnasium's README does, and then "Riffle is a free, open-source tool for trading card game data
+  and math." The mark beside the name is as tall as its R: the same three arches as the favicon,
+  larger, so the logo is one shape at every size. The large drawing of the shuffle is gone from the
+  page and the README (`banner.svg` and `shuffle.svg` are removed), and a shared link shows the
+  logo and name centered.
 - riffletcg.gg and the README open with what Riffle is: "Riffle is a free, open-source tool for the
   math of trading card games, and shows its work." What sets Riffle apart is the math shown in full,
   not the prices or the decklists it collects. The README then lists what Riffle does so far. The
