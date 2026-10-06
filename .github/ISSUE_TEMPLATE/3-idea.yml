@@ -1,0 +1,11 @@
+name: Idea
+description: Something Riffle could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you'd like Riffle to do, and why it would help you.
+    validations:
+      required: true

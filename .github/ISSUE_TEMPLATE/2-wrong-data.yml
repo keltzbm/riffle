@@ -1,0 +1,23 @@
+name: Wrong data
+description: A card, price, decklist, or other fact doesn't match its source.
+labels: [bug]
+body:
+  - type: input
+    id: what
+    attributes:
+      label: Which card, list, or price
+    validations:
+      required: true
+  - type: textarea
+    id: riffle
+    attributes:
+      label: What Riffle shows
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: What the source shows
+      description: The value, and a link to the source.
+    validations:
+      required: true
