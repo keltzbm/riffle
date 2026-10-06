@@ -1,13 +1,22 @@
 # Riffle
 
-<img src="docs/banner.svg" width="100%" alt="Riffle: card game analytics, with the math shown. The logo and name beside two packets of cards, purple and orange, interleaving in a riffle shuffle.">
+<img src="docs/banner.svg" width="100%" alt="The Riffle logo and name beside two packets of cards, purple and orange, interleaving in a riffle shuffle.">
 
 [![CI](https://github.com/keltzbm/riffle/actions/workflows/ci.yml/badge.svg)](https://github.com/keltzbm/riffle/actions/workflows/ci.yml)
 
-Card game analytics: metagame share, deck-building odds, and price history, with the math
-shown. So far Riffle collects its own data every day (card data, prices from the stores and
-price sites, and MTGO decklists), reads a collection and its decks, and writes what each deck
-is missing, and what finishing it costs, into an Obsidian vault.
+Riffle is a free, open-source tool for the math of trading card games, and shows its work.
+
+Riffle is in development. So far it:
+
+- collects its own data every day: card details, prices for every game from tcgcsv and
+  Cardmarket (and for Magic from Scryfall, MTGJSON, Card Kingdom, Mana Pool, and GoatBots), and
+  MTGO decklists, keeping every day it collects;
+- reads your ManaBox and Arena collections and your decks, and shows what each deck lacks and
+  what finishing it costs;
+- shows the most-played cards in each MTGO format, and the decks that play a given card;
+- checks a deck's legality: size, copies, bans, and commander color identity;
+- exports a deck, or what it lacks, to Moxfield, ManaBox, MTGO, or TCGplayer;
+- writes all of it into an Obsidian vault and keeps the notes current.
 
 Site: [riffletcg.gg](https://riffletcg.gg). Design: [DESIGN.md](DESIGN.md).
 
