@@ -41,3 +41,11 @@ def test_the_page_gives_the_fan_content_notice_word_for_word():
     )
     page = " ".join((DOCS / "index.html").read_text(encoding="utf-8").split())
     assert notice in page
+
+
+def test_the_not_found_page_links_from_the_site_root():
+    # GitHub Pages serves 404.html at any missing address, however deep, so its links start at the root.
+    page = (DOCS / "404.html").read_text(encoding="utf-8")
+    linked = set(re.findall(r'(?:href|src)="([^"#]+)"', page))
+    assert linked and all(name.startswith("/") for name in linked)
+    assert sorted(name for name in linked if not (DOCS / (name.lstrip("/") or "index.html")).is_file()) == []

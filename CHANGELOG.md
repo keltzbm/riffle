@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- A page for addresses riffletcg.gg doesn't have: the logo and name, a line saying there's no page
+  there, and a link to the home page, in place of GitHub's own 404 page. Its links start at the site's
+  root, since GitHub serves it at any missing address, however deep.
 - A logo, favicon and banner. The mark is nested arches in purple and orange whose halves take turns
   crossing at the top, the way two packets of cards interleave in a riffle shuffle; the colors stay
   distinct for red-green and blue-yellow color blindness, and the shapes show the interleaving without
