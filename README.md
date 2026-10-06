@@ -24,8 +24,12 @@ Site: [riffletcg.gg](https://riffletcg.gg). Design: [DESIGN.md](DESIGN.md).
 
 ## Install
 
+You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), git, and Docker, which runs the
+database.
+
 ```bash
-cd ~/atelier/github/riffle
+git clone https://github.com/keltzbm/riffle.git
+cd riffle
 uv sync                      # creates .venv, installs the package + dev tools
 source .venv/bin/activate    # or prefix commands with `uv run`
 riffle init
@@ -68,10 +72,10 @@ riffle legal my-deck -f modern     # check against a different format
 ## Tab completion
 
 The shell completes by running `riffle` itself, so it has to be on PATH; `uv run
-riffle` completes uv's own arguments instead. Once per machine:
+riffle` completes uv's own arguments instead. Once per machine, from the riffle folder:
 
 ```zsh
-ln -s ~/atelier/github/riffle/.venv/bin/riffle ~/.local/bin/riffle
+ln -s "$PWD/.venv/bin/riffle" ~/.local/bin/riffle
 riffle --install-completion zsh
 exec zsh
 ```
@@ -301,7 +305,7 @@ does, with the 90% floor, and needs Postgres up (`riffle db up`).
 
 ## GitHub Codespaces
 
-For working away from home without a local database: `.devcontainer/` sets up a
+To work without a local database: `.devcontainer/` sets up a
 codespace with Docker, uv, and SSH. Creating one installs the project and a
 database password; every start brings Postgres up and migrates it, so the
 database tests run there too. The data is throwaway, like any codespace.
@@ -328,6 +332,12 @@ gh codespace stop                                   # stops by itself when idle,
   edge; unmatched names are reported, never dropped.
 - Colors are WUBRG order everywhere.
 - The vault is a render target. Authored notes are read, never written.
+
+## Issues and contributions
+
+Found a bug or wrong data, or have an idea? [Open an issue](https://github.com/keltzbm/riffle/issues/new/choose).
+Pull requests are by invitation only; [CONTRIBUTING.md](CONTRIBUTING.md) says how to report a problem
+well, and how invited contributors work.
 
 ## License
 

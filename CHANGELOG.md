@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Added
+- A guide for reporting problems and contributing, `CONTRIBUTING.md`, and three forms for GitHub
+  issues: a bug, wrong data, and an idea. Anyone can open an issue; a security problem is reported
+  privately through GitHub instead. Pull requests are by invitation only.
 - A page for addresses riffletcg.gg doesn't have: the logo and name, a line saying there's no page
   there, and a link to the home page, in place of GitHub's own 404 page. Its links start at the site's
   root, since GitHub serves it at any missing address, however deep.
@@ -283,6 +286,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The README's setup works for anyone: it names what you need (Python 3.12 or newer, uv, git, and
+  Docker), downloads the code first, and no longer assumes the author's own folders; nor does
+  `DESIGN.md`.
 - The picture a shared link to riffletcg.gg shows is `link-preview.png`, named for what it is (it was
   `og.png`, after the Open Graph tag that names it), drawn at twice the size the apps ask for, 2400 by
   1260, so it stays sharp on high-resolution screens, with the logo and name inside the square some

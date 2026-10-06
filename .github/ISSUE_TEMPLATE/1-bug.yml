@@ -1,0 +1,36 @@
+name: Bug
+description: A command fails, crashes, or gives a wrong result.
+labels: [bug]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: The command
+      description: The exact command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened instead
+      description: The full output, pasted as text rather than a screenshot.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Riffle's commit
+      description: The output of `git log -1 --oneline` in your riffle folder.
+  - type: input
+    id: system
+    attributes:
+      label: Your system
+      description: For example, macOS 26 or Ubuntu 24.04, and Python 3.13.

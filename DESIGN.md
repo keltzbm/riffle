@@ -36,7 +36,7 @@ Both are the same bug: **name is not a key.**
 ## Vault write contract
 
 ```
-~/atelier/library/games/tcg/mtg/    the vault, the notes folder (notes), mtg/
+<vault>/<notes>/mtg/               the vault, the notes folder in it (notes), mtg/
 ├── _generated/     rewritten every sync — only when content changes
 │   ├── <deck>.data.md          owned/buy counts, paper and MTGO totals, buy table
 │   └── collection-summary.md
@@ -51,9 +51,9 @@ One writer per file: scripts never write authored notes; you never edit logs.
 
 ## Where things live
 
-`~/atelier/github/riffle` sits **beside** the vault, not in it. Card data, the
+The riffle folder sits **beside** the vault, not in it. Card data, the
 collection CSV, and sync state live in `~/.local/share/riffle`, outside anything
-pCloud syncs. Config is `~/.config/riffle/config.toml`: `vault` names the vault,
+a sync service copies. Config is `~/.config/riffle/config.toml`: `vault` names the vault,
 `notes` the folder in it that holds `mtg/`.
 
 ## Milestones
