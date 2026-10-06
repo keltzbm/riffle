@@ -283,6 +283,11 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The picture a shared link to riffletcg.gg shows is `link-preview.png`, named for what it is (it was
+  `og.png`, after the Open Graph tag that names it), drawn at twice the size the apps ask for, 2400 by
+  1260, so it stays sharp on high-resolution screens, with the logo and name inside the square some
+  apps crop from its middle. `docs/art/github-preview.png`, 2560 by 1280, is the same picture at the
+  2:1 shape GitHub uses for a repository's preview, to upload in the repository's settings.
 - The README and riffletcg.gg open with the logo and name centered, larger, and linked to the site,
   as Gymnasium's README does, and then "Riffle is a free, open-source tool for trading card game data
   and math." The mark beside the name is as tall as its R: the same three arches as the favicon,

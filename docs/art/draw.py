@@ -1,4 +1,4 @@
-"""Draw Riffle's logo, favicon, wordmark and social card into docs/.
+"""Draw Riffle's logo, favicon, wordmark and link previews into docs/.
 
 Every file comes from one drawing of the mark: nested arches, each made of a left half (one packet
 of cards) and a right half (the other packet). At the top of each arch one half runs past the middle
@@ -13,9 +13,11 @@ color blindness (simulated with Machado, Oliveira and Fernandes, 2009); the shap
 interleaving without them.
 
 Run it from the repository root with the folder of Inter's static fonts (https://github.com/rsms/inter,
-SIL Open Font License). It writes the SVGs, then the three files that have to be pictures rather than
-drawings, with resvg and Pillow: the social card (og.png), the favicon for older browsers (favicon.ico)
-and the icon a phone shows on its home screen (apple-touch-icon.png).
+SIL Open Font License). It writes the SVGs, then the files that have to be pictures rather than
+drawings, with resvg and Pillow: the preview a shared link shows (link-preview.png) and the one GitHub
+shows for the repository (art/github-preview.png), each at twice the size asked for so they stay sharp
+on high-resolution screens; the favicon for older browsers (favicon.ico); and the icon a phone shows on
+its home screen (apple-touch-icon.png).
 
     uv run --with fonttools --with uharfbuzz --with resvg-py --with pillow \
         python docs/art/draw.py ~/Downloads/inter/extras/ttf
@@ -131,19 +133,23 @@ def lockup(bold: Lettering) -> tuple[str, float]:
     return f'<g transform="{place}">{mark()}</g><path class="ink" d="{name}"/>', x + width
 
 
-def social(bold: Lettering) -> str:
-    """The card a link to riffletcg.gg shows when it's shared: the logo and name, centred, on a 1200
-    by 630 page."""
-    # The card always has its own light background, so its lettering keeps the light-page colors.
+def preview(bold: Lettering, width: int, height: int, what: str) -> str:
+    """A link preview: the logo and name, centred, on a page of the given size.
+
+    Some apps crop a preview to a square from its middle, so on a page 630 high the logo and name are
+    540 wide, inside that square, and they take the same share of the height on a page of another size.
+    """
+    # The preview always has its own light background, so its lettering keeps the light-page colors.
     name, right = lockup(bold)
     name = name.replace('class="ink"', f'fill="{INK}"')
     # The lockup's ink runs from x 77.6 to the name's right edge, and from the i's dot at y 107.4 to
     # the e's curve just under the baseline, at 179.3.
-    scale = 1.9
+    scale = 540 / (right - 77.6) * height / 630
     middle_x, middle_y = (77.6 + right) / 2, (107.4 + 179.3) / 2
-    place = f"translate({number(600 - middle_x * scale)} {number(315 - middle_y * scale)}) scale({scale})"
-    body = f'<rect width="1200" height="630" fill="{PAPER}"/><g transform="{place}">{name}</g>'
-    return svg(1200, 630, body, "Riffle", "The Riffle logo and name, for link previews.")
+    left, top = width / 2 - middle_x * scale, height / 2 - middle_y * scale
+    place = f"translate({number(left)} {number(top)}) scale({scale:.4f})"
+    body = f'<rect width="{width}" height="{height}" fill="{PAPER}"/><g transform="{place}">{name}</g>'
+    return svg(width, height, body, "Riffle", f"The Riffle logo and name, {what}.")
 
 
 def main(fonts: Path) -> None:
@@ -168,7 +174,8 @@ def main(fonts: Path) -> None:
             "Riffle",
             "The Riffle logo on a deep purple square, for a phone's home screen.",
         ),
-        "art/social.svg": social(bold),
+        "art/link-preview.svg": preview(bold, 1200, 630, "for link previews"),
+        "art/github-preview.svg": preview(bold, 1280, 640, "for GitHub's preview of the repository"),
     }
     # The wordmark's box leaves about 8 pixels around the ink on every side, so it centres evenly.
     name, right = lockup(bold)
@@ -183,11 +190,16 @@ def main(fonts: Path) -> None:
     for path, text in files.items():
         (DOCS / path).write_text(text, encoding="utf-8")
         print(f"wrote docs/{path} ({len(text.encode()):,} bytes)", flush=True)
-    picture("art/social.svg", 1200, 630).save(DOCS / "og.png")
+    # Each preview at twice the size the apps and GitHub ask for, so it stays sharp on high-resolution
+    # screens. GitHub takes a file of at most 1 MB; these flat colors come to far less.
+    picture("art/link-preview.svg", 2400, 1260).convert("RGB").save(DOCS / "link-preview.png", optimize=True)
+    picture("art/github-preview.svg", 2560, 1280).convert("RGB").save(
+        DOCS / "art/github-preview.png", optimize=True
+    )
     picture("art/touch-icon.svg", 180, 180).save(DOCS / "apple-touch-icon.png")
     # One file holding the favicon at 16, 32 and 48 pixels, for browsers that don't read favicon.svg.
     picture("favicon.svg", 256, 256).save(DOCS / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)])
-    for out in ("og.png", "apple-touch-icon.png", "favicon.ico"):
+    for out in ("link-preview.png", "art/github-preview.png", "apple-touch-icon.png", "favicon.ico"):
         print(f"wrote docs/{out} ({(DOCS / out).stat().st_size:,} bytes)", flush=True)
 
 
