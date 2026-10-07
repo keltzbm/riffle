@@ -77,8 +77,17 @@ def mark() -> str:
     return arches(60, 92, [48, 36, 24], 8, 8, 4)
 
 
+def tab_icon() -> str:
+    """The mark as large as the favicon's square allows, so it still reads at 16 pixels.
+
+    Its ink, from x 8 to 112 and y 40 to 96 in its own square, is scaled 1.1 about the middle of the
+    ink, which lands in the middle of the square. There is no background: on a tab it is the logo itself.
+    """
+    return f'<g transform="translate(60 60) scale(1.1) translate(-60 -68)">{mark()}</g>'
+
+
 def tile_arches() -> str:
-    """The mark as drawn on the favicon's square: a little smaller, so it sits clear of the edges."""
+    """The mark drawn a little smaller, clear of the corners a phone rounds off its icons."""
     return arches(60, 86, [42, 30, 18], 8, 8, 4)
 
 
@@ -158,21 +167,16 @@ def main(fonts: Path) -> None:
         "logo.svg": svg(
             120, 120, mark(), "Riffle", "The Riffle logo: purple and orange arches interleaving at the top."
         ),
-        "favicon.svg": svg(
-            120,
-            120,
-            f'<rect x="4" y="4" width="112" height="112" rx="26" fill="{INK}"/>' + tile_arches(),
-            "Riffle",
-            "The Riffle logo on a deep purple square.",
-        ),
+        "favicon.svg": svg(120, 120, tab_icon(), "Riffle", "The Riffle logo, for the browser tab."),
         "art/touch-icon.svg": svg(
             180,
             180,
-            f'<rect width="180" height="180" fill="{INK}"/><g transform="translate(15 15) scale(1.25)">'
+            # White, not transparent: a phone fills a transparent icon with black.
+            '<rect width="180" height="180" fill="#FFFFFF"/><g transform="translate(15 15) scale(1.25)">'
             + tile_arches()
             + "</g>",
             "Riffle",
-            "The Riffle logo on a deep purple square, for a phone's home screen.",
+            "The Riffle logo on white, for a phone's home screen.",
         ),
         "art/link-preview.svg": preview(bold, 1200, 630, "for link previews"),
         "art/github-preview.svg": preview(bold, 1280, 640, "for GitHub's preview of the repository"),
@@ -196,7 +200,7 @@ def main(fonts: Path) -> None:
     picture("art/github-preview.svg", 2560, 1280).convert("RGB").save(
         DOCS / "art/github-preview.png", optimize=True
     )
-    picture("art/touch-icon.svg", 180, 180).save(DOCS / "apple-touch-icon.png")
+    picture("art/touch-icon.svg", 180, 180).convert("RGB").save(DOCS / "apple-touch-icon.png", optimize=True)
     # One file holding the favicon at 16, 32 and 48 pixels, for browsers that don't read favicon.svg.
     picture("favicon.svg", 256, 256).save(DOCS / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)])
     for out in ("link-preview.png", "art/github-preview.png", "apple-touch-icon.png", "favicon.ico"):

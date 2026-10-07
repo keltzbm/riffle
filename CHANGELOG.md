@@ -286,6 +286,10 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
   `riffle sync --offline` still keeps the Scryfall prices, which need no request.
 
 ### Changed
+- The browser tab shows the logo itself, purple and orange arches with nothing behind them, drawn as
+  large as the icon's square allows so it reads at 16 pixels; it was the arches on a deep purple
+  square. A phone's home screen shows them on white, since a phone fills a transparent icon with
+  black.
 - The README's setup works for anyone: it names what you need (Python 3.12 or newer, uv, git, and
   Docker), downloads the code first, and no longer assumes the author's own folders; nor does
   `DESIGN.md`.
