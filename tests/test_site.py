@@ -67,3 +67,10 @@ def test_the_link_previews_are_the_sizes_they_say():
     github = DOCS / "art" / "github-preview.png"
     across, down = png_size(github)
     assert across == 2 * down and github.stat().st_size < 1_000_000
+
+
+def test_the_tab_icon_stands_alone_and_the_phone_icon_is_opaque():
+    # On a tab the logo stands alone; a phone fills a transparent icon with black, so its icon has none.
+    assert "<rect" not in (DOCS / "favicon.svg").read_text(encoding="utf-8")
+    # A PNG's color type, byte 25 of the file, is 2 for color without transparency.
+    assert (DOCS / "apple-touch-icon.png").read_bytes()[25] == 2
