@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Added
+- `SECURITY.md`: how to report a vulnerability privately, what counts, and which versions get fixes. `.github/dependabot.yml`: one grouped pull request a week for the Python packages and one for the workflows' actions, on Wednesdays.
+
 ### Changed
 - The test suite's six `type: ignore` and `noqa` shortcuts are gone: the fake MTGJSON and GoatBots sources type their `modified` stamp with a sentinel class, fakes and the deliberately unusable connection pass through `typing.cast`, and a lambda assigned to a name became a function.
 
