@@ -1,0 +1,21 @@
+# Dependency updates as pull requests: one grouped pull request a week for the Python
+# packages (uv's lock file) and one for the workflows' actions, on Wednesdays, so they're
+# waiting when the week's builds start on Thursday. CI runs on each like any patch.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    groups:
+      actions:
+        patterns: ["*"]
