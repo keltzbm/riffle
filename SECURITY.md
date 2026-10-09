@@ -28,5 +28,6 @@ your machine or your database password.
 
 ## Supported versions
 
-Only `main` and the newest tagged release get fixes. Dependabot watches the lock file
-and opens a pull request when a dependency has an advisory.
+Only `main` and the newest tagged release get fixes. Renovate watches the lock file,
+with GitHub's Dependabot alerts behind it, and opens a pull request when a dependency
+has an advisory.

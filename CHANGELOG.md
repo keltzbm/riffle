@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Changed
+- Renovate takes over dependency updates from Dependabot's version updates: `renovate.json` groups the Python packages and the workflows' actions into one pull request each, on Wednesday evenings, keeps the lock file maintained, and opens a fix when a dependency has an advisory; `.github/dependabot.yml` is gone. GitHub's Dependabot alerts stay on.
+
 ### Added
 - `SECURITY.md`: how to report a vulnerability privately, what counts, and which versions get fixes. `.github/dependabot.yml`: one grouped pull request a week for the Python packages and one for the workflows' actions, on Wednesdays.
 
