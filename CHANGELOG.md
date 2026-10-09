@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Changed
+- The test suite's six `type: ignore` and `noqa` shortcuts are gone: the fake MTGJSON and GoatBots sources type their `modified` stamp with a sentinel class, fakes and the deliberately unusable connection pass through `typing.cast`, and a lambda assigned to a name became a function.
+
 ### Added
 - A guide for reporting problems and contributing, `CONTRIBUTING.md`, and three forms for GitHub
   issues: a bug, wrong data, and an idea. Anyone can open an issue; a security problem is reported

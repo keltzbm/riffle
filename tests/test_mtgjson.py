@@ -48,7 +48,11 @@ def built(day: date) -> datetime:
     return datetime.combine(day, time(6, 12, 38), UTC)
 
 
-AUTO = object()
+class _Auto:
+    """The stamp read from the body, as the real source reads it."""
+
+
+AUTO = _Auto()
 
 
 class Source:
@@ -56,7 +60,12 @@ class Source:
     to raise, each body's ETag its hash, its Last-Modified when the day inside was built (or
     `modified`). Records every url asked for, and the ETags sent."""
 
-    def __init__(self, answers: dict[str, bytes | None | Exception], modified=AUTO, tagged: bool = True):
+    def __init__(
+        self,
+        answers: dict[str, bytes | None | Exception],
+        modified: datetime | None | _Auto = AUTO,
+        tagged: bool = True,
+    ):
         self.answers = answers
         self.asked: list[str] = []
         self.etags: list[str | None] = []
@@ -83,8 +92,8 @@ class Source:
         return len(body)
 
     def _stamp(self, body: bytes) -> datetime | None:
-        if self.modified is not AUTO:
-            return self.modified  # type: ignore[return-value]
+        if not isinstance(self.modified, _Auto):
+            return self.modified
         try:
             found = re.search(rb'"date":"(\d{4}-\d{2}-\d{2})"', lzma.decompress(body)[:512])
             return built(date.fromisoformat(found.group(1).decode()) if found else DAY)

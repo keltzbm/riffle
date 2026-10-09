@@ -8,6 +8,7 @@ import os
 import zipfile
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -408,7 +409,10 @@ def test_a_kept_file_changed_or_missing_is_named(data):
     diff = files["2026-09-27T230838Z"]
     diff.write_bytes(diff.read_bytes() + b"x")
     files["2026-09-28T020838Z"].unlink()
-    rel = lambda path: path.relative_to(data).as_posix()  # noqa: E731
+
+    def rel(path: Path) -> str:
+        return path.relative_to(data).as_posix()
+
     assert by_source()["Card Kingdom"].problems == [
         f"{rel(diff)}: changed since it was kept",
         f"{rel(files['2026-09-28T020838Z'])}: missing",
