@@ -1,8 +1,10 @@
 """What the catalog loader refuses before it touches the database."""
 
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
+from sqlalchemy import Connection
 
 from riffle.db import catalog, ids
 from riffle.db.catalog import Batch, CardRow, PrintingRow, SetRow
@@ -24,7 +26,7 @@ def batch(game="mtg", **changes):
 def refused(b, message):
     """load() raises before its first statement, so no connection is needed to see it."""
     with pytest.raises(ValueError, match=message):
-        catalog.load(None, b, aliases={})  # type: ignore[arg-type]
+        catalog.load(cast(Connection, None), b, aliases={})
 
 
 def test_a_game_needs_a_creating_source():

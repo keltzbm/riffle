@@ -5,9 +5,10 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import cast
 
 import pytest
-from sqlalchemy import make_url, text
+from sqlalchemy import Connection, Engine, make_url, text
 
 from riffle.db import migrate
 from riffle.db.catalog import LoadResult
@@ -441,7 +442,8 @@ def test_the_schema_must_be_at_head(monkeypatch, revision, shown):
     with pytest.raises(
         sc.NotReady, match=f"schema {shown}, head is {migrate.head()} — run: riffle db upgrade"
     ):
-        sc.load_catalog(None)  # type: ignore[arg-type]
+        # nothing usable: NotReady is raised before the connection is touched
+        sc.load_catalog(cast(Connection, None))
 
 
 class FakeConnection:
@@ -465,7 +467,7 @@ class FakeEngine:
 
 def update_with(monkeypatch, tracker, load_catalog):
     monkeypatch.setattr(sc, "load_catalog", load_catalog)
-    return sc.update(tracker, engine=FakeEngine())  # type: ignore[arg-type]
+    return sc.update(tracker, engine=cast(Engine, FakeEngine()))
 
 
 def test_the_step_reports_what_the_load_wrote(monkeypatch, tracker):
