@@ -1,15 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "timezone": "America/Denver",
-  "schedule": ["* 18-23 * * 3"],
-  "lockFileMaintenance": {"enabled": true, "schedule": ["* 18-23 * * 3"]},
-  "packageRules": [
-    {"matchManagers": ["pep621"], "groupName": "python packages"},
-    {"matchManagers": ["github-actions"], "groupName": "github actions"}
-  ],
-  "vulnerabilityAlerts": {"enabled": true},
-  "osvVulnerabilityAlerts": true,
-  "prConcurrentLimit": 3,
-  "automerge": false
+  "extends": ["local>keltzbm/renovate-config"]
 }
