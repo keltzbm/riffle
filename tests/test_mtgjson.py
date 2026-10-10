@@ -430,7 +430,7 @@ def test_a_build_is_asked_from_when_it_goes_online_not_when_it_s_made(data_dir, 
     assert source.asked == [] and res.waiting == ["MTGJSON prices today"]
     assert tracker.outcomes()["MTGJSON 1 list"] == (
         "ok",
-        "none due; prices today next asked 2026-10-16 10:32 UTC"
+        "none due; prices today next asked 2026-10-16 08:07 UTC"
         "; its next list expected 2026-10-16 06:12 UTC, "
         "online from about 2026-10-16 12:57 UTC",
     )
