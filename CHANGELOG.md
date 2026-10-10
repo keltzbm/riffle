@@ -7,6 +7,7 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Changed
+- A watched list whose schedule is learned is asked at least every hour, and at least four times in its shortest gap unless that would be more often than every 5 minutes. Before, the far interval was half a daily list's shortest gap (12 hours) in the week after it learned, and 5 to 6 hours after that, so a list published off schedule and replaced within that time was lost: Cardmarket's second guide of 2026-09-30 lived 7.1 hours. A learned list's `next asked` line now names a time at most an hour after its last check, sooner when its window opens first or its gaps are short.
 - `renovate.json` takes its settings from the shared `keltzbm/renovate-config` preset, which every `keltzbm` repo now uses: the same Wednesday-evening schedule, groups and security alerts as before.
 - Renovate takes over dependency updates from Dependabot's version updates: `renovate.json` groups the Python packages and the workflows' actions into one pull request each, on Wednesday evenings, keeps the lock file maintained, and opens a fix when a dependency has an advisory; `.github/dependabot.yml` is gone. GitHub's Dependabot alerts stay on.
 

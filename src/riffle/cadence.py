@@ -14,10 +14,11 @@ A watch job fires every EVERY. At each firing a list is asked for when any of th
   expected, and the window then opens after the expected time: MTGJSON's build is made about
   06:12 UTC and served after 13:00.
 - The far interval has passed since its last check: the longest whole minute c with
-  N · f^⌊L/c⌋ ≤ TARGET, where L is its shortest gap in the 30 days before its last list less its
-  longest fetch, N its lists a year, and f the CONFIDENCE upper bound on its checks' failure rate
-  over the last WEEK, counting one failure more than seen. The far checks alone keep the loss
-  under TARGET even when the expected time is wrong; the near ones only shorten the wait.
+  N · f^⌊L/c⌋ ≤ TARGET and at least LEAST_CHANCES checks in L, but never over LONGEST, where L
+  is its shortest gap in the 30 days before its last list less its longest fetch, N its lists a
+  year, and f the CONFIDENCE upper bound on its checks' failure rate over the last WEEK,
+  counting one failure more than seen. The far checks alone keep the loss under TARGET even
+  when the expected time is wrong; the near ones only shorten the wait.
 - It's still learning: with no check logged, or under 14 gaps (lateness.LEAST_GAPS) between
   its lists, every firing asks. One publish is counted once, however many times it's kept.
 
@@ -38,8 +39,16 @@ Why these (the vault's price-watch-numbers note has the proof):
   beside it, so at most one list a year comes before its window, not one for each. The Mac's
   clock against the source's is learned there too.
 - The far interval is price-watch-numbers §3's check interval, from each list's own log. On
-  tcgcsv it settles near 6 hours once a week of checks is logged: about 5 requests a day in all,
-  against 288 at every firing. A failed check shortens it.
+  tcgcsv it would settle near 6 hours once a week of checks is logged; the ceiling makes it an
+  hour: about 24 requests a day, against 288 at every firing. A failed check shortens it.
+- At least LEAST_CHANCES: a list leaves learning with a clean week of checks at every firing,
+  which needs only 2 chances, L/2, 12 hours on a daily list. Cardmarket's second guide of
+  2026-09-30 lived 0.29 L: a quarter meets it and a half doesn't (the vault's 14-gap-replay).
+- Never over LONGEST: the window finds a list on its schedule, and the far checks are for one
+  published off it. One at a random time in a gap of L lives under c with chance c/L and is
+  then missed with chance 1 - life/c, so c/(2L) of them are lost: 1 in 8 at L/4, about 1 in 45
+  at an hour on a daily list. A learned schedule can't see the lists it misses (a missed list
+  leaves a long gap, not a short one), so the record can't say they're rare.
 - No far interval before 14 gaps: it stands on the shortest gap seen, and with g gaps seen the
   chance the next is shorter than all of them is 1/(g+1). From one gap of a day it was 3 hours
   after a dozen clean checks; on 2026-09-30 Cardmarket published a second guide 7 hours after
@@ -60,6 +69,8 @@ from riffle import lateness
 EVERY = timedelta(minutes=5)  # a watch job's interval: a Mana Pool list lasts about 30 minutes, six tries
 TARGET = 0.1  # lists a year the checks may cost: one a decade (price-watch-numbers §3)
 CONFIDENCE = 0.95
+LEAST_CHANCES = 4  # at least four far checks in the shortest gap, down to EVERY
+LONGEST = timedelta(hours=1)  # and at most this: a list published off schedule that lives an hour is kept
 WEEK = timedelta(days=7)  # the checks a failure rate is judged from
 YEAR = timedelta(days=365)
 _NONE = timedelta(0)
@@ -97,8 +108,8 @@ def far(
     made: Sequence[datetime], checks: Sequence[tuple[datetime, bool]], now: datetime, busy: timedelta = _NONE
 ) -> timedelta:
     """The far interval for a list made at these times (oldest first), from its checks, each
-    (when, failed), and busy, its longest fetch: never under EVERY. plan uses it only once the
-    list has lateness.LEAST_GAPS gaps."""
+    (when, failed), and busy, its longest fetch: never under EVERY or over LONGEST. plan uses it
+    only once the list has lateness.LEAST_GAPS gaps."""
     gaps = [b - a for a, b in zip(made, made[1:], strict=False)]
     if not gaps:
         return EVERY
@@ -109,8 +120,8 @@ def far(
     if rate >= 1 or life <= EVERY or usual <= _NONE:
         return EVERY
     per_year = YEAR / usual
-    chances = max(1, math.ceil(math.log(TARGET / per_year) / math.log(rate)))
-    return max(EVERY, timedelta(minutes=(life / chances) // timedelta(minutes=1)))
+    chances = max(LEAST_CHANCES, math.ceil(math.log(TARGET / per_year) / math.log(rate)))
+    return min(LONGEST, max(EVERY, timedelta(minutes=(life / chances) // timedelta(minutes=1))))
 
 
 def expected(made: Sequence[datetime]) -> datetime | None:

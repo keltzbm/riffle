@@ -807,7 +807,7 @@ def test_a_learned_day_is_asked_from_its_expected_time(data_dir, sleeps, tracker
         folder.mkdir(parents=True)
         (folder / "last-updated.txt").write_bytes((last - timedelta(days=n)).strftime(tcgcsv.STAMP).encode())
     expected = last + timedelta(days=1)
-    checks = [expected - timedelta(hours=2 + 4 * n) for n in range(42)]  # a clean week
+    checks = [expected - timedelta(minutes=30 + 240 * n) for n in range(42)]  # a clean week
     (data_dir / "tcgcsv" / "watch.jsonl").write_text(
         "".join(
             json.dumps({"at": runs.name(at), "list": "last-updated", "result": "same"}) + "\n"
