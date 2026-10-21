@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Added
+- `riffle compare <deck> <deck>`: how alike two decks are, the main deck and the sideboard each on its own, basic lands aside: the cards they share, the swaps between them (the cards to change to turn one into the other), Jaccard, how much of each is in the other, and, for Commander and Duel Commander lists, whether one is a variant of the other (20 swaps or fewer under the same commander, the line measured on players' own lists, or 10 under another commander, the vault's line of 2026-10-05). `riffle similar <deck>`: the nearest decks to one in its format and, for Commander, its colors, by the main deck's swaps, with the sideboard's beside them. The whole 75 is never measured as one, since cards moved between the main deck and the sideboard cancel in it.
+
 ### Changed
 - A watched list whose schedule is learned is asked at least every hour, and at least four times in its shortest gap unless that would be more often than every 5 minutes. Before, the far interval was half a daily list's shortest gap (12 hours) in the week after it learned, and 5 to 6 hours after that, so a list published off schedule and replaced within that time was lost: Cardmarket's second guide of 2026-09-30 lived 7.1 hours. A learned list's `next asked` line now names a time at most an hour after its last check, sooner when its window opens first or its gaps are short.
 - `renovate.json` takes its settings from the shared `keltzbm/renovate-config` preset, which every `keltzbm` repo now uses: the same Wednesday-evening schedule, groups and security alerts as before.

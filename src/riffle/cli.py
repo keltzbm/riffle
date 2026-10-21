@@ -2,6 +2,8 @@
 
 import shutil
 import sys
+import unicodedata
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -862,6 +864,132 @@ def price(
         typer.echo(f"  {verdict}{extra} a {budget_tix:,.0f}-tix budget")
     if dp.missing_on_mtgo:
         typer.echo(f"not on MTGO: {', '.join(dp.missing_on_mtgo)}")
+
+
+def _share(value: float | None) -> str:
+    return "—" if value is None else f"{value:.2f}"
+
+
+def _reading_order(name: str) -> str:
+    """A name as a reader sorts it, accents and case aside: Andúril with the A's, not after Z."""
+    return "".join(c for c in unicodedata.normalize("NFKD", name) if not unicodedata.combining(c)).casefold()
+
+
+def _diff(cards: Counter[str]) -> str:
+    """Cards in reading order, the count before one held more than once more; none for none.
+    Semicolons between them, since a legend's name may hold a comma."""
+    if not cards:
+        return "none"
+    return "; ".join(
+        f"{n} {name}" if n > 1 else name
+        for name, n in sorted(cards.items(), key=lambda kv: _reading_order(kv[0]))
+    )
+
+
+def _find(mtg_dir: Path, ref: str) -> Deck:
+    """vault.find, or exit 1 saying what wasn't found."""
+    try:
+        return vault.find(mtg_dir, ref)
+    except (LookupError, ValueError) as e:
+        _echo(str(e), err=True)
+        raise typer.Exit(1) from e
+
+
+def _zones(*decks: Deck) -> list[str]:
+    """The zones to measure: the main deck, and the sideboard when any of the decks has one."""
+    return ["main", "sideboard"] if any(d.board("sideboard") for d in decks) else ["main"]
+
+
+@app.command()
+def compare(first: DeckRef, second: DeckRef) -> None:
+    """How alike two decks are, zone by zone, basic lands aside: the cards they share, the swaps
+    between them, Jaccard, how much of each is in the other, and whether one is a variant."""
+    from riffle.analysis import similarity
+
+    cfg = config.load()
+    a, b = _find(cfg.mtg_dir, first), _find(cfg.mtg_dir, second)
+    zones = _zones(a, b)
+    with _catalog() as cat:
+        found = {
+            z: similarity.compare(similarity.counts(a, cat, z), similarity.counts(b, cat, z)) for z in zones
+        }
+        said = similarity.verdict(a, b, found["main"].swaps, cat)
+    rows = [
+        ["", *zones],
+        ["shared", *(str(found[z].shared) for z in zones)],
+        ["only in A", *(str(found[z].only_a) for z in zones)],
+        ["only in B", *(str(found[z].only_b) for z in zones)],
+        ["swaps", *(str(found[z].swaps) for z in zones)],
+        ["Jaccard", *(_share(found[z].jaccard) for z in zones)],
+        ["A in B", *(_share(found[z].a_in_b) for z in zones)],
+        ["B in A", *(_share(found[z].b_in_a) for z in zones)],
+    ]
+    # the decks are A and B after the first line, so a long name doesn't widen the table
+    typer.echo(f"{a.slug} (A) against {b.slug} (B), basic lands aside")
+    for line in _columns(rows, right=set(range(1, len(zones) + 1))):
+        typer.echo(f"  {line}")
+    typer.echo(f"verdict: {said}")
+    for z in zones:
+        typer.echo(f"only in A, {z}: {_diff(found[z].only_a_cards)}")
+        typer.echo(f"only in B, {z}: {_diff(found[z].only_b_cards)}")
+
+
+@app.command()
+def similar(
+    deck: DeckRef,
+    limit: int = typer.Option(10, "--limit", "-n", min=1, help="How many decks to list"),
+) -> None:
+    """The decks nearest one: the other deck notes in its format, and for Commander in its
+    colors, by their main decks' swaps, basic lands aside."""
+    from riffle.analysis import similarity
+
+    cfg = config.load()
+    target = _find(cfg.mtg_dir, deck)
+    # None for a list with neither a format nor a commander: every deck note is a candidate
+    fmt = similarity.deck_format(target)
+    colors = _colors(target) if fmt in similarity.MEASURED and target.meta.get("colors") is not None else None
+    # the target's own note is left out by its path: a list given by path is no note, whatever its name
+    here = Path(target.meta["path"]).resolve() if "path" in target.meta else None
+    others = [
+        d
+        for d in vault.decks(cfg.mtg_dir)
+        if (fmt is None or similarity.deck_format(d) == fmt)
+        and Path(d.meta["path"]).resolve() != here
+        and (colors is None or set(_colors(d)) == set(colors))
+    ]
+    if not others:
+        if fmt is None:
+            typer.echo("no deck note to compare it with")
+        else:
+            typer.echo(
+                f"no other {fmt} deck " + ("in these colors" if colors is not None else "in this format")
+            )
+        return
+    side = len(_zones(target, *others)) > 1
+    with _catalog() as cat:
+        mine = {z: similarity.counts(target, cat, z) for z in ("main", "sideboard")}
+        found = []
+        for d in others:
+            main = similarity.compare(mine["main"], similarity.counts(d, cat))
+            rest = (
+                similarity.compare(mine["sideboard"], similarity.counts(d, cat, "sideboard"))
+                if side
+                else None
+            )
+            found.append((main, rest, d, similarity.is_variant(target, d, main.swaps, cat)))
+    found.sort(key=lambda item: (item[0].swaps, -(item[0].jaccard or 0.0), item[2].slug))
+    shown = found[:limit]
+    where = f"{fmt}, {colors}" if colors is not None else fmt or "any format"
+    noun = "deck" if len(others) == 1 else "decks"
+    typer.echo(f"nearest to {target.slug}: {where}; {len(shown)} of {len(others)} {noun}, basic lands aside")
+    rows = [["swaps", "Jaccard", *(["side"] if side else []), "verdict", "deck"]]
+    for main, rest, d, call in shown:
+        word = "—" if call is None else "variant" if call else "another deck"
+        rows.append(
+            [str(main.swaps), _share(main.jaccard), *([str(rest.swaps)] if rest else []), word, d.slug]
+        )
+    for line in _columns(rows, right={0, 1, 2} if side else {0, 1}):
+        typer.echo(f"  {line}")
 
 
 @prices_app.command("log")
