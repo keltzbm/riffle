@@ -711,3 +711,589 @@ def test_lists_not_due_share_one_line_naming_the_next(every_file, tracker):
             "; its next list expected 2026-09-28 06:12 UTC",
         )
     }
+
+
+# ---- the manifest's sort ------------------------------------------------------------------
+# The names 2026-10-21's BuildManifest.json listed, each with its forms, trimmed to three of
+# its 878 sets and two of its 3,130 decks.
+
+JSON_FORMS = (".json", ".json.bz2", ".json.gz", ".json.xz", ".json.zip")
+PACKED = ("", ".bz2", ".gz", ".xz", ".zip")
+TAR_FORMS = (".tar.bz2", ".tar.gz", ".tar.xz", ".zip")
+JSON_NAMES = (
+    "AllIdentifiers",
+    "AllPrices",
+    "AtomicCards",
+    "CardTypes",
+    "CardmarketIdentifiers",
+    "CompiledList",
+    "DeckList",
+    "EnumValues",
+    "Keywords",
+    "Legacy",
+    "LegacyAtomic",
+    "Meta",
+    "Modern",
+    "ModernAtomic",
+    "PauperAtomic",
+    "Pioneer",
+    "PioneerAtomic",
+    "ReferralMap",
+    "SetList",
+    "Standard",
+    "StandardAtomic",
+    "TcgplayerSkus",
+    "Vintage",
+    "VintageAtomic",
+)
+CSV_NAMES = (
+    "cardForeignData",
+    "cardIdentifiers",
+    "cardLegalities",
+    "cardPrices",
+    "cardPurchaseUrls",
+    "cardRulings",
+    "cards",
+    "meta",
+    "sealedProducts",
+    "setBoosterContentWeights",
+    "setBoosterContents",
+    "setBoosterSheetCards",
+    "setBoosterSheets",
+    "setDecks",
+    "setTranslations",
+    "sets",
+    "tokenIdentifiers",
+    "tokens",
+)
+PARQUET_NAMES = (
+    "AllDecks",
+    "AllPrices",
+    "AllPricesToday",
+    "AllPrintings",
+    "CardTypes",
+    "DeckList",
+    "EnumValues",
+    "Keywords",
+    "TcgplayerSkus",
+    "cardForeignData",
+    "cardIdentifiers",
+    "cardLegalities",
+    "cardPurchaseUrls",
+    "cardRulings",
+    "cards",
+    "meta",
+    "sealedProducts",
+    "setBoosterContentWeights",
+    "setBoosterContents",
+    "setBoosterSheetCards",
+    "setBoosterSheets",
+    "setDecks",
+    "setTranslations",
+    "sets",
+    "tokenIdentifiers",
+    "tokens",
+)
+SETS = ("10E", "CON_", "LEA")
+DECKS = ("15ThAnniversaryStarterGameLandPack_P15A", "2014FullArtLandSet_J14")
+# What the sort counts as kept: each path in FILES but the manifest, and the sync's AllPrices
+KEPT_PATHS = [file.path for file in EVERY_FILE if file.path != "BuildManifest.json"] + [mtgjson.HISTORY]
+TOKENS = lzma.compress(b'{"meta":{"date":"2026-11-04","version":"5.3.0+20261104"},"data":{}}')
+MANIFEST = "MTGJSON BuildManifest"
+
+
+def served_paths() -> list[str]:
+    paths = [f"AllDeckFiles{form}" for form in TAR_FORMS]
+    paths += [f"{name}{form}" for name in JSON_NAMES for form in JSON_FORMS]
+    for name in ("AllPricesToday", "AllPrintings"):
+        paths += [f"{name}{form}" for form in JSON_FORMS]
+        paths += [f"{name}.{kind}{form}" for kind in ("psql", "sql", "sqlite") for form in PACKED]
+    paths += [f"{name}{form}" for name in ("AllPrintingsCSVFiles", "AllSetFiles") for form in TAR_FORMS]
+    paths.append("AllPrintingsParquetFiles.zip")
+    paths += [f"csv/{name}.csv{form}" for name in CSV_NAMES for form in PACKED]
+    paths += [f"parquet/{name}.parquet" for name in PARQUET_NAMES]
+    paths += [f"{code}{form}" for code in SETS for form in JSON_FORMS]
+    paths += [f"decks/{deck}{form}" for deck in DECKS for form in JSON_FORMS]
+    return paths
+
+
+def manifest(day: date, paths: list[str] | dict[str, int] | None = None, files: object = AUTO) -> bytes:
+    """A BuildManifest.json as MTGJSON serves it: its meta first, then each file's size under
+    "files": 2026-10-21's names unless paths are given, each 1,000 bytes and its path's length
+    long unless sized; or `files` as given."""
+    if paths is None:
+        paths = served_paths()
+    sizes = paths if isinstance(paths, dict) else {path: 1000 + len(path) for path in paths}
+    if isinstance(files, _Auto):
+        files = {path: {"size_bytes": size} for path, size in sizes.items()}
+    head = {
+        "version": f"5.3.0+{day:%Y%m%d}",
+        "date": day.isoformat(),
+        "git_commit": "",
+        "generated_at": f"{day.isoformat()}T06:11:52Z",
+        "total_files": len(sizes),
+        "total_size_bytes": sum(sizes.values()),
+    }
+    return json.dumps({"meta": head, "record_counts": {"cards": 1}, "files": files}).encode()
+
+
+def publish(day: date) -> datetime:
+    """When a day's build went up, as its files' Last-Modified says: 06:12 UTC."""
+    return datetime.combine(day, time(6, 12), UTC)
+
+
+def when(day: date) -> datetime:
+    """The watch's time that day: 13:00 UTC, the 07:00 sync in Denver."""
+    return datetime.combine(day, time(13), UTC)
+
+
+def build(
+    day: date,
+    paths: list[str] | dict[str, int] | None = None,
+    *,
+    made: datetime | None = None,
+    files: object = AUTO,
+    **overrides,
+) -> Source:
+    """MTGJSON serving the whole build of `day`, published at 06:12 UTC that day (or `made`),
+    its manifest listing `paths`."""
+    served = catalogs(day, **{f"{B}/BuildManifest.json": manifest(day, paths, files)}, **overrides)
+    return Source(served, modified=publish(day) if made is None else made)
+
+
+def serving(
+    path: str, body: bytes | None | Exception, digest: bytes | None | Exception | _Auto = AUTO
+) -> dict:
+    """MTGJSON's answers for a file and its .sha256: the body's own unless given."""
+    if isinstance(digest, _Auto):
+        digest = sha(body) if isinstance(body, bytes) else None
+    return {f"{B}/{path}": body, f"{B}/{path}.sha256": digest}
+
+
+def forms(name: str) -> list[str]:
+    """A top-level file's five JSON forms."""
+    return [f"{name}{form}" for form in JSON_FORMS]
+
+
+def sorting(tracker) -> tuple[str, str]:
+    """The manifest step's outcome, and what its note says of the sort: after the first "; "."""
+    outcome, note = tracker.outcomes()[MANIFEST]
+    return outcome, note.partition("; ")[2]
+
+
+def manifest_entries(data_dir) -> list[dict]:
+    return [entry for entry in logged(data_dir) if entry["list"] == "build-manifest"]
+
+
+def asked_of(source: Source, name: str) -> list[str]:
+    """The urls asked for a file's forms, in order of their names."""
+    return sorted(url for url in source.asked if name in url)
+
+
+def held_files(data_dir) -> list[str]:
+    folder = data_dir / "mtgjson" / "aside"
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+def test_the_names_of_2026_10_21_are_all_kept_or_left_out_by_rule(every_file, tracker):
+    """A manifest of 2026-10-21's names, trimmed to a few sets and decks, gives no warning:
+    "N files, 16 kept, the rest left out by rule". It never lists BuildManifest.json, which
+    isn't looked for in it."""
+    day = date(2026, 10, 22)
+    paths = served_paths()
+    res = watch(build(day, paths), tracker, now=when(day))
+    assert MANIFEST in res.kept and not res.failed
+    outcome, note = tracker.outcomes()[MANIFEST]
+    assert outcome == "ok" and note.startswith("kept the list built 2026-10-22 06:12 UTC (2026-10-22), ")
+    assert note.partition("; ")[2] == f"{len(paths):,} files, 16 kept, the rest left out by rule"
+    entry = manifest_entries(every_file)[-1]
+    assert entry["result"] == "kept" and not {"unlisted", "unruled", "held", "not_held"} & entry.keys()
+    assert held_files(every_file) == []
+
+
+def test_a_new_file_is_held_in_its_json_xz_form_the_build_it_appears(every_file, tracker):
+    """A manifest with an unknown top-level file, in five forms, holds its .json.xz once that
+    build: one request for it and one for its .sha256, set aside under its Last-Modified; the
+    step warns, and the log entry has it in unruled and held."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")  # its .json form is the smallest; .json.xz still wins
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    res = watch(source, tracker, now=when(day))
+    aside = "mtgjson/aside/AllTokens-2026-11-04T061200Z.json.xz"
+    assert MANIFEST in res.kept and not res.failed
+    assert asked_of(source, "AllTokens") == [f"{B}/AllTokens.json.xz", f"{B}/AllTokens.json.xz.sha256"]
+    assert held_files(every_file) == ["AllTokens-2026-11-04T061200Z.json.xz"]
+    assert (every_file / aside).read_bytes() == TOKENS
+    assert not [p for p in (every_file / "mtgjson").rglob("*") if p.name.endswith((".new", ".part"))]
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 1 file Riffle has no rule for: "
+        f"AllTokens.json.xz, held as {aside}",
+    )
+    entry = manifest_entries(every_file)[-1]
+    assert entry["result"] == "kept" and entry["unruled"] == ["AllTokens.json.xz"]
+    assert entry["held"] == {"AllTokens.json.xz": aside}
+    assert "not_held" not in entry and "unlisted" not in entry
+
+
+def test_a_new_file_with_no_last_modified_is_held_under_the_checks_time(every_file, tracker):
+    """Set aside as mtgjson/aside/<name>-<its Last-Modified in UTC, or the check's time without
+    one>.<suffix>."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    fetch_new = source.fetch_new
+
+    def undated(url, *args, **kwargs):
+        got = fetch_new(url, *args, **kwargs)
+        return dataclasses.replace(got, modified=None) if url == f"{B}/AllTokens.json.xz" else got
+
+    source.fetch_new = undated
+    watch(source, tracker, now=when(day))
+    aside = "mtgjson/aside/AllTokens-2026-11-04T130000Z.json.xz"
+    assert held_files(every_file) == ["AllTokens-2026-11-04T130000Z.json.xz"]
+    assert sorting(tracker)[1].endswith(f"AllTokens.json.xz, held as {aside}")
+    assert manifest_entries(every_file)[-1]["held"] == {"AllTokens.json.xz": aside}
+
+
+def test_a_manifest_answered_304_holds_nothing_more_and_the_next_build_holds_it_again(every_file, tracker):
+    """The same build asked again (304) holds nothing more; the next build holds it again, with
+    no ETag, and the step warns every build until the file is given a rule."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    watch(build(day, paths, **serving("AllTokens.json.xz", TOKENS)), now=when(day))
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    res = watch(source, tracker, now=when(day) + timedelta(minutes=5))
+    assert MANIFEST in res.same and asked_of(source, "AllTokens") == []
+    assert tracker.outcomes()[MANIFEST] == ("ok", "no new build since the last one kept")
+    assert held_files(every_file) == ["AllTokens-2026-11-04T061200Z.json.xz"]
+    assert "held" not in manifest_entries(every_file)[-1]
+    nxt = day + timedelta(1)
+    later = lzma.compress(meta(nxt))
+    source = build(nxt, paths, **serving("AllTokens.json.xz", later))
+    res = watch(source, tracker, now=when(nxt))
+    aside = "mtgjson/aside/AllTokens-2026-11-05T061200Z.json.xz"
+    assert MANIFEST in res.kept
+    assert asked_of(source, "AllTokens") == [f"{B}/AllTokens.json.xz", f"{B}/AllTokens.json.xz.sha256"]
+    assert source.etags.count(None) == 1  # every list kept sends its ETag; the hold sends none
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 1 file Riffle has no rule for: "
+        f"AllTokens.json.xz, held as {aside}",
+    )
+    assert held_files(every_file) == [
+        "AllTokens-2026-11-04T061200Z.json.xz",
+        "AllTokens-2026-11-05T061200Z.json.xz",
+    ]
+    assert (every_file / aside).read_bytes() == later
+
+
+def test_a_manifest_kept_already_and_fetched_again_sorts_nothing(every_file, tracker):
+    """The sort runs only when a new build of the manifest is kept: not for a build kept
+    already and fetched again (its ETag lost)."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    watch(build(day, paths, **serving("AllTokens.json.xz", TOKENS)), now=when(day))
+    (every_file / "mtgjson" / "watch-etags.json").unlink()
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    res = watch(source, tracker, now=when(day) + timedelta(minutes=5))
+    assert MANIFEST in res.same and asked_of(source, "AllTokens") == []
+    assert tracker.outcomes()[MANIFEST] == (
+        "ok",
+        "have the build made 2026-11-04 06:12 UTC (2026-11-04); the same as the one kept",
+    )
+    assert held_files(every_file) == ["AllTokens-2026-11-04T061200Z.json.xz"]
+    assert "held" not in manifest_entries(every_file)[-1]
+
+
+@pytest.mark.parametrize(
+    ("body", "digest", "why"),
+    [
+        (TOKENS, b"0" * 64, "it doesn't match its .sha256"),
+        (None, sha(TOKENS), "HTTP 404"),
+        (net.FetchError("no answer after 3 tries"), sha(TOKENS), "no answer after 3 tries"),
+    ],
+    ids=["sha256", "404", "no answer"],
+)
+def test_a_new_file_that_cant_be_held_is_not_and_the_step_says_why(every_file, tracker, body, digest, why):
+    """A new file that doesn't match its .sha256, or isn't served, isn't held, and the warning
+    says why; the next build of the manifest tries again."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    res = watch(build(day, paths, **serving("AllTokens.json.xz", body, digest)), tracker, now=when(day))
+    assert MANIFEST in res.kept and not res.failed
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 1 file Riffle has no rule for: "
+        f"AllTokens.json.xz, not held: {why}, asked again next build",
+    )
+    assert not [p for p in (every_file / "mtgjson").rglob("*") if "AllTokens" in p.name]
+    assert not [p for p in (every_file / "mtgjson").rglob("*") if p.name.endswith((".new", ".part"))]
+    entry = manifest_entries(every_file)[-1]
+    assert entry["unruled"] == ["AllTokens.json.xz"] and entry["not_held"] == {"AllTokens.json.xz": why}
+    assert "held" not in entry
+    nxt = day + timedelta(1)
+    source = build(nxt, paths, **serving("AllTokens.json.xz", TOKENS))
+    watch(source, tracker, now=when(nxt))
+    aside = "mtgjson/aside/AllTokens-2026-11-05T061200Z.json.xz"
+    assert asked_of(source, "AllTokens") == [f"{B}/AllTokens.json.xz", f"{B}/AllTokens.json.xz.sha256"]
+    assert sorting(tracker)[1].endswith(f"AllTokens.json.xz, held as {aside}")
+    assert held_files(every_file) == ["AllTokens-2026-11-05T061200Z.json.xz"]
+
+
+def test_a_new_file_with_no_sha256_served_is_held_unchecked_and_the_step_says_so(every_file, tracker):
+    """One with no .sha256 served is held unchecked and says so: "held as … with no .sha256 to
+    check it by"."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS, None))
+    watch(source, tracker, now=when(day))
+    aside = "mtgjson/aside/AllTokens-2026-11-04T061200Z.json.xz"
+    assert f"{B}/AllTokens.json.xz.sha256" in source.asked
+    assert (every_file / aside).read_bytes() == TOKENS
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 1 file Riffle has no rule for: "
+        f"AllTokens.json.xz, held as {aside} with no .sha256 to check it by",
+    )
+    assert manifest_entries(every_file)[-1]["held"] == {"AllTokens.json.xz": aside}
+
+
+@pytest.mark.parametrize(
+    ("sizes", "held"),
+    [
+        ({"AllTokens.json.xz": 50, "AllTokens.sqlite.xz": 10}, "AllTokens.json.xz"),
+        ({"AllTokens.json": 10, "AllTokens.sqlite.xz": 50, "AllTokens.tar.xz": 40}, "AllTokens.tar.xz"),
+        ({"AllTokens.json": 300, "AllTokens.json.gz": 100, "AllTokens.json.bz2": 100}, "AllTokens.json.bz2"),
+    ],
+    ids=["the .json.xz before a smaller .xz", "the smallest .xz form", "the smallest form, then by name"],
+)
+def test_a_new_file_is_held_in_its_json_xz_form_else_its_smallest_xz_form_else_its_smallest(
+    every_file, tracker, sizes, held
+):
+    """Its .json.xz form if the manifest lists one, else its smallest .xz form, else its
+    smallest form (by size_bytes, then by name)."""
+    day = date(2026, 11, 4)
+    paths = dict.fromkeys(served_paths(), 1000) | sizes
+    source = build(day, paths, **serving(held, TOKENS))
+    watch(source, tracker, now=when(day))
+    stem, _, suffix = held.partition(".")
+    aside = f"mtgjson/aside/{stem}-2026-11-04T061200Z.{suffix}"
+    assert asked_of(source, "AllTokens") == [f"{B}/{held}", f"{B}/{held}.sha256"]
+    assert (every_file / aside).read_bytes() == TOKENS
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 1 file Riffle has no rule for: {held}, held as {aside}",
+    )
+    assert manifest_entries(every_file)[-1]["unruled"] == [held]
+
+
+def test_two_new_files_are_named_in_order_each_with_what_became_of_it(every_file, tracker):
+    """Two or more are named in order of their names, each with what became of it, joined
+    by "; "."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens") + forms("AllRulings")
+    source = build(
+        day,
+        paths,
+        **serving("AllRulings.json.xz", TOKENS),
+        **serving("AllTokens.json.xz", None, sha(TOKENS)),
+    )
+    watch(source, tracker, now=when(day))
+    aside = "mtgjson/aside/AllRulings-2026-11-04T061200Z.json.xz"
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 2 files Riffle has no rule for: "
+        f"AllRulings.json.xz, held as {aside}; AllTokens.json.xz, not held: HTTP 404, asked again next build",
+    )
+    entry = manifest_entries(every_file)[-1]
+    assert entry["unruled"] == ["AllRulings.json.xz", "AllTokens.json.xz"]
+    assert entry["held"] == {"AllRulings.json.xz": aside}
+    assert entry["not_held"] == {"AllTokens.json.xz": "HTTP 404"}
+    assert held_files(every_file) == ["AllRulings-2026-11-04T061200Z.json.xz"]
+
+
+@pytest.mark.parametrize(
+    ("dropped", "unlisted", "said"),
+    [
+        (
+            ("AllPrices", "AllPricesToday", "csv/cardPrices"),
+            ["AllPrices.json.xz", "AllPricesToday.json.xz"],
+            "14 kept; it no longer lists 2 files Riffle keeps: AllPrices.json.xz, AllPricesToday.json.xz",
+        ),
+        (
+            ("Keywords",),
+            ["Keywords.json.xz"],
+            "15 kept; it no longer lists 1 file Riffle keeps: Keywords.json.xz",
+        ),
+    ],
+    ids=["the build of 2026-10-18 04:45 UTC", "one file"],
+)
+def test_a_kept_file_the_manifest_stops_listing_is_a_warning(every_file, tracker, dropped, unlisted, said):
+    """A kept file missing from the manifest warns, AllPrices.json.xz among them, as the build
+    of 2026-10-18 04:45 UTC would have given; the names in order, and "1 file" for one."""
+    day = date(2026, 10, 18)
+    paths = [path for path in served_paths() if path.partition(".")[0] not in dropped]
+    source = build(day, paths, made=datetime(2026, 10, 18, 4, 45, tzinfo=UTC))
+    res = watch(source, tracker, now=when(day))
+    assert MANIFEST in res.kept and not res.failed
+    outcome, note = tracker.outcomes()[MANIFEST]
+    assert outcome == "warn" and note.startswith("kept the list built 2026-10-18 04:45 UTC (2026-10-18), ")
+    assert note.partition("; ")[2] == f"{len(paths)} files, {said}"
+    entry = manifest_entries(every_file)[-1]
+    assert entry["result"] == "kept" and entry["unlisted"] == unlisted
+    assert not {"unruled", "held", "not_held"} & entry.keys()
+
+
+def test_a_kept_file_not_listed_is_said_before_the_new_files(every_file, tracker):
+    """With new files too, the files it no longer lists come before theirs."""
+    day = date(2026, 11, 4)
+    paths = [path for path in served_paths() if not path.startswith("Keywords.")] + forms("AllTokens")
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    watch(source, tracker, now=when(day))
+    aside = "mtgjson/aside/AllTokens-2026-11-04T061200Z.json.xz"
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 15 kept; it no longer lists 1 file Riffle keeps: Keywords.json.xz; "
+        f"MTGJSON serves 1 file Riffle has no rule for: AllTokens.json.xz, held as {aside}",
+    )
+    entry = manifest_entries(every_file)[-1]
+    assert entry["unlisted"] == ["Keywords.json.xz"] and entry["unruled"] == ["AllTokens.json.xz"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "AllPrintings.sqlite",
+        "AllPrintings.sqlite.zip",
+        "Meta.json",
+        "csv/cardIdentifiers.csv",
+        "AllPrices.json",
+        "CON_.json.xz",
+        "10E.json",
+        "PauperAtomic.json.xz",
+        "Legacy.json",
+        "decks/2014FullArtLandSet_J14.json.xz",
+        "csv/cards.csv.gz",
+        "AllPrintingsCSVFiles.tar.xz",
+        "parquet/AllPrices.parquet",
+        "AllPrintingsParquetFiles.zip",
+        "AllSetFiles.zip",
+        "ReferralMap.json",
+    ],
+)
+def test_a_file_left_out_by_rule_is_never_new(every_file, tracker, path):
+    """Another form of a kept file, a set's file, a format's, a deck's, CSV, Parquet, AllSetFiles
+    and ReferralMap are left out, never new."""
+    day = date(2026, 11, 4)
+    res = watch(build(day, [*KEPT_PATHS, path]), tracker, now=when(day))
+    assert MANIFEST in res.kept
+    assert sorting(tracker) == ("ok", "17 files, 16 kept, the rest left out by rule")
+    assert held_files(every_file) == [] and "unruled" not in manifest_entries(every_file)[-1]
+
+
+@pytest.mark.parametrize("files", [None, [], "AllPrintings.json.xz"], ids=["null", "a list", "a string"])
+def test_a_manifest_whose_files_cant_be_read_warns_and_is_still_kept(every_file, tracker, files):
+    """A manifest whose `files` isn't an object of names: a warning, and the build is still
+    kept: "kept the list built …; its list of files can't be read, so nothing was sorted"."""
+    day = date(2026, 11, 4)
+    res = watch(build(day, files=files), tracker, now=when(day))
+    assert MANIFEST in res.kept and not res.failed
+    outcome, note = tracker.outcomes()[MANIFEST]
+    assert outcome == "warn" and note.startswith("kept the list built 2026-11-04 06:12 UTC (2026-11-04), ")
+    assert note.partition("; ")[2] == "its list of files can't be read, so nothing was sorted"
+    assert list(runs.kept(mtgjson.lists_dir("build-manifest"))) == ["2026-11-04T061200Z"]
+    entry = manifest_entries(every_file)[-1]
+    assert entry["result"] == "kept" and not {"unlisted", "unruled", "held", "not_held"} & entry.keys()
+    assert held_files(every_file) == []
+
+
+def test_a_manifest_that_lists_itself_counts_it_kept(every_file, tracker):
+    day = date(2026, 11, 4)
+    watch(build(day, [*KEPT_PATHS, "BuildManifest.json"]), tracker, now=when(day))
+    assert sorting(tracker) == ("ok", "17 files, 17 kept, the rest left out by rule")
+    assert held_files(every_file) == []
+
+
+def test_once_mtgjson_gives_no_answer_the_other_new_files_are_not_asked(every_file, tracker):
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens") + forms("AllRulings")
+    silent = net.NoAnswer("no answer after 3 tries (timed out)")
+    source = build(
+        day, paths, **serving("AllRulings.json.xz", silent), **serving("AllTokens.json.xz", TOKENS)
+    )
+    watch(source, tracker, now=when(day))
+    assert asked_of(source, "AllTokens") == []
+    assert sorting(tracker) == (
+        "warn",
+        f"{len(paths)} files, 16 kept; MTGJSON serves 2 files Riffle has no rule for: "
+        "AllRulings.json.xz, not held: no answer after 3 tries (timed out), asked again next build; "
+        "AllTokens.json.xz, not held: not asked once MTGJSON gave no answer, asked again next build",
+    )
+    assert manifest_entries(every_file)[-1]["not_held"] == {
+        "AllRulings.json.xz": "no answer after 3 tries (timed out)",
+        "AllTokens.json.xz": "not asked once MTGJSON gave no answer",
+    }
+
+
+def test_a_sha256_that_cant_be_had_is_named(every_file, tracker):
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    watch(build(day, paths, **serving("AllTokens.json.xz", TOKENS, net.FetchError("HTTP 503"))), tracker)
+    assert sorting(tracker)[1].endswith(
+        "AllTokens.json.xz, not held: its .sha256: HTTP 503, asked again next build"
+    )
+    assert held_files(every_file) == []
+
+
+def test_a_new_file_named_beyond_ascii_is_asked_for_by_its_quoted_name(every_file, tracker):
+    day = date(2026, 11, 4)
+    source = build(day, served_paths() + forms("Nouveautés"))
+    res = watch(source, tracker, now=when(day))
+    assert MANIFEST in res.kept and not res.failed
+    assert f"{B}/Nouveaut%C3%A9s.json.xz" in source.asked
+    assert sorting(tracker)[1].endswith("Nouveautés.json.xz, not held: HTTP 404, asked again next build")
+
+
+def test_a_run_cut_off_while_a_new_file_is_held_asks_for_the_build_again(every_file, tracker):
+    """The manifest is sorted before it's kept, and its ETag saved after, so a run stopped while it
+    holds a new file leaves the build to be asked for whole, kept and sorted by the next."""
+    day = date(2026, 11, 4)
+    paths = served_paths() + forms("AllTokens")
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    fetch_new = source.fetch_new
+
+    def cut_off(url, *args, **kwargs):
+        if url == f"{B}/AllTokens.json.xz":
+            raise KeyboardInterrupt
+        return fetch_new(url, *args, **kwargs)
+
+    source.fetch_new = cut_off
+    with pytest.raises(KeyboardInterrupt):
+        watch(source, now=when(day))
+    assert list(runs.kept(mtgjson.lists_dir("build-manifest"))) == []
+    assert "build-manifest" not in json.loads((every_file / "mtgjson" / "watch-etags.json").read_text())
+    source = build(day, paths, **serving("AllTokens.json.xz", TOKENS))
+    res = watch(source, tracker, now=when(day) + timedelta(minutes=5))
+    assert MANIFEST in res.kept
+    assert sorting(tracker)[1].endswith(
+        "AllTokens.json.xz, held as mtgjson/aside/AllTokens-2026-11-04T061200Z.json.xz"
+    )
+
+
+def test_damage_found_keeping_the_manifest_is_a_warning_though_its_files_sort_clean(
+    every_file, tracker, monkeypatch
+):
+    keep = runs.keep
+
+    def keep_and_repair(folder, at, data):
+        return dataclasses.replace(keep(folder, at, data), notes=("x.copy.json.zst was damaged: set aside",))
+
+    monkeypatch.setattr(mtgjson.runs, "keep", keep_and_repair)
+    day = date(2026, 11, 4)
+    paths = served_paths()
+    watch(build(day, paths), tracker, now=when(day))
+    assert sorting(tracker) == (
+        "warn",
+        f"x.copy.json.zst was damaged: set aside; {len(paths)} files, 16 kept, the rest left out by rule",
+    )

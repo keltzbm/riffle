@@ -166,6 +166,9 @@ returned it under `~/.local/share/riffle/`:
   it. The first sync keeps one, so the history starts three months back;
   a day missed after that (the Mac was off) comes back with the next one, kept
   when a day is missing, at most every 30 days.
+- `mtgjson/aside/` — MTGJSON's files that aren't kept as lists: one that came
+  broken, and a copy, each build, of a file MTGJSON lists that Riffle has no
+  rule for yet. Nothing is deleted.
 - `goatbots/daily/<day>.zip` — GoatBots' average sell price in tix for every
   MTGO card it trades; GoatBots is a large MTGO bot chain beside Cardhoarder,
   whose prices Scryfall and MTGJSON carry. `goatbots/card-definitions.zip`
