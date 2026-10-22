@@ -21,6 +21,11 @@ a build is new: it's written seconds before the file (the .sha256 too), so a che
 would find a new Meta.json beside the old file. A build is kept even for a day an AllPrices file
 covers: the two disagree about the same day in some cards.
 
+Each new build of BuildManifest.json, the build's list of its files, is sorted before it's kept
+(_sort): each file is kept (FILES, and AllPrices), left out by rule (another form of a kept
+file, or LEFT_OUT), or new. A new file is held, set aside as served once a build, and the step
+warns until it's given a rule; it warns too for a kept file the manifest no longer lists.
+
     <data_dir>/mtgjson/lists/<list>/<run>/         each file's lists, by the run rule:
                                                    prices-today, all-printings, and the rest
     <data_dir>/mtgjson/watch/<month>.jsonl         every check; for a file kept, its day (its
@@ -28,8 +33,9 @@ covers: the two disagree about the same day in some cards.
                                                    version, and the served file's SHA-256,
                                                    size and ETag (riffle.watching)
     <data_dir>/mtgjson/aside/<name>-<UTC time>.<suffix>  one with no Last-Modified, one that
-                                                   isn't whole, or a copy of a build kept that
-                                                   isn't the one kept
+                                                   isn't whole, a copy of a build kept that
+                                                   isn't the one kept, or a new file held,
+                                                   named by its Last-Modified
     <data_dir>/mtgjson/daily/<day>.json.xz         AllPricesToday as the sync kept it before
     <data_dir>/mtgjson/90-days/<day>.json.xz       AllPrices: <day> and the 90 days before it
 
@@ -45,6 +51,7 @@ riffle.net.
 import hashlib
 import json
 import lzma
+import math
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -52,6 +59,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import IO
+from urllib.parse import quote
 
 from riffle import net, runs, times, watching
 from riffle.config import data_dir
@@ -82,6 +90,7 @@ class File:
     meta: bool = False  # must start with its meta, as a price file does
     sha256: bool = True  # MTGJSON serves a .sha256 beside it
     most: int = MAX_FILE  # bytes it may unpack to
+    manifest: bool = False  # the build's list of its files, each new one sorted before it's kept (_sort)
 
     @property
     def served(self) -> str:
@@ -90,10 +99,7 @@ class File:
 
 
 # Every file of the build that's kept, AllPricesToday first so the rest never hold it up.
-# Checked 2026-09-29 against its BuildManifest.json. Not kept: the same build as CSV (but
-# cardIdentifiers, the uuid-to-IDs file), Parquet, SQL and SQLite; the per-set and per-format
-# files, which hold nothing AllPrintings and AtomicCards lack (checked 2026-09-30); AllPrices,
-# which snapshot() keeps.
+# Checked 2026-09-29 against its BuildManifest.json, and since against each new build's (_sort).
 FILES = (
     File(LIST, TODAY, "prices today", meta=True, most=MAX_LIST),
     File("all-printings", "AllPrintings.json.xz", "AllPrintings", meta=True),
@@ -110,7 +116,28 @@ FILES = (
     File("enum-values", "EnumValues.json.xz", "EnumValues", meta=True),
     File("compiled-list", "CompiledList.json.xz", "CompiledList", meta=True),
     File("meta", "Meta.json.xz", "Meta", meta=True),
-    File("build-manifest", "BuildManifest.json", "BuildManifest", meta=True, sha256=False),
+    File("build-manifest", "BuildManifest.json", "BuildManifest", meta=True, sha256=False, manifest=True),
+)
+
+# The rest of the build is left out on purpose: another form of a kept file (the same name up to
+# its first dot, as AllPrintings.sqlite or Meta.json), and each file one of these covers.
+LEFT_OUT = re.compile(
+    "|".join(
+        (
+            # each deck's own file, which AllDeckFiles holds
+            r"decks/.*",
+            # the build as CSV (but cardIdentifiers, the uuid-to-IDs file, kept) or Parquet
+            r"(csv|parquet)/.*",
+            r"AllPrintings(CSV|Parquet)Files\..*",
+            # each set's file (10E.json, CON_.json), which AllPrintings holds: checked 2026-09-30
+            r"[A-Z0-9_]+\..*",
+            r"AllSetFiles\..*",
+            # each format's file, which AllPrintings and AtomicCards hold: checked 2026-09-30
+            r"(Legacy|Modern|Pauper|Pioneer|Standard|Vintage)(Atomic)?\..*",
+            # listed, but not served: HTTP 404 on 2026-09-29 and 2026-10-21
+            r"ReferralMap\..*",
+        )
+    )
 )
 
 Fetch = Callable[[str], bytes | None]  # url -> body, or None for 404
@@ -176,12 +203,17 @@ def build_day(fetch: Fetch = _get) -> date:
         raise net.FetchError("Meta.json: not the expected JSON") from e
 
 
+def _digest(body: bytes) -> str:
+    """The SHA-256 a .sha256 file gives: its first word, which the file's name may follow."""
+    return (body.decode("ascii", errors="replace").split() or [""])[0].lower()
+
+
 def _expected(fetch: Fetch, name: str) -> str:
     """The SHA-256 name's .sha256 gives it."""
     digest = fetch(f"{BASE}/{name}.sha256")
     if digest is None:
         raise net.FetchError(f"{name}.sha256: HTTP 404")
-    return (digest.decode("ascii", errors="replace").split() or [""])[0].lower()
+    return _digest(digest)
 
 
 def _meta(head: bytes, name: str) -> tuple[date, str]:
@@ -325,6 +357,106 @@ def _checked(file: File, fresh: Path, got: net.Fetched, get: Fetch, now: datetim
     raise watching.broken(STORE, file.list, publish, fresh, file.served, now, why)
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
+
+
+def _stem(path: str) -> str:
+    """A path up to the first dot of its name: csv/cardIdentifiers.csv.xz is csv/cardIdentifiers."""
+    folder, slash, name = path.rpartition("/")
+    return folder + slash + name.partition(".")[0]
+
+
+def _form(forms: list[str], files: dict) -> str:
+    """Which form of a new file to hold: its .json.xz, else its smallest .xz, else its smallest,
+    by its size in the manifest, then by name."""
+
+    def size(path: str) -> tuple[float, str]:
+        entry = files[path]
+        n = entry.get("size_bytes") if isinstance(entry, dict) else None
+        return (n if isinstance(n, int) else math.inf, path)
+
+    xz = [path for path in forms if path.endswith(".xz")]
+    return min([path for path in xz if path.endswith(".json.xz")] or xz or forms, key=size)
+
+
+def _hold(path: str, fetch: Watcher, get: Fetch, fresh: Path, now: datetime, step: Step) -> tuple[str, bool]:
+    """Download a new file and set it aside as served, under its Last-Modified (or now), checked
+    against its .sha256 when MTGJSON serves one: where it went, and whether it was checked. One
+    that can't be held raises net.FetchError, or OSError, and keeps nothing. The name is the
+    manifest's, so it's quoted to be asked whatever it holds."""
+    url = f"{BASE}/{quote(path)}"
+    try:
+        got = fetch(url, fresh, _unknown, progress=step.update)
+        if got is None:
+            raise net.FetchError("HTTP 404")
+        try:
+            digest = get(f"{url}.sha256")
+        except net.FetchError as e:
+            raise type(e)(f"its .sha256: {e}") from e
+        if digest is not None and runs.file_sha256(fresh) != _digest(digest):
+            raise net.FetchError("it doesn't match its .sha256")
+        where = watching.set_aside(STORE, fresh, path.rsplit("/", 1)[-1], got.modified or now)
+        return where, digest is not None
+    finally:
+        fresh.unlink(missing_ok=True)
+
+
+def _sort(
+    data: bytes, fetch: Watcher, get: Fetch, fresh: Path, now: datetime, step: Step
+) -> tuple[str, dict, bool]:
+    """Sort the files a new build's manifest lists: kept (FILES, and AllPrices, which the sync
+    keeps), left out (another form of a kept file, or LEFT_OUT), or new, each new one held
+    (_hold) until MTGJSON gives no answer. What the step says of them, the log entry's facts,
+    and whether all is as it was."""
+    files = json.loads(data).get("files")
+    if not isinstance(files, dict):
+        return "its list of files can't be read, so nothing was sorted", {}, False
+    kept = {file.path for file in FILES} | {HISTORY}
+    stems = {_stem(path) for path in kept}
+    new: dict[str, list[str]] = {}
+    for path in files:
+        if path not in kept and _stem(path) not in stems and not LEFT_OUT.fullmatch(path):
+            new.setdefault(_stem(path), []).append(path)
+    # the manifest never lists itself
+    unlisted = sorted(kept.difference(files, (file.path for file in FILES if file.manifest)))
+    said = [f"{_count(len(files), 'file')}, {len(kept.intersection(files))} kept"]
+    facts: dict = {}
+    if unlisted:
+        said.append(f"it no longer lists {_count(len(unlisted), 'file')} Riffle keeps: {', '.join(unlisted)}")
+        facts["unlisted"] = unlisted
+    if new:
+        unruled = sorted(_form(forms, files) for forms in new.values())
+        held: dict[str, str] = {}
+        not_held: dict[str, str] = {}
+        each = []
+        silent = False
+        for path in unruled:
+            if silent:
+                why = "not asked once MTGJSON gave no answer"
+            else:
+                try:
+                    where, checked = _hold(path, fetch, get, fresh, now, step)
+                except (net.FetchError, OSError) as e:
+                    silent, why = isinstance(e, net.NoAnswer), str(e)
+                else:
+                    held[path] = where
+                    unchecked = "" if checked else " with no .sha256 to check it by"
+                    each.append(f"{path}, held as {where}{unchecked}")
+                    continue
+            not_held[path] = why
+            each.append(f"{path}, not held: {why}, asked again next build")
+        said.append(f"MTGJSON serves {_count(len(each), 'file')} Riffle has no rule for: {'; '.join(each)}")
+        facts["unruled"] = unruled
+        if held:
+            facts["held"] = held
+        if not_held:
+            facts["not_held"] = not_held
+    if not facts:
+        return f"{said[0]}, the rest left out by rule", {}, True
+    return "; ".join(said), facts, False
+
+
 def _file(file: File, fetch: Watcher, get: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
     """Ask for one file of the build once, with the ETag of the last one kept, and keep its list
     if it's new; end step saying what came. The log entry."""
@@ -359,14 +491,24 @@ def _file(file: File, fetch: Watcher, get: Fetch, tags: dict[str, str], now: dat
             else:
                 step.warn(note)
             return {"result": "known", "made": stamp} | more | facts
+        # A new manifest is sorted before it's kept: a run cut off while it holds a new file leaves
+        # the build to be asked for, and sorted, again.
+        sort = _sort(data, fetch, get, folder.parent / "held.new", now, step) if file.manifest else None
         kept = runs.keep(folder, got.modified, data)
         if got.etag:
             tags[file.list] = got.etag
         note = f"kept the list built {built} ({day}), {watching.size(len(data))}: {watching.how(kept)}"
-        if kept.notes:
-            step.warn(f"{note}; {'; '.join(kept.notes)}")
+        notes = [note, *kept.notes]
+        well = not kept.notes
+        if sort is not None:
+            said, found, fine = sort
+            notes.append(said)
+            facts |= found
+            well = well and fine
+        if well:
+            step.ok("; ".join(notes))
         else:
-            step.ok(note)
+            step.warn("; ".join(notes))
         return watching.record(kept) | facts
     finally:
         fresh.unlink(missing_ok=True)
