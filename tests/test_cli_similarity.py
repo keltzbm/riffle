@@ -132,7 +132,7 @@ def _vault(tmp_path, monkeypatch, *notes):
     """A vault under a scratch HOME holding these deck notes, as test_cli_decks builds one. Each note
     is a dict: folder, slug, main, and any of side, commander, format (modern unless said), colors."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     for note in notes:
         path = mtg / note["folder"] / f"{note['slug']}.md"
         path.parent.mkdir(parents=True, exist_ok=True)

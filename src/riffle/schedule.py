@@ -5,9 +5,10 @@ A store's watch is its own job because launchd never starts a job while that job
 still running: it skips the firing. One job for every store would stop checking them
 all while any one of them fetched.
 
-One label per job: installing a job again replaces it, it never adds a second
-one. Times are 24-hour HH:MM. Everything that touches launchd goes through `run`
-so the logic is testable without it.
+One label per job, under the project's domain: installing a job again replaces it,
+it never adds a second one. Times are 24-hour HH:MM. Everything that touches launchd
+goes through `run` so the logic is testable without it. launchd is macOS's alone, so
+elsewhere the schedule commands say so (`supported`) before they write anything.
 """
 
 import os
@@ -32,14 +33,20 @@ class Job:
     interval: int | None = None  # seconds between runs; None: at set times of day
 
 
-PREFIX = "com.keltzbm.riffle"  # every job's label starts with it
+PREFIX = "gg.riffletcg.riffle"  # every job's label starts with it: riffletcg.gg, reversed
 SYNC = Job(f"{PREFIX}-sync", ("sync",), "sync.log")
 TRICKLE = Job(f"{PREFIX}-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interval=600)
 LABEL = SYNC.label
 WATCH_EVERY = int(cadence.EVERY.total_seconds())  # a Mana Pool list lasts about 30 minutes: six tries
 _TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
+ELSEWHERE = "schedule works on macOS only (launchd); on Linux run riffle sync from cron, as the README shows"
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
+
+
+def supported() -> bool:
+    """Whether this machine has launchd to run the jobs."""
+    return sys.platform == "darwin"
 
 
 def watch_job(store: str) -> Job:

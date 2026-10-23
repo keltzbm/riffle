@@ -71,11 +71,13 @@ def test_without_a_catalog_commands_say_what_to_run(deck, monkeypatch, command):
 
 def test_an_offline_sync_writes_the_vault_from_the_catalog(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     note = "---\ngame: mtg\nformat: modern\n---\n\n## Moxfield import\n\n```\n4 Lightning Bolt\n```\n"
     (mtg / "modern" / "burn.md").write_text(note)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # the default vault, under HOME
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # every other setting its default
+    (tmp_path / "config" / "riffle").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text('vault = "~/vault"\nnotes = "games/tcg"\n')
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (tmp_path / "2026-09-26.jsonl.gz", False))
     result = run("sync", "--offline")
     assert result.exit_code == 0, result.output
@@ -87,9 +89,10 @@ def test_an_offline_sync_writes_the_vault_from_the_catalog(tmp_path, monkeypatch
 
 @pytest.fixture
 def notes(tmp_path, monkeypatch):
-    """The default vault under a fake HOME, with a deck note that links cards in its text."""
+    """The test config's vault, ~/vault, under a fake HOME, with a deck note that links cards in its
+    text."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     note = "---\ngame: mtg\nformat: modern\n---\n\n[[Sol Ring]] [[Fire|Fire // Ice]]\n\n"
     note += "```\n4 Lightning Bolt\n```\n"
@@ -101,7 +104,7 @@ def test_check_vault_says_every_link_opens_its_card(notes, opened):
     result = run("check", "vault")
     assert result.exit_code == 0, result.output
     assert (
-        result.output == "card links: 2 cards linked in ~/atelier/library/games/tcg\n"
+        result.output == "card links: 2 cards linked in ~/vault/games/tcg\n"
         "every card link opens the card's note\n"
     )
 
@@ -116,10 +119,9 @@ def test_check_vault_names_each_link_that_cant_and_exits_1(notes, opened, tmp_pa
     result = run("check", "vault")
     assert result.exit_code == 1
     assert result.output.splitlines() == [
-        "card links: 2 cards linked in ~/atelier/library/games/tcg",
+        "card links: 2 cards linked in ~/vault/games/tcg",
         "  ! [[Fire // Ice]] in 1 note: write [[Fire|Fire // Ice]]",
-        "  ! Summon Bahamut: ~/atelier/library/games/Summon Bahamut.md has that name, "
-        "so the card has no note",
+        "  ! Summon Bahamut: ~/vault/games/Summon Bahamut.md has that name, so the card has no note",
         "  ! Delver of Secrets // Insectile Aberration: its note would be Delver of Secrets, which names "
         "Lightning Bolt; no note",
         "1 link can't open the card's note; 2 linked cards without a note",

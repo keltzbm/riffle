@@ -216,8 +216,9 @@ def precon_boxes(mtg_dir: Path) -> dict[str, list[Path]]:
     return found
 
 
-def find(mtg_dir: Path, ref: str) -> Deck:
-    """A deck by slug ("aesi-lands") or by path to a .md or .txt file."""
+def from_file(ref: str) -> Deck | None:
+    """A deck by the path to its .md or .txt file, which needs no vault; None for a reference that
+    isn't one."""
     p = Path(ref).expanduser()
     if p.suffix == ".txt" and p.exists():
         return parse_text(p.read_text(encoding="utf-8-sig"), slug=p.stem)
@@ -226,6 +227,14 @@ def find(mtg_dir: Path, ref: str) -> Deck:
         if deck:
             return deck
         raise ValueError(f"{p} has no game: mtg frontmatter or no decklist block")
+    return None
+
+
+def find(mtg_dir: Path, ref: str) -> Deck:
+    """A deck by slug ("aesi-lands") or by path to a .md or .txt file (from_file)."""
+    found = from_file(ref)
+    if found is not None:
+        return found
     for note in deck_notes(mtg_dir):
         if note.stem == ref:
             deck = read_deck(note)

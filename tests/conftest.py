@@ -1,6 +1,7 @@
 """Shared fixtures: an in-memory Catalog (no database, no download) and a test Postgres."""
 
 import os
+import pwd
 import re
 import time
 from collections.abc import Callable
@@ -238,15 +239,24 @@ def opened(cat, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path_factory, monkeypatch):
-    """Every test gets its own config and data directories, and a configured database no
-    one can reach, so nothing a test runs touches real files or the real database. Tests
-    that need their own set XDG_* again; database tests use the pg fixtures below."""
-    home = tmp_path_factory.mktemp("xdg")
+    """Every test gets its own home, config and data directories, a vault at ~/vault, and a
+    configured database no one can reach, so nothing a test runs touches real files or the
+    real database. Tests that need their own set HOME and XDG_* again; database tests use the
+    pg fixtures below, and libpq still finds the password in the real ~/.pgpass."""
+    home = tmp_path_factory.mktemp("home")
     (home / "config" / "riffle").mkdir(parents=True)
     (home / "config" / "riffle" / "config.toml").write_text(
-        'notes = "games/tcg"\ndatabase_url = "postgresql+psycopg://tcg@127.0.0.1:1/unreachable"\n'
+        'vault = "~/vault"\nnotes = "games/tcg"\n'
+        'database_url = "postgresql+psycopg://tcg@127.0.0.1:1/unreachable"\n'
         'card_images = "link"\n'  # no test fetches a card's picture unless it says so
     )
+    if "PGPASSFILE" not in os.environ:  # the user's home by the password database, not by HOME
+        try:
+            real = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except KeyError:  # a container's user with no entry: HOME, before it's changed below
+            real = Path.home()
+        monkeypatch.setenv("PGPASSFILE", str(real / ".pgpass"))
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     monkeypatch.setattr(disk, "WARN_BELOW", 0)  # the machine's own free space warns nowhere

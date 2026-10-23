@@ -29,5 +29,8 @@ def up(repo: Path = REPO, run: Runner = _run, which: Callable[[str], str | None]
     if not compose_file.exists():
         raise FileNotFoundError(f"no compose.yaml in {repo}: run Riffle from its git checkout")
     if which("docker") is None:
-        raise FileNotFoundError("docker isn't on PATH: install and start OrbStack (or Docker) first")
+        raise FileNotFoundError(
+            "docker isn't on PATH: install Docker Engine (Linux) or OrbStack or Docker Desktop (macOS),"
+            " and start it"
+        )
     return run(command(compose_file)).returncode

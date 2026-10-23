@@ -26,7 +26,7 @@ def _vault(tmp_path, monkeypatch, *notes: dict) -> None:
     """A vault under a scratch HOME (the default vault lives under it) holding these notes. Each
     is a dict: folder, slug, cards, and any of format, strategy, archetype, colors, checked."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     for note in notes:
         path = mtg / note["folder"] / f"{note['slug']}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -194,6 +194,6 @@ def test_to_buy_reads_the_collection_and_keeps_decks_with_at_most_n_left(tmp_pat
 
 def test_a_note_that_names_no_colors_shows_none(tmp_path, monkeypatch):
     _vault(tmp_path, monkeypatch, BURN)
-    note = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg" / "modern" / "burn.md"
+    note = tmp_path / "vault" / "games" / "tcg" / "mtg" / "modern" / "burn.md"
     note.write_text(note.read_text().replace("colors: [R]\n", ""))
     assert decks() == ["burn  modern  aggro    60 cards  not checked"]  # an empty column keeps its place

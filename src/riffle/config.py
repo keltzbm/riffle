@@ -1,6 +1,6 @@
 """Settings from $XDG_CONFIG_HOME/riffle/config.toml, with sensible defaults.
 
-    vault = "~/atelier/library"
+    vault = "~/notes"
     notes = "games/tcg"
     database_url = "postgresql+psycopg://tcg@localhost:5432/tcg"
     card_notes = true
@@ -11,7 +11,9 @@ The vault is the Obsidian vault itself; notes is the folder in it that holds a
 folder per game (mtg/, one-piece/, fab/, …), relative to the vault. Riffle reads
 decks from mtg/ only for now, and a notes folder without one syncs no decks. A
 config that names no notes folder was written when vault named the folder
-holding tcg/, and is read that way.
+holding tcg/, and is read that way. No vault is set until the config names one
+(riffle init asks): a command that reads the vault then says what to add, and the
+sync keeps the day's data but writes no notes.
 
 card_notes puts a note behind every card link, so hovering one shows the card; card_images
 is "cache" to keep each picture in the vault (about 100 KB a card), "link" to show
@@ -33,7 +35,9 @@ What you own comes from the ManaBox export alone: scan a precon into ManaBox
 to count it.
 """
 
+import json
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,7 +58,7 @@ def config_path() -> Path:
 def data_dir() -> Path:
     """Bulk data, daily price snapshots, the collection CSV and sync state.
 
-    Never inside ~/atelier: that tree is synced.
+    Never inside the vault or another synced folder: it's large, and much of it changes daily.
     """
     return _xdg("XDG_DATA_HOME", ".local/share") / "riffle"
 
@@ -62,10 +66,13 @@ def data_dir() -> Path:
 DEFAULT_DATABASE_URL = "postgresql+psycopg://tcg@localhost:5432/tcg"
 CARD_IMAGES = ("cache", "link", "off")  # kept in the vault, linked from Scryfall, or none
 HIDDEN_FOLDER = ".data"  # in mtg/; Obsidian indexes no folder whose name starts with a dot
+_VAULT_KEY = re.compile(r"""\s*(?:vault|"vault"|'vault')\s*=""")  # the key, bare or quoted
+_TABLE = re.compile(r"\s*\[")  # a table's header: keys after it aren't the config's own
 
 DEFAULT_CONFIG = f"""\
 # riffle configuration
-vault = "~/atelier/library"
+# your Obsidian vault, e.g. "~/notes"; riffle init --vault sets it
+vault = ""
 # the folder in the vault that holds a folder per game (mtg/, one-piece/, …);
 # Riffle reads decks from mtg/ only for now
 notes = "games/tcg"
@@ -83,8 +90,8 @@ hidden_folder = "{HIDDEN_FOLDER}"
 
 @dataclass
 class Config:
-    vault: Path
-    notes: Path  # the folder holding a folder per game, resolved against the vault
+    vault: Path | None  # None until the config names one
+    notes: Path | None  # the folder holding a folder per game, resolved against the vault
     database_url: str = DEFAULT_DATABASE_URL
     obsolete: dict[str, str] | None = None  # key -> why it's ignored
     old_notes: str | None = None  # what a config without a notes line is read as, and the change it needs
@@ -95,8 +102,8 @@ class Config:
     backup_log: Path | None = None  # a backup job's log, for riffle status
 
     @property
-    def mtg_dir(self) -> Path:
-        return self.notes / "mtg"
+    def mtg_dir(self) -> Path | None:
+        return self.notes / "mtg" if self.notes else None
 
     @property
     def collection_csv(self) -> Path:
@@ -128,13 +135,26 @@ def _old_notes(vault: Path) -> str:
     return notes if root == vault else f'set vault = "{tilde(root)}" and {notes}'
 
 
+def no_vault() -> str:
+    """What a command that reads the vault says when the config names none."""
+    return f'no vault set: set vault = "~/your-vault" in {tilde(config_path())}, or run riffle init'
+
+
 def load() -> Config:
     path = config_path()
-    raw = tomllib.loads(path.read_text()) if path.exists() else tomllib.loads(DEFAULT_CONFIG)
-    vault = Path(raw.get("vault", "~/atelier/library")).expanduser()
-    old = "notes" not in raw  # written when vault named the folder holding tcg/
-    notes = vault / ("tcg" if old else Path(raw["notes"]).expanduser())
+    raw = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else tomllib.loads(DEFAULT_CONFIG)
     unread = []
+    named = raw.get("vault", "")
+    if not isinstance(named, str):
+        unread.append(f"vault in {tilde(path)} is {named!r}, not a folder; no vault is used")
+        named = ""
+    try:
+        vault = Path(named).expanduser() if named.strip() else None
+    except RuntimeError:  # ~name for someone with no home here
+        unread.append(f"vault in {tilde(path)} is {named!r}, a home no one has here; no vault is used")
+        vault = None
+    old = "notes" not in raw  # written when vault named the folder holding tcg/
+    notes = vault / ("tcg" if old else Path(raw["notes"]).expanduser()) if vault else None
     card_notes = raw.get("card_notes", True)
     if not isinstance(card_notes, bool):
         unread.append(f"card_notes in {tilde(path)} is {card_notes!r}, not true or false; true is used")
@@ -166,7 +186,7 @@ def load() -> Config:
         database_url=raw.get("database_url", DEFAULT_DATABASE_URL),
         obsolete={k: why for k, why in OBSOLETE_KEYS.items() if k in raw} or None,
         old_notes=f"{tilde(path)} names no notes folder, so it's {tilde(notes)}: {_old_notes(vault)}"
-        if old
+        if old and vault and notes
         else None,
         card_notes=card_notes,
         card_images=images,
@@ -180,5 +200,33 @@ def write_default() -> Path:
     path = config_path()
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(DEFAULT_CONFIG)
+        path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     return path
+
+
+def set_vault(folder: Path) -> None:
+    """Name `folder` as the vault, by ~ when it's under home: the config's own vault line, the one
+    before any table, is rewritten, or one added at the top, and every other line is left as it
+    was. A config that wouldn't then read back with that vault is left alone: ValueError."""
+    path = config_path()
+    named = json.dumps(tilde(folder), ensure_ascii=False)  # JSON's escapes are TOML's
+    with path.open(encoding="utf-8", newline="") as f:  # each line's own ending, \r\n or \n
+        lines = f.read().splitlines(keepends=True)
+    top = next((n for n, line in enumerate(lines) if _TABLE.match(line)), len(lines))
+    at = next((n for n in range(top) if _VAULT_KEY.match(lines[n])), None)
+    near = lines[at if at is not None else 0] if lines else "\n"
+    ending = near[len(near.rstrip("\r\n")) :] or "\n"  # the replaced line's, or the first line's
+    line = f"vault = {named}{ending}"
+    if at is None:
+        lines.insert(0, line)
+    else:
+        lines[at] = line
+    text = "".join(lines)
+    try:
+        read = tomllib.loads(text).get("vault")
+    except tomllib.TOMLDecodeError:
+        read = None
+    if read != tilde(folder):
+        raise ValueError(f"{tilde(path)} can't take a vault line as it is: set vault = {named} in it by hand")
+    with path.open("w", encoding="utf-8", newline="") as f:
+        f.write(text)

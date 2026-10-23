@@ -33,11 +33,21 @@ over a network, the license requires you to offer them its source code.
 
 ## For invited contributors
 
-Set up as the [README](README.md#install) says, then bring up the database the tests use:
+Set up as the [README](README.md#install) says. Its install writes the database's password into
+`.env` and `~/.pgpass` and starts Postgres, which the tests use; from a clone made another way, the
+same steps:
 
-```bash
+```sh
+pw=$(openssl rand -hex 24)
+printf '%s\n' "POSTGRES_PASSWORD=$pw" > .env
+printf '%s\n' "localhost:5432:*:tcg:$pw" >> ~/.pgpass
+chmod 600 ~/.pgpass
+unset pw
 riffle db up && riffle db upgrade
 ```
+
+Without Postgres the database tests skip, and the 90% coverage floor below then fails. The
+devcontainer ([GitHub Codespaces](README.md#github-codespaces)) has both.
 
 Every change goes on its own branch and needs:
 

@@ -371,7 +371,7 @@ def home(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".local" / "share"))
     (tmp_path / ".config" / "riffle").mkdir(parents=True)
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "commander").mkdir(parents=True)
     (mtg / "commander" / "aesi-lands.md").write_text(_note(*IN_VIEW))
     return mtg
@@ -379,7 +379,7 @@ def home(tmp_path, monkeypatch, opened):
 
 def _settings(line: str) -> None:
     """The config riffle sync reads, with one more line."""
-    config.config_path().write_text(f'notes = "games/tcg"\ncard_images = "link"\n{line}\n')
+    config.config_path().write_text(f'vault = "~/vault"\nnotes = "games/tcg"\ncard_images = "link"\n{line}\n')
 
 
 def test_the_sync_names_the_logs_moved_and_the_notes_removed_ten_at_most(home):
