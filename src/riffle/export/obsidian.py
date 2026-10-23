@@ -7,6 +7,9 @@ In the notes folder (config's notes):
     mtg/_log/<deck>-versions.md      append-only, only when a list changes
     mtg/_log/prices.md               no longer appended: `riffle prices log` reads the store
 
+A deck whose note is in the hidden folder (config's hidden_folder, mtg/.data/) has its data
+note and log in mtg/.data/_generated/ and mtg/.data/_log/ instead, out of Obsidian's view.
+
 Every file is written whole (a temporary file renamed over it), so a sync service never
 uploads half a note.
 
@@ -198,12 +201,27 @@ def save_state(state: dict) -> None:
     tmp.replace(path)
 
 
+def move_log(log_dir: Path, elsewhere: Path, slug: str) -> bool:
+    """Bring a deck's version log to log_dir/<slug>-versions.md, where append_version reads it:
+    from the dotted name 0.2 wrote, or from elsewhere, the other _log/, under either name, when
+    it's only there, so its history goes on beside its list. True when it came from elsewhere. A
+    log in both folders stays where it is (vault.doubled_logs names them)."""
+    log = log_dir / f"{slug}-versions.md"
+    legacy = f"{slug}.versions.md"
+    if (log_dir / legacy).exists() and not log.exists():
+        (log_dir / legacy).rename(log)
+    there = next((p for p in (elsewhere / log.name, elsewhere / legacy) if p.exists()), None)
+    if log.exists() or there is None:
+        return False
+    log_dir.mkdir(parents=True, exist_ok=True)
+    there.rename(log)
+    return True
+
+
 def append_version(log_dir: Path, deck: Deck, catalog: Catalog, today: str, state: dict) -> bool:
     """Append a +/- diff when a deck's list changed since the last sync, and record the new
-    list in state (see load_state). The caller saves the state once, after the last deck."""
-    legacy = log_dir / f"{deck.slug}.versions.md"
-    if legacy.exists() and not (log_dir / f"{deck.slug}-versions.md").exists():
-        legacy.rename(log_dir / f"{deck.slug}-versions.md")
+    list in state (see load_state). The caller brings the log into place first (move_log) and
+    saves the state once, after the last deck."""
     cards: Counter[str] = Counter()
     for e in deck.entries:
         cards[catalog.name(e.card_id) if e.card_id else e.name] += e.quantity

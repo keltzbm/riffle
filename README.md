@@ -276,6 +276,14 @@ The log's times are UTC; what Riffle prints to the terminal is the Mac's time,
 with the zone. The notes it writes are dated in UTC, and the price log by the
 Scryfall day of the prices it logs.
 
+Decks nobody opens one at a time can live in `mtg/.data/`: Obsidian never indexes a
+folder whose name starts with a dot, so a vault with thousands of such lists stays
+light. A deck whose note sits there has its data note and version log there too, in
+`mtg/.data/_generated/` and `mtg/.data/_log/`, and a deck moved in or out keeps its
+log, which the sync moves beside the list with its history. `riffle decks`, `own`,
+`price` and `compare` read those decks as any others; card notes follow only the
+notes in view. `hidden_folder` in the config names the folder, `.data` by default.
+
 ## Database (Postgres)
 
 From v0.4.0 the data moves into Postgres, run locally in Docker (OrbStack on the
@@ -351,10 +359,10 @@ gh codespace stop                                   # stops by itself when idle,
 
 | What | Where |
 |---|---|
-| Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status` |
+| Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status`; `hidden_folder` (default `.data`) is the folder in `mtg/` whose decks stay out of Obsidian's view |
 | Card data, collection, every ManaBox export (`manabox/`), sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
 | Database | Postgres 18 in Docker (`compose.yaml`, volume `tcg_pgdata`); `database_url` in config, password in `~/.pgpass` |
-| Output | `mtg/_generated/` and `mtg/_log/` in the notes folder — nothing else |
+| Output | `mtg/_generated/` and `mtg/_log/` in the notes folder, and `mtg/.data/_generated/` and `mtg/.data/_log/` for the decks in `mtg/.data/` — nothing else |
 
 ## Invariants
 

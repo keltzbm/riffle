@@ -8,6 +8,7 @@ from pathlib import Path
 from riffle import vault
 from riffle.analysis import ownership, pricing
 from riffle.analysis.resolve import counts, resolve_deck, resolve_holdings
+from riffle.config import HIDDEN_FOLDER
 from riffle.export import cards, formats, obsidian
 from riffle.ingest import arena, manabox, precons
 from riffle.models import Deck, Holding
@@ -75,11 +76,19 @@ class SyncResult:
     decks: list[str] = field(default_factory=list)
     changed_notes: int = 0
     versions: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)  # version logs brought from the other _log/
     removed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (step, why), for the CLI to report
     card_notes: cards.Result | None = None  # None when card notes are off
     cards_removed: int = 0  # with card notes off, the notes removed
+
+
+def _homes(mtg_dir: Path, hidden: str, note: Path) -> tuple[Path, Path]:
+    """Where a deck's data note and log go, and the other place: mtg/<hidden>/ for a note in it,
+    out of Obsidian's view, else mtg/."""
+    inside = mtg_dir / hidden
+    return (inside, mtg_dir) if note.is_relative_to(inside) else (mtg_dir, inside)
 
 
 def run(
@@ -88,16 +97,19 @@ def run(
     catalog: Catalog,
     today: str | None = None,
     card_notes: CardNotes | None = None,
+    hidden: str = HIDDEN_FOLDER,
 ) -> SyncResult:
     """Rebuild the generated notes, writing those that changed, and append the version logs,
-    dated today in UTC. The state the logs diff against is saved once, after the last deck,
-    or when the run is cut off before it. Then a note for every card a note links, unless
-    card_notes is None (off), which removes them."""
+    dated today in UTC. A deck whose note is in mtg/<hidden>/ has both there, in its own
+    _generated/ and _log/, out of Obsidian's view. The state the logs diff against is saved
+    once, after the last deck, or when the run is cut off before it. Then a note for every
+    card a note links, unless card_notes is None (off), which removes them."""
     today = today or obsidian.today()
     gen, log = mtg_dir / "_generated", mtg_dir / "_log"
     res = SyncResult()
     pins = formats.owned_printings(inv.holdings)
-    keep = {"collection-summary.md"}
+    keep = {gen: {"collection-summary.md"}}  # what each _generated/ keeps
+    keep.setdefault(mtg_dir / hidden / "_generated", set())
     unreadable: vault.Unreadable = []
     played: set[str] = set()  # the formats the lists are in
     try:
@@ -108,7 +120,14 @@ def run(
         res.failed.append(("version logs", why))
         state = {}
     try:
-        for deck in vault.decks(mtg_dir, unreadable):
+        found = vault.decks(mtg_dir, unreadable)
+        paths: dict[str, list[Path]] = {}
+        for deck in found:
+            paths.setdefault(deck.slug, []).append(Path(deck.meta["path"]))
+        # two notes with one name would take one log back and forth between the folders
+        shared = {slug: ps for slug, ps in paths.items() if len(ps) > 1}
+        for deck in found:
+            home, away = _homes(mtg_dir, hidden, Path(deck.meta["path"]))
             rep = analyse(deck, inv, catalog)
             res.decks.append(deck.slug)
             imports = {
@@ -117,10 +136,12 @@ def run(
                 "MTGO import": formats.mtgo(deck, catalog),
             }
             text = obsidian.deck_data(deck, rep.rows, rep.price, rep.unresolved, imports)
-            res.changed_notes += obsidian.write_deck(gen, deck, text)
+            res.changed_notes += obsidian.write_deck(home / "_generated", deck, text)
             played.add(deck.format.lower())
-            keep.add(f"{deck.slug}-data.md")
-            if obsidian.append_version(log, deck, catalog, today, state):
+            keep[home / "_generated"].add(f"{deck.slug}-data.md")
+            if deck.slug not in shared and obsidian.move_log(home / "_log", away / "_log", deck.slug):
+                res.moved.append(f"{deck.slug}-versions.md")
+            if obsidian.append_version(home / "_log", deck, catalog, today, state):
                 res.versions.append(deck.slug)
             if rep.unresolved:
                 res.warnings.append(f"{deck.slug}: unmatched {', '.join(rep.unresolved)}")
@@ -128,16 +149,35 @@ def run(
         if res.versions:  # the logs appended so far, even when a deck stopped the run
             obsidian.save_state(state)
     res.changed_notes += obsidian.write_summary(gen, obsidian.collection_summary(inv.holdings, catalog))
-    keep.update(f"{p.stem}-data.md" for p, _ in unreadable)  # kept as it was until the note reads again
-    res.removed = obsidian.prune(gen, keep)
+    for p, _ in unreadable:  # kept as it was, in either folder, until the note reads again
+        for names in keep.values():
+            names.add(f"{p.stem}-data.md")
+    for folder, names in keep.items():
+        pruned = obsidian.prune(folder, names)
+        res.removed += pruned if folder == gen else [f"{hidden}/_generated/{name}" for name in pruned]
     obsidian.close_price_log(log / "prices.md", today)
     if card_notes is None:
         res.cards_removed = cards.remove(gen)
     else:
         _card_notes(res, mtg_dir, card_notes, catalog, inv, played)
-    copies = [p.relative_to(mtg_dir.parent).as_posix() for p in vault.conflicts(mtg_dir)]
+    copies = [p.relative_to(mtg_dir.parent).as_posix() for p in vault.conflicts(mtg_dir, hidden)]
     if copies:
         res.warnings.append(f"sync-conflict copies, not read; merge each by hand: {', '.join(copies)}")
+    doubled = vault.doubled_logs(mtg_dir, hidden)
+    if doubled:
+        res.warnings.append(
+            f"version logs in both {mtg_dir.name}/_log/ and {mtg_dir.name}/{hidden}/_log/: each deck logs "
+            "into the one beside its list, and the other is left as it is; merge each pair by hand: "
+            f"{', '.join(doubled)}"
+        )
+    if shared:
+        each = "; ".join(
+            f"{slug} ({', '.join(p.relative_to(mtg_dir.parent).as_posix() for p in ps)})"
+            for slug, ps in shared.items()
+        )
+        res.warnings.append(
+            f"deck notes sharing a name, whose version logs mix and aren't moved; rename one of each: {each}"
+        )
     if unreadable:
         whys = {p.relative_to(mtg_dir.parent).as_posix(): why for p, why in unreadable}
         notes = ", ".join(f"{name} ({why})" for name, why in whys.items())
