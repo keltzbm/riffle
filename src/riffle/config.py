@@ -51,8 +51,13 @@ def _xdg(var: str, default: str) -> Path:
     return Path(os.environ.get(var) or Path.home() / default)
 
 
+def config_home() -> Path:
+    """Where programs keep their settings: $XDG_CONFIG_HOME, else ~/.config."""
+    return _xdg("XDG_CONFIG_HOME", ".config")
+
+
 def config_path() -> Path:
-    return _xdg("XDG_CONFIG_HOME", ".config") / "riffle" / "config.toml"
+    return config_home() / "riffle" / "config.toml"
 
 
 def data_dir() -> Path:

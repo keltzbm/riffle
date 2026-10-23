@@ -15,7 +15,6 @@ SHELLS = {"bash", "sh", "shell", "zsh", "console"}
 ZSH_ONLY = re.compile(r"\b(?:print -r|setopt)\b")
 # a crontab line, five fields or an @daily, with riffle sync as its command
 CRON_LINE = re.compile(r"^\s*(?:@\w+|(?:[\d*,/-]+\s+){5}).*\briffle sync\b", re.M)
-TIMERS = ("systemd", "systemctl", "OnCalendar")
 
 
 def own_names(root: Path) -> list[str]:
@@ -69,11 +68,10 @@ def test_the_check_finds_a_planted_zsh_builtin():
     assert zsh_builtins(planted) == ['print -r -- "POSTGRES_PASSWORD=$pw" > .env', "setopt extended_glob"]
 
 
-def test_the_readme_schedules_on_macos_only_and_gives_cron_for_linux():
+def test_the_readme_schedules_linux_with_systemd_not_cron():
     text = README.read_text(encoding="utf-8")
-    assert re.search(r"macOS[ -]only|only on macOS", text), "the schedule section doesn't say macOS only"
-    assert CRON_LINE.search(text), "no cron line running riffle sync"
-    assert not any(word in body for _, body in FENCE.findall(text) for word in TIMERS)
+    assert not CRON_LINE.search(text), "a cron line for riffle sync, where riffle schedule writes a timer"
+    assert "systemd" in text
 
 
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"

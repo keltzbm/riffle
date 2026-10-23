@@ -1524,7 +1524,7 @@ def check_cmd(
     try:
         installed = [job for job, _ in status.installed_jobs()]
     except OSError:
-        # no launchctl to ask, so no jobs to judge: they run only on a Mac
+        # no scheduler to ask, so no jobs to judge
         installed = []
     logs, unread = status.job_logs(installed)
     today = times.now().astimezone(UTC).date()
@@ -1679,18 +1679,70 @@ def _watch_vault(interval: float) -> None:
 
 
 schedule_app = typer.Typer(
-    help="The launchd jobs (macOS): `riffle sync` daily, the MTGO trickle, and each store's watch."
+    help="The scheduled jobs, launchd's on macOS and systemd's on Linux: `riffle sync` daily, the MTGO"
+    " trickle, and each store's watch."
 )
 app.add_typer(schedule_app, name="schedule")
 
 
-def _launchd() -> None:
-    """Stop a schedule command where there's no launchd, before it writes a plist or asks launchctl."""
+def _scheduler() -> None:
+    """Stop a schedule command where there's no scheduler, before it writes anything."""
     from riffle import schedule as sched
 
     if not sched.supported():
-        _echo(sched.ELSEWHERE, err=True)
+        _echo(sched.unsupported(), err=True)
         raise typer.Exit(2)
+
+
+def _installed(path: Path) -> None:
+    """On Linux, a line for each timer an install command enabled."""
+    from riffle import schedule as sched
+
+    if sched.backend() == "systemd":
+        typer.echo(f"systemd timer {path.name} enabled")
+
+
+def _lingering() -> None:
+    """On Linux, a line when the user's timers would stop at logout; nothing when they won't, or when
+    logind can't say."""
+    import getpass
+
+    from riffle import schedule as sched
+    from riffle import systemd
+
+    if sched.backend() == "systemd" and systemd.lingering() is False:
+        typer.echo(
+            f"jobs stop when you log out; to keep them: sudo loginctl enable-linger {getpass.getuser()}"
+        )
+
+
+def _remove(job) -> bool:
+    """sched.remove, or exit 2 saying why the scheduler wouldn't let the job go."""
+    from riffle import schedule as sched
+
+    try:
+        return sched.remove(job=job)
+    except RuntimeError as e:
+        raise typer.BadParameter(str(e)) from e
+
+
+def _ran(st) -> str:
+    """How the job's last run went: launchd counts a job's runs, systemd doesn't."""
+    from riffle import schedule as sched
+
+    ended = f"last exit {st.last_exit or '—'}   state {st.state or '—'}"
+    return f"  {ended}" if sched.backend() == "systemd" else f"  runs       {st.runs or '0'}   {ended}"
+
+
+def _where(job) -> str:
+    """The line naming the file that holds the job: its plist, or on Linux its timer."""
+    from riffle import schedule as sched
+
+    if sched.backend() == "systemd":
+        from riffle import systemd
+
+        return f"  units      {systemd.unit_paths(job)[0]}"
+    return f"  plist      {sched.plist_path(job)}"
 
 
 def _show_schedule() -> None:
@@ -1715,7 +1767,11 @@ def _show_every(job, what: str, start: str) -> None:
     """A job that runs every few minutes: whether it's loaded, and how its runs went."""
     from riffle import schedule as sched
 
-    st = sched.status(job=job)
+    try:
+        st = sched.status(job=job)
+    except OSError as e:  # a scheduler that can't be asked: a user manager out of reach, say
+        typer.echo(f"{job.label}\n  loaded     unknown ({e})")
+        return
     if not st.installed and not st.loaded:
         typer.echo(f"no {what} job — start one with: {start}")
         return
@@ -1726,13 +1782,11 @@ def _show_every(job, what: str, start: str) -> None:
         typer.echo(line)
     typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + start}")
     if st.loaded:
-        typer.echo(
-            f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
-        )
+        typer.echo(_ran(st))
     for line in after:
         typer.echo(line)
     typer.echo(log)
-    typer.echo(f"  plist      {sched.plist_path(job)}")
+    typer.echo(_where(job))
 
 
 def _show_runs(job) -> tuple[list[str], list[str], str]:
@@ -1769,42 +1823,47 @@ def _show_runs(job) -> tuple[list[str], list[str], str]:
 
 
 def _when(t: datetime) -> str:
-    """A time as schedule show prints it: the Mac's, as launchd runs the jobs by it."""
+    """A time as schedule show prints it: this machine's, as its scheduler runs the jobs by it."""
     return times.local(t, "%a %Y-%m-%d %H:%M")
 
 
 def _show_sync() -> None:
     from riffle import schedule as sched
 
-    st = sched.status()
+    try:
+        st = sched.status()
+    except OSError as e:  # a scheduler that can't be asked: a user manager out of reach, say
+        typer.echo(f"{sched.LABEL}\n  loaded     unknown ({e})")
+        return
     if not st.installed and not st.loaded:
         typer.echo("no schedule — set one with: riffle schedule set 07:00")
         return
-    now = times.now().astimezone()  # launchd runs the job by the Mac's clock
-    at = ", ".join(sched.fmt(t) for t in st.times) or "(none in plist)"
+    now = times.now().astimezone()  # the scheduler runs the job by this machine's clock
+    at = ", ".join(sched.fmt(t) for t in st.times) or (
+        "(none in the timer)" if sched.backend() == "systemd" else "(none in plist)"
+    )
     nxt = sched.next_run(st.times, now.replace(tzinfo=None))
     first, after, log = _show_runs(sched.SYNC)
     typer.echo(f"{sched.LABEL}")
-    typer.echo(f"  times      {at}  (24-hour, daily, the Mac's time: {now.tzname()})")
+    whose = "this machine's" if sched.backend() == "systemd" else "the Mac's"
+    typer.echo(f"  times      {at}  (24-hour, daily, {whose} time: {now.tzname()})")
     for line in first:
         typer.echo(line)
     typer.echo(f"  next run   {_when(nxt.astimezone())}" if nxt else "  next run   —")
     reload = "riffle schedule set " + " ".join(sched.fmt(t) for t in st.times)
     typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + reload}")
     if st.loaded:
-        typer.echo(
-            f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
-        )
+        typer.echo(_ran(st))
     for line in after:
         typer.echo(line)
     typer.echo(log)
-    typer.echo(f"  plist      {sched.plist_path()}")
+    typer.echo(_where(sched.SYNC))
 
 
 @schedule_app.callback(invoke_without_command=True)
 def schedule_main(ctx: typer.Context) -> None:
     """Show every job (times, next run, last result). Subcommands: set, remove, trickle, watch."""
-    _launchd()  # before a subcommand's arguments are read, so a wrong one still hears why
+    _scheduler()  # before a subcommand's arguments are read, so a wrong one still hears why
     if ctx.invoked_subcommand is None:
         _show_schedule()
 
@@ -1824,9 +1883,10 @@ def schedule_set(
 
     try:
         parsed = sched.parse_times(times)
-        sched.install(parsed)
+        _installed(sched.install(parsed))
     except (ValueError, RuntimeError) as e:
         raise typer.BadParameter(str(e)) from e
+    _lingering()
     _show_schedule()
 
 
@@ -1835,7 +1895,7 @@ def schedule_remove() -> None:
     """Unload and delete the daily sync job."""
     from riffle import schedule as sched
 
-    typer.echo(f"removed {sched.LABEL}" if sched.remove() else "no schedule to remove")
+    typer.echo(f"removed {sched.LABEL}" if _remove(sched.SYNC) else "no schedule to remove")
 
 
 @schedule_app.command("trickle")
@@ -1846,13 +1906,14 @@ def schedule_trickle(
     from riffle import schedule as sched
 
     if remove:
-        removed = sched.remove(job=sched.TRICKLE)
+        removed = _remove(sched.TRICKLE)
         typer.echo(f"removed {sched.TRICKLE.label}" if removed else "no trickle job to remove")
         return
     try:
-        sched.install([], job=sched.TRICKLE)
+        _installed(sched.install([], job=sched.TRICKLE))
     except RuntimeError as e:
         raise typer.BadParameter(str(e)) from e
+    _lingering()
     _show_every(sched.TRICKLE, "trickle", "riffle schedule trickle")
 
 
@@ -1867,13 +1928,14 @@ def schedule_watch(
     jobs = _watch_jobs()
     if remove:
         for job in jobs:
-            typer.echo(f"removed {job.label}" if sched.remove(job=job) else f"no {job.label} to remove")
+            typer.echo(f"removed {job.label}" if _remove(job) else f"no {job.label} to remove")
         return
     try:
         for job in jobs:
-            sched.install([], job=job)
+            _installed(sched.install([], job=job))
     except RuntimeError as e:
         raise typer.BadParameter(str(e)) from e
+    _lingering()
     for n, job in enumerate(jobs):
         if n:
             typer.echo()
