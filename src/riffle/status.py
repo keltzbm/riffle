@@ -168,7 +168,7 @@ def installed_jobs(
     status: Callable[[schedule.Job], schedule.Status] = lambda job: schedule.status(job=job),
 ) -> list[tuple[schedule.Job, schedule.Status]]:
     """Each job installed or loaded, of the sync, the MTGO trickle and each store's watch, with
-    what launchd says of it; OSError when launchctl can't be asked."""
+    what its scheduler says of it; OSError when that can't be asked."""
     every = [schedule.SYNC, schedule.TRICKLE, *(schedule.watch_job(store) for store in watching.STORES)]
     found = [(job, status(job)) for job in every]
     return [(job, st) for job, st in found if st.installed or st.loaded]
@@ -250,7 +250,7 @@ def jobs_lines(
     now: datetime | None = None,
     days: int = DAYS,
 ) -> list[str]:
-    """Each scheduled job: whether it's loaded, and any whose last run didn't exit 0, by launchd,
+    """Each scheduled job: whether it's loaded, and any whose last run didn't exit 0, by its scheduler,
     with the sync's failed run from its log until a run passes (launchd's count starts again at
     each reload, so its last exit can be 0 the morning after ten failures). Then a line each for
     the steps that failed in the last 24 hours, each day of the last `days` the jobs fired too

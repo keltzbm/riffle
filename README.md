@@ -284,22 +284,26 @@ riffle sync --watch                # resync on every deck-note save or new ManaB
 riffle watch manapool              # keep any new Mana Pool list (or cardkingdom, cardmarket, tcgcsv, mtgjson, goatbots)
 riffle schedule watch              # that, every 5 minutes, a job per store (all but Card Kingdom and Mana Pool asked
                                    # when due); --remove to stop
-riffle schedule set 07:00 19:30    # launchd job at these 24-hour times; replaces any old schedule
+riffle schedule set 07:00 19:30    # the sync at these 24-hour times; replaces any old schedule
 riffle schedule                    # times, next run, last result, log path
 riffle schedule remove
 riffle schedule trickle            # the MTGO trickle, every 10 minutes; --remove to stop it
 ```
 
-The scheduled jobs are launchd's, so `riffle schedule` works on macOS only; anywhere else it says
-so and changes nothing. On Linux, run `riffle sync` from cron instead: `crontab -e`, then a line
-like this one, which syncs at 07:00 and 19:00 and appends to the log the Mac's job keeps. Cron
-knows nothing of `.venv`, so the line names Riffle by its full path: the clone's
-`.venv/bin/riffle`, here for a clone in `~/riffle` (`command -v riffle` prints yours while `.venv`
-is activated).
+The jobs are launchd's on a Mac and systemd user timers on Linux, the same commands for both.
+On Linux each job is a service and a timer in `~/.config/systemd/user/`, and `systemctl --user
+list-timers` lists them; a sync missed while the machine was off runs when it's back. A user's
+timers run only while they're logged in, unless lingering is on, as a server wants it; `riffle
+schedule set` says so when it's off:
 
-```text
-0 7,19 * * * $HOME/riffle/.venv/bin/riffle sync >> $HOME/.local/share/riffle/sync.log 2>&1
+```sh
+sudo loginctl enable-linger "$USER"
 ```
+
+A trickle's or a watch's first run comes as soon as its timer is installed, and a sync time that
+passed since the sync last ran, while the machine was off or when `set` adds it, is made up at once.
+The times are the machine's own: on a machine whose clock is UTC, `07:00` is 07:00 UTC. Anywhere
+but macOS and Linux, `riffle schedule` says it can't and changes nothing.
 
 The scheduled job runs as the Mac wakes, so `riffle sync` first waits up to two
 minutes for the network, then syncs offline if it's still down. No step stops a
@@ -308,7 +312,7 @@ naming what failed. Each run in a job's log ends with a closing line,
 `22:14:12  exited 1 after 12m 07s`. `riffle schedule` reads it back: each job's
 last run and how it ended, when the next is due, the run it's failing on until a
 run passes, and the steps that failed in the last 24 hours; `sync.log` says why.
-The log's times are UTC; what Riffle prints to the terminal is the Mac's time,
+The log's times are UTC; what Riffle prints to the terminal is this machine's time,
 with the zone. The notes it writes are dated in UTC, and the price log by the
 Scryfall day of the prices it logs.
 

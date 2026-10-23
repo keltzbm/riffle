@@ -1,19 +1,21 @@
-"""The launchd jobs (macOS): `riffle sync` at set times each day, the MTGO trickle
-every 10 minutes, and a watch for each store every 5 minutes.
+"""The scheduled jobs: `riffle sync` at set times each day, the MTGO trickle every
+10 minutes, and a watch for each store every 5 minutes. launchd runs them on macOS,
+here; systemd user timers on Linux (riffle.systemd). Elsewhere there's no scheduler,
+and the schedule commands say so (`unsupported`) before they write anything.
 
-A store's watch is its own job because launchd never starts a job while that job is
-still running: it skips the firing. One job for every store would stop checking them
-all while any one of them fetched.
+A store's watch is its own job because neither launchd nor systemd starts a second run
+of a job while one is going (launchd skips the firing; systemd holds it until the run ends).
+One job for every store would stop checking them all while any one of them fetched.
 
 One label per job, under the project's domain: installing a job again replaces it,
-it never adds a second one. Times are 24-hour HH:MM. Everything that touches launchd
-goes through `run` so the logic is testable without it. launchd is macOS's alone, so
-elsewhere the schedule commands say so (`supported`) before they write anything.
+it never adds a second one. Times are 24-hour HH:MM, in this machine's zone.
+Everything that touches launchd goes through `run` so the logic is testable without it.
 """
 
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -39,14 +41,30 @@ TRICKLE = Job(f"{PREFIX}-mtgo", ("mtgo", "trickle"), "mtgo-trickle.log", interva
 LABEL = SYNC.label
 WATCH_EVERY = int(cadence.EVERY.total_seconds())  # a Mana Pool list lasts about 30 minutes: six tries
 _TIME = re.compile(r"^(\d{1,2}):(\d{2})$")
-ELSEWHERE = "schedule works on macOS only (launchd); on Linux run riffle sync from cron, as the README shows"
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
 
 
+def backend() -> str | None:
+    """The scheduler this machine has: launchd on macOS, systemd on Linux where systemctl is on
+    PATH, none elsewhere."""
+    if sys.platform == "darwin":
+        return "launchd"
+    if sys.platform == "linux" and shutil.which("systemctl"):
+        return "systemd"
+    return None
+
+
 def supported() -> bool:
-    """Whether this machine has launchd to run the jobs."""
-    return sys.platform == "darwin"
+    """Whether this machine has a scheduler to run the jobs."""
+    return backend() is not None
+
+
+def unsupported() -> str:
+    """What the schedule commands say where there's no scheduler."""
+    if sys.platform == "linux":
+        return "scheduling needs systemd on Linux"
+    return "scheduling runs on macOS (launchd) and Linux (systemd)"
 
 
 def watch_job(store: str) -> Job:
@@ -159,6 +177,10 @@ class Status:
 
 
 def status(run: Runner = _run, path: Path | None = None, job: Job = SYNC) -> Status:
+    if backend() == "systemd":
+        from riffle import systemd
+
+        return systemd.status(run, job=job)
     path = path or plist_path(job)
     result = run(["launchctl", "print", f"{_domain()}/{job.label}"])
     info = parse_print(result.stdout) if result.returncode == 0 else {}
@@ -180,8 +202,12 @@ def install(
     path: Path | None = None,
     job: Job = SYNC,
 ) -> Path:
-    """Write the plist and (re)load it. Replaces any existing job. An interval job
-    takes no times."""
+    """Write the plist and (re)load it, or on Linux the job's systemd units. Replaces any
+    existing job. An interval job takes no times."""
+    if backend() == "systemd":
+        from riffle import systemd
+
+        return systemd.install(times, exe, run, job=job)
     path = path or plist_path(job)
     exe = exe or Path(sys.argv[0]).resolve()
     log = log_path(job)
@@ -196,7 +222,12 @@ def install(
 
 
 def remove(run: Runner = _run, path: Path | None = None, job: Job = SYNC) -> bool:
-    """Unload and delete. True if there was anything to remove."""
+    """Unload and delete, the plist or on Linux the job's systemd units. True if there was
+    anything to remove."""
+    if backend() == "systemd":
+        from riffle import systemd
+
+        return systemd.remove(run, job=job)
     path = path or plist_path(job)
     was_loaded = run(["launchctl", "bootout", f"{_domain()}/{job.label}"]).returncode == 0
     existed = path.exists()
