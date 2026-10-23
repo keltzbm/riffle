@@ -1,9 +1,12 @@
 """A sync that meets trouble finishes what it can, then says what failed and exits 1."""
 
 import fcntl
+import io
 import json
 import os
+import re
 import socket
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -160,7 +163,7 @@ def test_without_a_network_the_sync_goes_offline_and_exits_1(vault, monkeypatch)
     assert "! network: no connection after 2m 00s; syncing offline" in result.output
     assert calls == []  # no download, no catalog load, no price downloads
     assert (vault / "_generated" / "burn-data.md").exists()
-    assert result.output.rstrip().endswith("1 step failed: network")
+    assert before_closing(result.output) == "1 step failed: network"
 
 
 def test_a_network_that_comes_up_late_is_waited_for(vault, monkeypatch):
@@ -235,7 +238,7 @@ def test_a_failed_download_doesnt_stop_the_sync(vault, monkeypatch):
     assert result.exit_code == 1, result.output
     assert calls == ONLINE
     assert "1 decks · 2 notes updated" in result.output
-    assert result.output.rstrip().endswith("1 step failed: Scryfall bulk data")
+    assert before_closing(result.output) == "1 step failed: Scryfall bulk data"
 
 
 def test_every_failed_step_is_named(vault, monkeypatch):
@@ -246,7 +249,7 @@ def test_every_failed_step_is_named(vault, monkeypatch):
     network(monkeypatch, up_after=None)
     online_steps(monkeypatch, [])
     result = CliRunner().invoke(app, ["sync"])
-    assert result.output.rstrip().endswith("2 steps failed: network, Scryfall prices")
+    assert before_closing(result.output) == "2 steps failed: network, Scryfall prices"
 
 
 def test_watch_keeps_watching_after_a_failed_resync(monkeypatch, capsys):
@@ -256,6 +259,70 @@ def test_watch_keeps_watching_after_a_failed_resync(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_resync", resync)
     cli._resync_and_keep_watching()
     assert "resync failed; still watching" in capsys.readouterr().err
+
+
+# ---- the closing line of a run written as plain lines -------------------------------------------
+
+EXITED = re.compile(r"\d\d:\d\d:\d\d  exited (\d) after \d+\.\ds")
+
+
+def closing(out: str) -> str:
+    """A run's last line, as its job's log has it."""
+    return out.rstrip("\n").rsplit("\n", 1)[-1]
+
+
+def before_closing(out: str) -> str:
+    """A run's last line before its closing line, which says it exited 1."""
+    *_v, last, closed = out.rstrip("\n").split("\n")
+    assert EXITED.fullmatch(closed).group(1) == "1"
+    return last
+
+
+def test_a_run_whose_step_failed_closes_with_exit_1_after_naming_the_step(capsys):
+    with pytest.raises(typer.Exit) as left, cli._tracked("riffle watch manapool") as tracker:
+        tracker.step("Mana Pool singles").fail("HTTP 503")
+    out, err = capsys.readouterr()
+    assert left.value.exit_code == 1
+    assert err.rstrip("\n").endswith("1 step failed: Mana Pool singles")
+    assert EXITED.fullmatch(closing(out)).group(1) == "1"
+
+
+def test_a_run_that_exits_on_an_error_closes_with_that_exit_after_the_error(capsys):
+    with pytest.raises(typer.Exit) as left, cli._tracked("riffle sync"):
+        cli._echo("can't reach Postgres at postgresql+psycopg://tcg@localhost:5432/tcg", err=True)
+        raise typer.Exit(1)
+    out, err = capsys.readouterr()
+    assert left.value.exit_code == 1
+    assert err == "can't reach Postgres at postgresql+psycopg://tcg@localhost:5432/tcg\n"
+    assert EXITED.fullmatch(closing(out)).group(1) == "1"
+
+
+def test_a_run_that_raises_still_closes_with_exit_1(capsys):
+    with pytest.raises(ValueError, match="bad"), cli._tracked("riffle watch manapool"):
+        raise ValueError("bad")
+    assert EXITED.fullmatch(closing(capsys.readouterr().out)).group(1) == "1"
+
+
+def test_a_run_that_went_well_closes_with_exit_0(capsys):
+    with cli._tracked("riffle watch manapool") as tracker:
+        tracker.step("Mana Pool singles").ok("kept 2026-10-17T220203Z")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].endswith(" UTC  riffle watch manapool")
+    assert "  Mana Pool singles: kept 2026-10-17T220203Z (" in lines[1]
+    assert EXITED.fullmatch(lines[2]).group(1) == "0" and len(lines) == 3
+
+
+class _Terminal(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_a_run_on_a_terminal_has_no_closing_line(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(sys, "stdout", _Terminal())
+    with cli._tracked("riffle watch manapool") as tracker:
+        tracker.step("Mana Pool singles").ok("kept")
+    assert "exited" not in sys.stdout.getvalue()
 
 
 # ---- one source down, one bug: only its own steps fail ---------------------------------------
@@ -275,7 +342,7 @@ def test_scryfall_alone_down_fails_only_its_own_steps(vault, monkeypatch):
     result = CliRunner().invoke(app, ["sync"])
     assert calls == ONLINE  # every price source still asked
     assert "network" not in result.output
-    assert result.output.rstrip().endswith("1 step failed: Scryfall bulk data")
+    assert before_closing(result.output) == "1 step failed: Scryfall bulk data"
 
 
 def test_the_network_wait_tries_every_source_scryfall_first():
@@ -302,7 +369,7 @@ def test_a_bug_in_one_source_fails_its_steps_and_the_rest_still_run(vault, monke
     why = f"ZeroDivisionError: division by zero (unexpected; details in {log})"
     assert f"MTGJSON prices today: {why}" in result.output
     assert "Traceback" not in result.output and "Traceback" in log.read_text()
-    assert result.output.rstrip().endswith("1 step failed: MTGJSON prices today")
+    assert before_closing(result.output) == "1 step failed: MTGJSON prices today"
 
 
 def test_a_bug_in_the_scryfall_price_step_is_reported_the_same_way(vault, monkeypatch):
@@ -396,7 +463,7 @@ def test_a_note_that_isnt_utf8_fails_a_step_naming_it(vault, monkeypatch):
     assert "vault notes: skipped, can't read mtg/modern/bogles.md (not UTF-8)" in result.output
     assert "1 decks · " in result.output  # burn still synced
     assert (vault / "_generated" / "burn-data.md").exists()
-    assert result.output.rstrip().endswith("1 step failed: vault notes")
+    assert before_closing(result.output) == "1 step failed: vault notes"
 
 
 def test_watch_keeps_watching_after_an_unexpected_error(monkeypatch, capsys):

@@ -19,6 +19,10 @@ the default is used.
 
 The database URL never holds a password: libpq reads it from ~/.pgpass.
 
+backup_log names a backup job's log, for riffle status to say when the store was last backed
+up: a line a step, "2026-10-22T08:31:34Z backup ok" (a UTC time, the step, ok or failed), and
+a file "backup.failed" beside it while a run is failing. Without it, Time Machine is asked.
+
 What you own comes from the ManaBox export alone: scan a precon into ManaBox
 to count it.
 """
@@ -77,6 +81,7 @@ class Config:
     card_notes: bool = True
     card_images: str = "cache"
     unread: list[str] = field(default_factory=list)  # each setting that can't be read, and what's used
+    backup_log: Path | None = None  # a backup job's log, for riffle status
 
     @property
     def mtg_dir(self) -> Path:
@@ -123,6 +128,10 @@ def load() -> Config:
         choices = ", ".join(f'"{x}"' for x in CARD_IMAGES)
         unread.append(f'card_images in {tilde(path)} is {images!r}, not one of {choices}; "cache" is used')
         images = "cache"
+    backup = raw.get("backup_log", "")
+    if not isinstance(backup, str):
+        unread.append(f"backup_log in {tilde(path)} is {backup!r}, not a path; none is used")
+        backup = ""
     return Config(
         vault=vault,
         notes=notes,
@@ -134,6 +143,7 @@ def load() -> Config:
         card_notes=card_notes,
         card_images=images,
         unread=unread,
+        backup_log=Path(backup).expanduser() if backup else None,
     )
 
 

@@ -4,7 +4,7 @@ import io
 import itertools
 import math
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from rich.console import Console
@@ -59,6 +59,26 @@ def test_log_lines_are_in_utc_and_warnings_and_failures_go_to_stderr():
         "13:00:03  warning: Cardmarket pokemon: empty since 2026-09-21 (8.2s)\n"
         "13:00:03  ! tcgcsv fab: HTTP 503\n"
     )
+
+
+def test_the_closing_line_says_how_the_run_exited_and_how_long_it_took_since_its_header():
+    out, now = io.StringIO(), [50.0]
+    at = datetime(2026, 9, 25, 7, 0, 3, tzinfo=timezone(timedelta(hours=-6)))  # 13:00:03 UTC
+    log = progress.LogTracker(out, io.StringIO(), clock=lambda: now[0], now=lambda: at)
+    now[0] = 100.0
+    log.header("riffle sync")
+    now[0] = 827.0
+    log.footer(1)
+    assert out.getvalue().splitlines()[-1] == "13:00:03  exited 1 after 12m 07s"
+
+
+def test_the_closing_line_counts_from_when_the_tracker_was_made_without_a_header():
+    out, now = io.StringIO(), [100.0]
+    at = datetime(2026, 9, 25, 13, 0, 3, tzinfo=UTC)
+    log = progress.LogTracker(out, io.StringIO(), clock=lambda: now[0], now=lambda: at)
+    now[0] = 108.25
+    log.footer(0)
+    assert out.getvalue() == "13:00:03  exited 0 after 8.2s\n"
 
 
 def test_a_warning_isnt_a_failure(tracker):

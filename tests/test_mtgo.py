@@ -1,5 +1,6 @@
 import gzip
 import json
+from collections import Counter
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -270,6 +271,40 @@ def test_load_reads_the_top_folder_and_only_the_months_it_needs():
     july.mkdir(parents=True)
     (july / "modern-league-2026-07-0112840000.json").write_text("{cut off")  # would raise if read
     assert [e.date for e in mtgo.load(since=date(2026, 8, 15))] == ["2026-09-19", "2026-08-20"]
+
+
+def test_kept_days_reads_the_events_in_its_window_and_counts_earlier_ones_by_name():
+    mtgo.save(mtgo.parse_event("modern-league-2026-09-2012850002", LEAGUE))
+    mtgo.save(mtgo.parse_event("pioneer-league-2026-09-2112850003", EMPTY))  # its lists not published yet
+    mtgo.save(mtgo.parse_event("modern-league-2026-08-2012850001", EMPTY))
+    assert mtgo.kept_days(since=date(2026, 9, 1)) == Counter({"2026-09-20": 1, "2026-08-20": 1})
+    assert mtgo.kept_days() == Counter({"2026-09-20": 1})
+
+
+def test_an_event_in_the_top_folder_and_its_month_counts_once_and_the_top_copy_is_set_aside():
+    event = mtgo.parse_event(STORED_SLUG, CHALLENGE)
+    month = mtgo.save(event)
+    top = mtgo.store_dir() / f"{STORED_SLUG}.json"
+    top.write_text(json.dumps(asdict(event)))  # the same event, as an earlier build wrote it
+    assert mtgo.kept_days() == Counter({"2026-09-18": 1})
+    assert [e.slug for e in mtgo.load()] == [STORED_SLUG]
+    mtgo._file_events()
+    assert not top.exists()
+    assert top.with_name(f"{STORED_SLUG}.json.dup").read_text() == json.dumps(asdict(event))
+    assert month.read_text() == json.dumps(asdict(event), indent=1)
+    assert [e.slug for e in mtgo.load()] == [STORED_SLUG]
+
+
+def test_a_top_copy_stays_where_it_is_when_one_is_set_aside_already():
+    event = mtgo.parse_event(STORED_SLUG, CHALLENGE)
+    mtgo.save(event)
+    top = mtgo.store_dir() / f"{STORED_SLUG}.json"
+    dup = top.with_name(f"{STORED_SLUG}.json.dup")
+    dup.write_text("an earlier copy")
+    top.write_text(json.dumps(asdict(event)))
+    mtgo._file_events()
+    assert top.exists() and dup.read_text() == "an earlier copy"
+    assert mtgo.kept_days() == Counter({"2026-09-18": 1})
 
 
 def test_an_event_cut_off_while_written_leaves_no_file(monkeypatch):
