@@ -150,7 +150,7 @@ def _pack(data: bytes, base: bytes | None = None) -> bytes:
     return packer.compress(data, zstd.ZstdCompressor.FLUSH_FRAME)
 
 
-def _write(path: Path, data: bytes) -> None:
+def write(path: Path, data: bytes) -> None:
     """Whole or not at all, and on the disk before it's read back."""
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
@@ -200,7 +200,7 @@ def _base(run: Path) -> tuple[bytes, list[str]]:
         said = f"{path.name} was missing"
         if path.exists():
             said = f"{path.name} was damaged: set aside as {_set_aside(path).name}"
-        _write(path, whole[0])
+        write(path, whole[0])
         notes.append(f"{said}, and written again from the other copy")
     return whole[1], notes
 
@@ -240,14 +240,14 @@ def keep(folder: Path, at: datetime, data: bytes) -> Kept:
             lists, stored = _run_so_far(latest)
             if len(diff) * lists <= stored:
                 path = latest / f"{stamp}{DIFF}"
-                _write(path, diff)
+                write(path, diff)
                 _verify(path, sha256, base)
                 sums = (sha256, file_sha256(path))
                 return Kept(stamp, path, "diff", len(data), len(diff), *sums, tuple(notes))
     whole = _pack(data)
     first, second = copies(folder / stamp)
     for path in (first, second):
-        _write(path, whole)
+        write(path, whole)
         _verify(path, sha256)
     return Kept(stamp, first, "base", len(data), 2 * len(whole), sha256, file_sha256(first), tuple(notes))
 

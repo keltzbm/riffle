@@ -315,8 +315,8 @@ def test_damage_found_in_a_base_is_a_warning_and_mended(data_dir, tracker):
 
 
 def test_a_list_that_doesn_t_read_back_is_set_aside_and_fails(data_dir, tracker, monkeypatch):
-    real = runs._write
-    monkeypatch.setattr(runs, "_write", lambda path, data: real(path, data[:-4]))
+    real = runs.write
+    monkeypatch.setattr(runs, "write", lambda path, data: real(path, data[:-4]))
     res = run(Store(answers()), tracker)
     (label, why), _ = res.failed
     assert label == "Card Kingdom singles" and why.endswith(

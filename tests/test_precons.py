@@ -314,6 +314,7 @@ def test_check_collection_lists_what_it_corrected_and_what_it_couldnt(home):
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [
         "collection: 3 copies in ~/.local/share/riffle/collection.csv",
+        "exports kept: none yet",
         "precon boxes: 1, 2 printings, basic lands aside",
         "read as their box's printing, recorded under another with the same art: 1",
         "  Sol Ring: C21 263 → FDC 286, 1 (Calling All Angels)",
@@ -328,6 +329,7 @@ def test_check_collection_fails_on_a_box_it_cant_find(home):
     result = run("check", "collection")
     assert result.exit_code == 1
     assert result.output.splitlines()[1:] == [
+        "exports kept: none yet",
         """  ! precon box "Rex" in rex.md isn't among MTGJSON's decks: write the name MTGJSON gives it""",
         "1 precon box can't be read",
     ]
@@ -338,7 +340,8 @@ def test_check_collection_says_how_to_register_a_box(home):
     result = run("check", "collection")
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[1:] == [
-        "precon boxes: none registered (a deck note's source: precon:<box> registers one)"
+        "exports kept: none yet",
+        "precon boxes: none registered (a deck note's source: precon:<box> registers one)",
     ]
 
 

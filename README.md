@@ -64,10 +64,19 @@ riffle export all --to manabox -o ~/Downloads/mtg-exports        # every deck, o
 riffle export izzet-murktide --to mtgo
 riffle export aesi-lands --to tcgplayer        # mass-entry list of the shortfall
 riffle ingest arena ~/Downloads/mtga_collection.txt              # text list or CSV
+riffle ingest manabox --diff       # the newest export in ~/Downloads, and every copy it changed
+riffle ingest manabox ~/.local/share/riffle/manabox/2026-10-11T071014Z.csv   # put an export back
 riffle legal aesi-lands            # size, copies, bans, commander color identity
 riffle legal all                   # every deck; exits 1 if any is illegal
 riffle legal my-deck -f modern     # check against a different format
 ```
+
+Every ManaBox export Riffle sees is kept in `~/.local/share/riffle/manabox/` as the file it was:
+the collection, and each export in `~/Downloads`, named by when ManaBox made it, in UTC
+(`2026-10-18T084152Z.csv`), with its SHA-256 in a `.sha256` file beside it. Nothing there is
+overwritten or removed. A sync that picks up an export says what changed since the collection it
+replaces (`+12 copies, −3, 2 moved binders`), and warns when more than half the copies would go or
+the columns it compares changed; `riffle check collection` counts the exports kept.
 
 ## Tab completion
 
@@ -343,7 +352,7 @@ gh codespace stop                                   # stops by itself when idle,
 | What | Where |
 |---|---|
 | Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status` |
-| Card data, collection, sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
+| Card data, collection, every ManaBox export (`manabox/`), sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
 | Database | Postgres 18 in Docker (`compose.yaml`, volume `tcg_pgdata`); `database_url` in config, password in `~/.pgpass` |
 | Output | `mtg/_generated/` and `mtg/_log/` in the notes folder — nothing else |
 

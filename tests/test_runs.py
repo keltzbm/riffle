@@ -192,8 +192,8 @@ def test_a_difference_is_rebuilt_from_the_base_s_second_copy_when_the_first_is_g
 
 
 def test_a_file_that_doesn_t_read_back_as_its_list_is_set_aside(tmp_path, monkeypatch):
-    real = runs._write
-    monkeypatch.setattr(runs, "_write", lambda path, data: real(path, data[:-4]))  # a disk that drops bytes
+    real = runs.write
+    monkeypatch.setattr(runs, "write", lambda path, data: real(path, data[:-4]))  # a disk that drops bytes
     with pytest.raises(runs.Unverified, match="didn't read back as the list written"):
         runs.keep(tmp_path, AT, listing())
     run = tmp_path / runs.name(AT)
