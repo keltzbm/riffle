@@ -393,7 +393,10 @@ def report(now: datetime, n: int, root: Path) -> tuple[list[str], bool]:
     lines.append("")
     for label, said in (
         ("MTGO", owed_lines()),
-        ("jobs", jobs_lines(now=now, days=n)),
+        (
+            "jobs",
+            jobs_lines(now=now, days=n) if schedule.supported() else ["no scheduler on this platform yet"],
+        ),
         ("store", [store_line(root, now=lambda: now)]),
         ("backup", [backup_line(log=_backup_log())]),
     ):

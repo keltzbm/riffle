@@ -103,8 +103,10 @@ def vault(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # the default vault, under HOME
     (tmp_path / "config" / "riffle").mkdir(parents=True)
-    (tmp_path / "config" / "riffle" / "config.toml").write_text('notes = "games/tcg"\ncard_images = "link"\n')
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    (tmp_path / "config" / "riffle" / "config.toml").write_text(
+        'vault = "~/vault"\nnotes = "games/tcg"\ncard_images = "link"\n'
+    )
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     (mtg / "modern" / "burn.md").write_text(NOTE)
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
@@ -188,7 +190,7 @@ def test_an_online_sync_keeps_the_card_pictures_and_shows_them_coming(vault, mon
     from riffle import cli
 
     (tmp_path / "config" / "riffle" / "config.toml").write_text(
-        'notes = "games/tcg"\ncard_images = "cache"\n'
+        'vault = "~/vault"\nnotes = "games/tcg"\ncard_images = "cache"\n'
     )
     network(monkeypatch, up_after=0)
     online_steps(monkeypatch, [])
@@ -386,8 +388,10 @@ def test_a_database_url_that_cant_be_used_still_keeps_the_prices(tmp_path, monke
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     (tmp_path / "config" / "riffle").mkdir(parents=True)
-    (tmp_path / "config" / "riffle" / "config.toml").write_text('database_url = "not a url"\n')
-    (tmp_path / "atelier" / "library" / "tcg" / "mtg").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text(
+        'vault = "~/vault"\ndatabase_url = "not a url"\n'
+    )
+    (tmp_path / "vault" / "tcg" / "mtg").mkdir(parents=True)
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
     network(monkeypatch, up_after=0)
     calls: list[str] = []
@@ -406,20 +410,24 @@ def test_a_database_url_that_cant_be_used_still_keeps_the_prices(tmp_path, monke
 def test_a_missing_vault_is_reported_and_nothing_is_built_there(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    (tmp_path / "config" / "riffle").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text('vault = "~/vault"\nnotes = "games/tcg"\n')
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
-    notes = tmp_path / "atelier" / "library" / "games" / "tcg"
+    notes = tmp_path / "vault" / "games" / "tcg"
     result = CliRunner().invoke(app, ["sync", "--offline"])
     assert result.exit_code == 1
     assert f"vault: no notes folder at {notes}; set vault and notes in {tmp_path / 'config'}" in result.output
-    assert not (tmp_path / "atelier").exists()
+    assert not (tmp_path / "vault").exists()
     assert "0 decks" not in result.output
 
 
 def test_a_notes_folder_without_mtg_syncs_without_decks_and_writes_nothing_there(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    (tmp_path / "config" / "riffle").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text('vault = "~/vault"\nnotes = "games/tcg"\n')
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
-    notes = tmp_path / "atelier" / "library" / "games" / "tcg"
+    notes = tmp_path / "vault" / "games" / "tcg"
     (notes / "one-piece").mkdir(parents=True)
     (notes / "one-piece" / "red-zoro.md").write_text("---\ngame: one-piece\n---\n")
     result = CliRunner().invoke(app, ["sync", "--offline"])
@@ -439,9 +447,9 @@ def test_a_config_from_before_the_notes_setting_still_syncs_and_says_what_to_cha
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     (tmp_path / ".config" / "riffle").mkdir(parents=True)
-    (tmp_path / ".config" / "riffle" / "config.toml").write_text('vault = "~/atelier/library/games"\n')
-    (tmp_path / "atelier" / "library" / ".obsidian").mkdir(parents=True)
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    (tmp_path / ".config" / "riffle" / "config.toml").write_text('vault = "~/vault/games"\n')
+    (tmp_path / "vault" / ".obsidian").mkdir(parents=True)
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "modern").mkdir(parents=True)
     (mtg / "modern" / "burn.md").write_text(NOTE)
     monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
@@ -449,8 +457,8 @@ def test_a_config_from_before_the_notes_setting_still_syncs_and_says_what_to_cha
     assert result.exit_code == 0, result.output
     assert (
         "vault setting: ~/.config/riffle/config.toml names no notes folder, "
-        "so it's ~/atelier/library/games/tcg: "
-        'set vault = "~/atelier/library" and add notes = "games/tcg"'
+        "so it's ~/vault/games/tcg: "
+        'set vault = "~/vault" and add notes = "games/tcg"'
     ) in result.output
     assert "1 decks · " in result.output
     assert (mtg / "_generated" / "burn-data.md").exists()
@@ -545,13 +553,29 @@ def test_watch_says_when_something_changed_in_the_mac_s_time(monkeypatch, denver
     assert len(resyncs) == 2  # once at the start, once for the change
 
 
+def test_the_watch_follows_the_deck_notes_the_config_and_the_newest_export(vault, tmp_path):
+    from riffle import cli, config
+
+    (tmp_path / "Downloads").mkdir()
+    (tmp_path / "Downloads" / "ManaBox_Collection.csv").write_text("Name,Quantity\nSol Ring,1\n")
+    watched = cli._watched(config.load())
+    assert set(watched) == {
+        str(vault / "modern" / "burn.md"),
+        str(config.config_path()),
+        str(tmp_path / "Downloads" / "ManaBox_Collection.csv"),
+    }
+
+
 @pytest.mark.parametrize(
     ("lines", "shown"),
     [
-        ('notes = "games/tcg"\ncard_notes = false\n', "card notes: off (1 removed)"),
-        ('notes = "games/tcg"\ncard_notes = false\n', None),  # off, with none to remove: not a word
+        ('vault = "~/vault"\nnotes = "games/tcg"\ncard_notes = false\n', "card notes: off (1 removed)"),
         (
-            'notes = "games/tcg"\ncard_images = "keep"\n',
+            'vault = "~/vault"\nnotes = "games/tcg"\ncard_notes = false\n',
+            None,
+        ),  # off, with none to remove: not a word
+        (
+            'vault = "~/vault"\nnotes = "games/tcg"\ncard_images = "keep"\n',
             "setting: card_images in ~/config/riffle/config.toml is 'keep', not one of",
         ),
     ],
@@ -564,3 +588,17 @@ def test_the_sync_says_what_the_card_note_settings_did(vault, monkeypatch, opene
     result = CliRunner().invoke(app, ["sync", "--offline"])
     assert result.exit_code == 0, result.output
     assert shown in result.output if shown else "card notes" not in result.output
+
+
+def test_a_vault_with_no_notes_folder_yet_syncs_and_says_where_decks_go(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    (tmp_path / "config" / "riffle").mkdir(parents=True)
+    (tmp_path / "config" / "riffle" / "config.toml").write_text('vault = "~/vault"\nnotes = "games/tcg"\n')
+    (tmp_path / "vault").mkdir()
+    monkeypatch.setattr(scryfall, "snapshot_prices", lambda: (Path("/d/2026-09-26.jsonl.gz"), False))
+    result = CliRunner().invoke(app, ["sync", "--offline"])
+    assert result.exit_code == 0, result.output
+    notes = tmp_path / "vault" / "games" / "tcg"
+    assert f"vault: no notes folder at {notes} yet: Riffle reads MTG decks from its mtg/" in result.output
+    assert list((tmp_path / "vault").iterdir()) == []  # nothing written into the vault

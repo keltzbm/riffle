@@ -282,8 +282,10 @@ def home(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".local" / "share"))
     (tmp_path / ".config" / "riffle").mkdir(parents=True)
-    (tmp_path / ".config" / "riffle" / "config.toml").write_text('notes = "games/tcg"\ncard_notes = false\n')
-    mtg = tmp_path / "atelier" / "library" / "games" / "tcg" / "mtg"
+    (tmp_path / ".config" / "riffle" / "config.toml").write_text(
+        'vault = "~/vault"\nnotes = "games/tcg"\ncard_notes = false\n'
+    )
+    mtg = tmp_path / "vault" / "games" / "tcg" / "mtg"
     (mtg / "commander").mkdir(parents=True)
     (mtg / "commander" / "angels.md").write_text(NOTE)
     (tmp_path / "Downloads").mkdir()
@@ -355,8 +357,8 @@ def test_check_collection_without_a_collection_says_how_to_get_one(home):
 def test_a_sync_leaves_a_csv_that_isnt_an_export_in_downloads(home, plain):
     (data_dir() / "collection.csv").unlink()
     export, fixes = (
-        home.parents[4] / "Downloads" / "ManaBox_Collection 5.csv",
-        home.parents[4] / "Downloads" / "ManaBox_Collection-5-fixes.csv",
+        home.parents[3] / "Downloads" / "ManaBox_Collection 5.csv",
+        home.parents[3] / "Downloads" / "ManaBox_Collection-5-fixes.csv",
     )
     export.write_text(COLLECTION)
     fixes.write_text(FIXES)
@@ -377,7 +379,7 @@ def test_a_sync_leaves_a_csv_that_isnt_an_export_in_downloads(home, plain):
 
 
 def test_ingest_refuses_a_csv_that_isnt_an_export(home, plain):
-    fixes = home.parents[4] / "Downloads" / "ManaBox_Collection-5-fixes.csv"
+    fixes = home.parents[3] / "Downloads" / "ManaBox_Collection-5-fixes.csv"
     fixes.write_text(FIXES)
     result = run("ingest", "manabox", str(fixes))
     assert result.exit_code == 2

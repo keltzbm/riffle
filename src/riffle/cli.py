@@ -45,7 +45,8 @@ def _deck_names() -> list[str]:
     """What `riffle decks` lists. Nothing when the vault can't be read, rather than a
     traceback in the middle of the prompt."""
     try:
-        return [d.slug for d in vault.decks(config.load().mtg_dir)]
+        mtg = config.load().mtg_dir
+        return [d.slug for d in vault.decks(mtg)] if mtg else []
     except (OSError, ValueError):
         return []
 
@@ -222,20 +223,68 @@ def _setup(boxes: precons.Boxes | None = None) -> Iterator[tuple[config.Config, 
         yield cfg, cat, _inventory(cfg, cat, boxes)
 
 
+def _vault(cfg: config.Config) -> tuple[Path, Path, Path]:
+    """The vault, its notes folder, and the deck notes' mtg/ in that. A command that reads the vault
+    asks here before it opens the database, so with none set it stops, saying what to set."""
+    if cfg.vault is None or cfg.notes is None or cfg.mtg_dir is None:
+        raise typer.BadParameter(config.no_vault())
+    return cfg.vault, cfg.notes, cfg.mtg_dir
+
+
+def _mtg_dir(cfg: config.Config) -> Path:
+    """The deck notes' folder, as _vault finds it."""
+    return _vault(cfg)[2]
+
+
+def _deck(cfg: config.Config, ref: str) -> Deck:
+    """A deck by the path to its file, which needs no vault, or by its slug among the vault's deck
+    notes (_mtg_dir)."""
+    found = vault.from_file(ref)
+    return found if found is not None else vault.find(_mtg_dir(cfg), ref)
+
+
+def _interactive() -> bool:
+    """Whether someone can answer a question: stdin is a terminal."""
+    return sys.stdin.isatty()
+
+
 @app.command()
-def init() -> None:
-    """Write a default config and show where everything lives."""
+def init(
+    given: str | None = typer.Option(None, "--vault", help="Your Obsidian vault  [default: asked for]"),
+) -> None:
+    """Write a config, or name its vault, and show where everything lives. Without --vault, asks for
+    the vault when none is set and someone is at the terminal."""
+    if given is None and config.load().vault is None and _interactive():
+        given = typer.prompt("Where is your Obsidian vault?")
+    folder = None
+    if given is not None:
+        if not given.strip():  # an unset variable, say: as a path it would be this folder
+            raise typer.BadParameter("no folder given")
+        try:
+            folder = Path(os.path.abspath(Path(given).expanduser()))
+        except RuntimeError as e:  # ~name for someone with no home here
+            raise typer.BadParameter(f"no folder at {given}") from e
+        if not folder.is_dir():
+            raise typer.BadParameter(f"no folder at {folder}")
     path = config.write_default()
+    if folder is not None:
+        try:
+            config.set_vault(folder)
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
     cfg = config.load()
     typer.echo(f"config     {path}")
-    typer.echo(f"vault      {cfg.vault}")
-    typer.echo(f"notes      {cfg.notes}")
+    typer.echo(f"vault      {cfg.vault or 'none set'}")
+    if cfg.notes:
+        typer.echo(f"notes      {cfg.notes}")
     typer.echo(f"data       {config.data_dir()}")
     typer.echo(f"database   {cfg.database_url}")
     for key, why in (cfg.obsolete or {}).items():
         typer.echo(f"  ! `{key}` in config is ignored: {why}", err=True)
     if cfg.old_notes:
         typer.echo(f"  ! {cfg.old_notes}", err=True)
+    if cfg.vault is None:
+        typer.echo(f"  ! {config.no_vault()}", err=True)
 
 
 def _refresh(tracker: Tracker, force: bool = False) -> None:
@@ -754,7 +803,7 @@ def legal(
     from riffle.analysis import legality
 
     cfg = config.load()
-    targets = vault.decks(cfg.mtg_dir) if deck == "all" else [vault.find(cfg.mtg_dir, deck)]
+    targets = vault.decks(_mtg_dir(cfg)) if deck == "all" else [_deck(cfg, deck)]
     with _catalog() as cat:
         reports = [legality.check_deck(d, cat, fmt) for d in targets]
     failed = False
@@ -852,8 +901,7 @@ def decks(
         if not colors or set(colors.upper()) - set("WUBRGC"):
             raise typer.BadParameter("letters from wubrg, or c for colorless", param_hint="'--colors'")
         wanted_colors = set(colors.upper()) - {"C"}
-    cfg = config.load()
-    found = vault.decks(cfg.mtg_dir)
+    found = vault.decks(_mtg_dir(config.load()))
     for field, wanted in (("format", fmt), ("strategy", strategy), ("archetype", archetype)):
         _known(field, wanted, found)
     kept = [
@@ -924,11 +972,12 @@ def own(
     if show not in SHOW:
         raise typer.BadParameter(f"--show must be one of {', '.join(SHOW)}")
     cfg = config.load()
+    target = _deck(cfg, deck)
     if on_arena and not cfg.arena_list.exists():
         raise typer.BadParameter("no Arena collection yet — run: riffle ingest arena <file>")
     with _catalog() as cat:
         inv = syncmod.arena_inventory(cfg.arena_list, cat) if on_arena else _inventory(cfg, cat)
-        rep = syncmod.analyse(vault.find(cfg.mtg_dir, deck), inv, cat)
+        rep = syncmod.analyse(target, inv, cat)
         wc = wildcards(rep.rows, cat) if on_arena else {}
     buy_word = "Craft" if on_arena else "Buy"
 
@@ -959,8 +1008,9 @@ def price(
     deck: DeckRef, budget_tix: float = typer.Option(None, help="Compare the MTGO total to a tix budget")
 ) -> None:
     """Paper cost to finish the deck, and MTGO cost for the whole list."""
-    with _setup() as (cfg, cat, inv):
-        rep = syncmod.analyse(vault.find(cfg.mtg_dir, deck), inv, cat)
+    target = _deck(config.load(), deck)
+    with _setup() as (_, cat, inv):
+        rep = syncmod.analyse(target, inv, cat)
     dp = rep.price
     typer.echo(f"paper, whole deck    ${dp.usd_total:,.2f}")
     typer.echo(f"paper, still to buy  ${dp.usd_to_buy:,.2f}")
@@ -993,10 +1043,10 @@ def _diff(cards: Counter[str]) -> str:
     )
 
 
-def _find(mtg_dir: Path, ref: str) -> Deck:
-    """vault.find, or exit 1 saying what wasn't found."""
+def _find(cfg: config.Config, ref: str) -> Deck:
+    """_deck, or exit 1 saying what wasn't found."""
     try:
-        return vault.find(mtg_dir, ref)
+        return _deck(cfg, ref)
     except (LookupError, ValueError) as e:
         _echo(str(e), err=True)
         raise typer.Exit(1) from e
@@ -1014,7 +1064,7 @@ def compare(first: DeckRef, second: DeckRef) -> None:
     from riffle.analysis import similarity
 
     cfg = config.load()
-    a, b = _find(cfg.mtg_dir, first), _find(cfg.mtg_dir, second)
+    a, b = _find(cfg, first), _find(cfg, second)
     zones = _zones(a, b)
     with _catalog() as cat:
         found = {
@@ -1051,7 +1101,8 @@ def similar(
     from riffle.analysis import similarity
 
     cfg = config.load()
-    target = _find(cfg.mtg_dir, deck)
+    mtg = _mtg_dir(cfg)  # the vault's other decks are what it's compared with, whatever the deck
+    target = _find(cfg, deck)
     # None for a list with neither a format nor a commander: every deck note is a candidate
     fmt = similarity.deck_format(target)
     colors = _colors(target) if fmt in similarity.MEASURED and target.meta.get("colors") is not None else None
@@ -1059,7 +1110,7 @@ def similar(
     here = Path(target.meta["path"]).resolve() if "path" in target.meta else None
     others = [
         d
-        for d in vault.decks(cfg.mtg_dir)
+        for d in vault.decks(mtg)
         if (fmt is None or similarity.deck_format(d) == fmt)
         and Path(d.meta["path"]).resolve() != here
         and (colors is None or set(_colors(d)) == set(colors))
@@ -1118,7 +1169,7 @@ def prices_log(
         names = cards
     else:
         unreadable: vault.Unreadable = []
-        names = vault.buy_cards(config.load().notes, unreadable)
+        names = vault.buy_cards(_vault(config.load())[1], unreadable)
         for path, why in unreadable:
             _echo(f"  ! can't read {path} ({why}); its buy lines are left out", err=True)
     with _catalog() as cat:
@@ -1163,9 +1214,10 @@ def export_deck(
         raise typer.BadParameter(f"--to must be one of {', '.join(formats.FORMATS)}")
     if deck == "all" and out is None:
         raise typer.BadParameter("exporting all decks needs --out <folder>")
-    with _setup() as (cfg, cat, inv):
+    cfg = config.load()
+    targets = vault.decks(_mtg_dir(cfg)) if deck == "all" else [_deck(cfg, deck)]
+    with _setup() as (_, cat, inv):
         pins = formats.owned_printings(inv.holdings) if pin == "owned" else {}
-        targets = vault.decks(cfg.mtg_dir) if deck == "all" else [vault.find(cfg.mtg_dir, deck)]
         rendered = []
         for d in targets:
             rep = syncmod.analyse(d, inv, cat)
@@ -1213,13 +1265,24 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         tracker.step("vault setting").warn(cfg0.old_notes)
     for why in cfg0.unread:
         tracker.step("setting").warn(why)
-    if not cfg0.notes.is_dir():  # a missing or mistyped vault: nothing is written there
-        tracker.step("vault").fail(
-            f"no notes folder at {cfg0.notes}; set vault and notes in {config.config_path()}"
+    try:
+        root, notes, mtg = _vault(cfg0)
+    except typer.BadParameter as e:  # the day's data is kept all the same
+        tracker.step("vault").fail(str(e))
+        return
+    if not notes.is_dir() and root.is_dir():  # a vault with no decks in it yet: nothing to write
+        tracker.step("vault").warn(
+            f"no notes folder at {notes} yet: Riffle reads MTG decks from its mtg/; "
+            f"another folder is notes in {config.config_path()}"
         )
         return
-    if not cfg0.mtg_dir.is_dir():  # a user of other games only: not a fault
-        tracker.step("vault").ok(f"no MTG decks in {cfg0.notes}; Riffle reads MTG decks only for now")
+    if not notes.is_dir():  # a missing or mistyped vault: nothing is written there
+        tracker.step("vault").fail(
+            f"no notes folder at {notes}; set vault and notes in {config.config_path()}"
+        )
+        return
+    if not mtg.is_dir():  # a user of other games only: not a fault
+        tracker.step("vault").ok(f"no MTG decks in {notes}; Riffle reads MTG decks only for now")
         return
     not_export = manabox.why_not(cfg0.collection_csv) if cfg0.collection_csv.exists() else None
     if not_export:  # the notes as they were beat notes that say nothing is owned
@@ -1228,7 +1291,7 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             "riffle ingest manabox <export>"
         )
         return
-    boxes = precons.load(vault.precon_boxes(cfg0.mtg_dir))
+    boxes = precons.load(vault.precon_boxes(mtg))
     for problem in boxes.problems:
         tracker.step("precon boxes").warn(problem)
     pictures: list[Step] = []
@@ -1242,11 +1305,11 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         if inv.corrected:
             tracker.step("precon boxes").ok(_corrected(inv.corrected, len(boxes.boxes)))
         card_notes = (
-            syncmod.CardNotes(cfg.vault, cfg.notes, cfg.card_images, None if offline else _picture, progress)
+            syncmod.CardNotes(root, notes, cfg.card_images, None if offline else _picture, progress)
             if cfg.card_notes
             else None
         )
-        res = syncmod.run(cfg.mtg_dir, inv, cat, card_notes=card_notes, hidden=cfg.hidden_folder)
+        res = syncmod.run(mtg, inv, cat, card_notes=card_notes, hidden=cfg.hidden_folder)
     if pictures and res.card_notes:
         pictures[0].ok(f"{res.card_notes.fetched:,} fetched")
     for label, why in res.failed:
@@ -1392,7 +1455,7 @@ def sync_cmd(
 
 def _watched(cfg: config.Config) -> dict[str, float]:
     """Everything whose change should trigger a resync, with its mtime."""
-    paths = [p for p in vault.deck_notes(cfg.mtg_dir)]
+    paths = [p for p in vault.deck_notes(_mtg_dir(cfg))]
     paths += [cfg.collection_csv, cfg.arena_list, config.config_path()]
     newest = manabox.newest_export(cfg.downloads)
     if newest:
@@ -1480,13 +1543,13 @@ def _check_vault() -> None:
     from riffle.export import cards
     from riffle.export.links import safe_name, written
 
-    cfg = config.load()
+    root, notes_dir, mtg = _vault(config.load())
     with _catalog() as cat:
-        found = cards.gather(vault.linking(cfg.notes))
-        own = cards.gather(vault.riffle_notes(cfg.mtg_dir))
-        links = cards.sort(found, cat, vault.names(cfg.vault), own)
+        found = cards.gather(vault.linking(notes_dir))
+        own = cards.gather(vault.riffle_notes(mtg))
+        links = cards.sort(found, cat, vault.names(root), own)
     n = len(links.cards)
-    typer.echo(f"card links: {n:,} card{'s' * (n != 1)} linked in {config.tilde(cfg.notes)}")
+    typer.echo(f"card links: {n:,} card{'s' * (n != 1)} linked in {config.tilde(notes_dir)}")
     for target, (fix, notes) in links.misses.items():
         typer.echo(f"  ! {written(target)} in {notes} note{'s' * (notes != 1)}: write {fix}", err=True)
     for name, path in links.taken.items():
@@ -1510,13 +1573,14 @@ def _check_collection() -> None:
     recorded instead. A box that can't be read is wrong; a copy not found isn't, since a card may
     have left its box."""
     cfg = config.load()
+    mtg = _mtg_dir(cfg)
     if not cfg.collection_csv.exists():
         _echo(
             "no collection yet — export from ManaBox to ~/Downloads, or: riffle ingest manabox <csv>",
             err=True,
         )
         raise typer.Exit(1)
-    boxes = precons.load(vault.precon_boxes(cfg.mtg_dir))
+    boxes = precons.load(vault.precon_boxes(mtg))
     with _setup(boxes) as (_, _, inv):
         copies = sum(h.quantity for h in inv.holdings)
         typer.echo(f"collection: {copies:,} copies in {config.tilde(cfg.collection_csv)}")
@@ -1560,7 +1624,8 @@ def card_cmd(
 
     from riffle.export import cards
 
-    with _setup() as (cfg, cat, inv):
+    mtg = _mtg_dir(config.load())
+    with _setup() as (_, cat, inv):
         card_id = cat.resolve(name)
         if card_id is None:
             typer.echo(f"no card named {name!r}", err=True)
@@ -1569,7 +1634,7 @@ def card_cmd(
         day = cat.prices_day()
         facts = [
             cards.price_line(cat.prices([card_id]).get(card_id), day.isoformat() if day else None),
-            cards.legality(cat.rules([card_id]).get(card_id), vault.formats(cfg.mtg_dir)),
+            cards.legality(cat.rules([card_id]).get(card_id), vault.formats(mtg)),
             cards.owned([h for h in inv.holdings if h.card_id == card_id]),
         ]
         full = cat.name(card_id)
@@ -1595,7 +1660,7 @@ def _watch_vault(interval: float) -> None:
     import time
 
     cfg = config.load()
-    typer.echo(f"watching {cfg.mtg_dir} and ~/Downloads — Ctrl-C to stop")
+    typer.echo(f"watching {_mtg_dir(cfg)} and ~/Downloads — Ctrl-C to stop")
     _resync_and_keep_watching()
     seen = _watched(cfg)
     try:
@@ -1617,6 +1682,15 @@ schedule_app = typer.Typer(
     help="The launchd jobs (macOS): `riffle sync` daily, the MTGO trickle, and each store's watch."
 )
 app.add_typer(schedule_app, name="schedule")
+
+
+def _launchd() -> None:
+    """Stop a schedule command where there's no launchd, before it writes a plist or asks launchctl."""
+    from riffle import schedule as sched
+
+    if not sched.supported():
+        _echo(sched.ELSEWHERE, err=True)
+        raise typer.Exit(2)
 
 
 def _show_schedule() -> None:
@@ -1730,6 +1804,7 @@ def _show_sync() -> None:
 @schedule_app.callback(invoke_without_command=True)
 def schedule_main(ctx: typer.Context) -> None:
     """Show every job (times, next run, last result). Subcommands: set, remove, trickle, watch."""
+    _launchd()  # before a subcommand's arguments are read, so a wrong one still hears why
     if ctx.invoked_subcommand is None:
         _show_schedule()
 

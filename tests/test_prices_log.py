@@ -99,7 +99,7 @@ def test_a_card_s_history_a_line_a_day(opened):
 
 def test_with_no_names_every_buy_line_s_card(tmp_path, monkeypatch, opened):
     monkeypatch.setenv("HOME", str(tmp_path))  # the default vault lives under it
-    notes = tmp_path / "atelier" / "library" / "games" / "tcg"
+    notes = tmp_path / "vault" / "games" / "tcg"
     (notes / "mtg" / "_generated").mkdir(parents=True)
     (notes / "shopping.md").write_text(
         "- [ ] [[Sol Ring]] #mtg/buy\n- [ ] [[Not A Card]] #mtg/buy\n"

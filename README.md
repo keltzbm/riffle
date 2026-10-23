@@ -25,25 +25,45 @@ Site: [riffletcg.gg](https://riffletcg.gg). Design: [DESIGN.md](DESIGN.md).
 ## Install
 
 You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), git, and Docker, which runs the
-database.
+database: OrbStack or Docker Desktop on a Mac, Docker Engine on Linux. `main` is pre-release, and
+it needs that database, Postgres, for the card catalog.
 
-```bash
+The whole path, in any POSIX shell (bash, zsh, sh), on a Mac or on Linux. It clones Riffle and
+installs it with its dev tools into `.venv`; makes a random password for the database and writes it
+into `.env` (gitignored), for Docker Compose, and into `~/.pgpass`, for every client, so no config
+holds it; starts Postgres and builds its tables; names your Obsidian vault; and runs the first sync.
+Put your own vault's folder in place of `~/your-vault`.
+
+```sh
 git clone https://github.com/keltzbm/riffle.git
 cd riffle
-uv sync                      # creates .venv, installs the package + dev tools
-source .venv/bin/activate    # or prefix commands with `uv run`
-riffle init
+uv sync
+. .venv/bin/activate
+pw=$(openssl rand -hex 24)
+printf '%s\n' "POSTGRES_PASSWORD=$pw" > .env
+printf '%s\n' "localhost:5432:*:tcg:$pw" >> ~/.pgpass
+chmod 600 ~/.pgpass
+unset pw
+riffle db up && riffle db upgrade
+riffle init --vault ~/your-vault
+riffle sync
 ```
+
+Without `.venv` activated, put `uv run` before each `riffle`. `riffle init` with no `--vault` asks
+for the vault.
 
 ## First run
 
-Postgres holds the card catalog, so set it up first ([Database](#database-postgres)).
+The first sync downloads every Scryfall bulk file, about 550 MB, as it will each time Scryfall
+publishes, and loads the card catalog into Postgres, about 40 seconds the first time. Then it
+keeps the day's prices, picks up the newest ManaBox export in `~/Downloads` as your collection, and
+writes the notes into the vault. It reads your Magic decks from the vault's `games/tcg/mtg/`, a
+note a deck: `notes` in the config names another folder for `games/tcg`, or `notes = ""` for the
+vault itself. Until that folder exists the sync says so and writes nothing there. With no export
+yet, export your collection from ManaBox to `~/Downloads` and sync again, or give it a file:
 
-```bash
-riffle db up && riffle db upgrade
-riffle ingest scryfall                          # every Scryfall bulk file, ~550 MB each time it publishes
+```sh
 riffle ingest manabox ~/Downloads/collection.csv
-riffle sync --offline
 ```
 
 ## Everyday
@@ -83,11 +103,16 @@ the columns it compares changed; `riffle check collection` counts the exports ke
 The shell completes by running `riffle` itself, so it has to be on PATH; `uv run
 riffle` completes uv's own arguments instead. Once per machine, from the riffle folder:
 
-```zsh
+```sh
+mkdir -p ~/.local/bin
 ln -s "$PWD/.venv/bin/riffle" ~/.local/bin/riffle
-riffle --install-completion zsh
-exec zsh
+riffle --install-completion
 ```
+
+`--install-completion` sets it up for the shell you run it from: zsh, bash or fish. A new Mac
+doesn't have `~/.local/bin` on PATH: if `command -v riffle` prints nothing, add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc`, or run
+`fish_add_path ~/.local/bin` in fish. Then open a new terminal.
 
 A deck completes from the vault's deck notes, the ones `riffle decks` lists,
 with `all` for `legal` and `export`; anything else, like a path, completes as a
@@ -265,6 +290,17 @@ riffle schedule remove
 riffle schedule trickle            # the MTGO trickle, every 10 minutes; --remove to stop it
 ```
 
+The scheduled jobs are launchd's, so `riffle schedule` works on macOS only; anywhere else it says
+so and changes nothing. On Linux, run `riffle sync` from cron instead: `crontab -e`, then a line
+like this one, which syncs at 07:00 and 19:00 and appends to the log the Mac's job keeps. Cron
+knows nothing of `.venv`, so the line names Riffle by its full path: the clone's
+`.venv/bin/riffle`, here for a clone in `~/riffle` (`command -v riffle` prints yours while `.venv`
+is activated).
+
+```text
+0 7,19 * * * $HOME/riffle/.venv/bin/riffle sync >> $HOME/.local/share/riffle/sync.log 2>&1
+```
+
 The scheduled job runs as the Mac wakes, so `riffle sync` first waits up to two
 minutes for the network, then syncs offline if it's still down. No step stops a
 sync: each failure is reported, the rest carries on, and the command exits 1
@@ -286,17 +322,9 @@ notes in view. `hidden_folder` in the config names the folder, `.data` by defaul
 
 ## Database (Postgres)
 
-From v0.4.0 the data moves into Postgres, run locally in Docker (OrbStack on the
-Mac). One-time setup from the repo root: a random password for Compose in `.env`
-(gitignored) and for every libpq client in `~/.pgpass`, so no config holds it.
-
-```zsh
-pw=$(openssl rand -hex 24)
-print -r -- "POSTGRES_PASSWORD=$pw" > .env
-print -r -- "localhost:5432:*:tcg:$pw" >> ~/.pgpass
-chmod 600 ~/.pgpass
-unset pw
-```
+From v0.4.0 the data moves into Postgres, run locally in Docker: OrbStack or Docker Desktop on a
+Mac, Docker Engine on Linux. Its password is in `.env` (gitignored), for Compose, and in
+`~/.pgpass`, for every libpq client, so no config holds it; [Install](#install) writes both.
 
 ```bash
 riffle db up                    # start Postgres (compose.yaml) and wait until it's healthy

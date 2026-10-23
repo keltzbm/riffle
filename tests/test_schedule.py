@@ -2,6 +2,7 @@
 
 import plistlib
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,6 +10,12 @@ import pytest
 
 from riffle import schedule as sched
 from riffle import times
+
+
+@pytest.fixture(autouse=True)
+def mac(monkeypatch):
+    """launchd is macOS's, so the schedule commands run as on a Mac wherever the tests do."""
+    monkeypatch.setattr(sys, "platform", "darwin")
 
 
 class FakeLaunchctl:
@@ -35,11 +42,11 @@ class FakeLaunchctl:
         raise AssertionError(f"unexpected launchctl {verb}")
 
 
-PRINT = """gui/501/com.keltzbm.riffle-sync = {
+PRINT = """gui/501/gg.riffletcg.riffle-sync = {
 	active count = 0
-	path = /Users/keltzbm/Library/LaunchAgents/com.keltzbm.riffle-sync.plist
+	path = /Users/pat/Library/LaunchAgents/gg.riffletcg.riffle-sync.plist
 	state = not running
-	program = /Users/keltzbm/atelier/github/riffle/.venv/bin/riffle
+	program = /Users/pat/riffle/.venv/bin/riffle
 	runs = 3
 	last exit code = 0
 	event triggers = {
@@ -137,7 +144,7 @@ def test_parse_print_takes_the_job_state_not_the_trigger_state():
     info = sched.parse_print(PRINT)
     assert info == {
         "state": "not running",
-        "program": "/Users/keltzbm/atelier/github/riffle/.venv/bin/riffle",
+        "program": "/Users/pat/riffle/.venv/bin/riffle",
         "runs": "3",
         "last exit code": "0",
     }
@@ -197,7 +204,7 @@ def test_remove(tmp_path, monkeypatch):
 
 def test_the_trickle_job_runs_every_ten_minutes(tmp_path):
     d = sched.build([], tmp_path / "riffle", tmp_path / "mtgo-trickle.log", sched.TRICKLE)
-    assert (d["Label"], d["StartInterval"]) == ("com.keltzbm.riffle-mtgo", 600)
+    assert (d["Label"], d["StartInterval"]) == ("gg.riffletcg.riffle-mtgo", 600)
     assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "mtgo", "trickle"]
     assert "StartCalendarInterval" not in d
 
@@ -206,7 +213,7 @@ def test_the_trickle_job_installs_and_goes_beside_the_sync_job(tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(tmp_path))
     fake = FakeLaunchctl()
     path = sched.install([], exe=tmp_path / "riffle", run=fake, job=sched.TRICKLE)
-    assert path == tmp_path / "Library" / "LaunchAgents" / "com.keltzbm.riffle-mtgo.plist"
+    assert path == tmp_path / "Library" / "LaunchAgents" / "gg.riffletcg.riffle-mtgo.plist"
     assert plistlib.loads(path.read_bytes())["StartInterval"] == 600
     assert sched.log_path(sched.TRICKLE).name == "mtgo-trickle.log"
     assert sched.status(run=fake, job=sched.TRICKLE).loaded
@@ -234,10 +241,10 @@ def test_the_schedule_commands_show_and_manage_the_trickle_job(tmp_path, monkeyp
     shown = run("schedule", "trickle")
     assert "every      10 minutes: riffle mtgo trickle" in shown and "loaded     yes" in shown
     both = run("schedule")
-    assert both.index("com.keltzbm.riffle-sync") < both.index(
-        "com.keltzbm.riffle-mtgo"
+    assert both.index("gg.riffletcg.riffle-sync") < both.index(
+        "gg.riffletcg.riffle-mtgo"
     )  # the fake loads any label
-    assert run("schedule", "trickle", "--remove") == "removed com.keltzbm.riffle-mtgo\n"
+    assert run("schedule", "trickle", "--remove") == "removed gg.riffletcg.riffle-mtgo\n"
     assert "no trickle job — start one with: riffle schedule trickle" in run("schedule")
     assert run("schedule", "trickle", "--remove") == "no trickle job to remove\n"
 
@@ -267,7 +274,7 @@ def test_the_sync_job_shows_its_times_and_next_run_with_the_mac_s_zone(tmp_path,
 def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
     job = sched.watch_job("manapool")
     d = sched.build([], tmp_path / "riffle", tmp_path / "watch-manapool.log", job)
-    assert (d["Label"], d["StartInterval"]) == ("com.keltzbm.riffle-watch-manapool", 300)
+    assert (d["Label"], d["StartInterval"]) == ("gg.riffletcg.riffle-watch-manapool", 300)
     assert d["ProgramArguments"] == [str(tmp_path / "riffle"), "watch", "manapool"]
     assert sched.log_path(job).name == "watch-manapool.log"
 
@@ -275,7 +282,7 @@ def test_a_store_s_watch_job_runs_every_five_minutes(tmp_path):
 def test_the_schedule_commands_install_show_and_remove_a_watch_job_per_store(tmp_path, monkeypatch):
     run = _cli(tmp_path, monkeypatch, FakeLaunchctl(print_out=PRINT))
     stores = ["cardkingdom", "manapool", "cardmarket", "tcgcsv", "mtgjson", "goatbots", "scryfall"]
-    labels = [f"com.keltzbm.riffle-watch-{store}" for store in stores]
+    labels = [f"gg.riffletcg.riffle-watch-{store}" for store in stores]
     shown = run("schedule", "watch")
     assert [shown.index(label) for label in labels] == sorted(shown.index(label) for label in labels)
     assert "every      5 minutes: riffle watch tcgcsv" in shown and "loaded     yes" in shown

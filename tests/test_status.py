@@ -4,6 +4,7 @@ import gzip
 import json
 import re
 import subprocess
+import sys
 from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -439,7 +440,8 @@ def test_a_config_that_can_t_be_read_names_no_backup_log():
 
 
 def quiet(monkeypatch):
-    """The jobs and backup lines without asking this machine."""
+    """The jobs and backup lines without asking this machine, the jobs' as on a Mac."""
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(status, "jobs_lines", lambda *_, **__: ["9 of 9 loaded; every last run exited 0"])
     monkeypatch.setattr(status, "backup_line", lambda *_, **__: "Time Machine to Backup Disk")
     monkeypatch.setattr(status.times, "now", lambda: NOW)
@@ -490,6 +492,7 @@ def kept_singles(day: str) -> None:
 
 def test_the_command_says_what_each_source_the_jobs_and_the_store_hold(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "darwin")  # the jobs as launchd has them, on any runner
     monkeypatch.setattr(status.times, "now", lambda: NOW)
     monkeypatch.setattr(
         schedule, "status", lambda job=schedule.SYNC: schedule.Status(True, True, runs="3", last_exit="0")
