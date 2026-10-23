@@ -38,11 +38,15 @@ Both are the same bug: **name is not a key.**
 ```
 <vault>/<notes>/mtg/               the vault, the notes folder in it (notes), mtg/
 ├── _generated/     rewritten every sync — only when content changes
-│   ├── <deck>.data.md          owned/buy counts, paper and MTGO totals, buy table
+│   ├── <deck>-data.md          owned/buy counts, paper and MTGO totals, buy table
 │   └── collection-summary.md
 ├── _log/           append-only
 │   ├── prices.md               closed in 0.4.0: `riffle prices log` reads the store's days
-│   └── <deck>.versions.md      a +/- diff each time a list changes
+│   └── <deck>-versions.md      a +/- diff each time a list changes
+├── .data/          hidden_folder: decks out of Obsidian's view, their notes beside them
+│   ├── _generated/<deck>-data.md
+│   ├── _log/<deck>-versions.md   moved here from _log/ when the deck moves in, and back out
+│   └── commander/ …            authored — read, never written
 └── commander/ …    authored — read, never written
 ```
 

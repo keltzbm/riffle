@@ -10,6 +10,7 @@ import re
 from collections.abc import Collection, Iterator
 from pathlib import Path
 
+from riffle.config import HIDDEN_FOLDER
 from riffle.export.links import note_key
 from riffle.ingest.decklist import LINE, parse_text
 from riffle.models import Deck
@@ -96,11 +97,12 @@ def is_conflict(path: Path) -> bool:
     return CONFLICT.search(path.name) is not None
 
 
-def _notes(root: Path, skip: Collection[str]) -> Iterator[Path]:
-    """Every .md under root, never entering a folder named in skip: _generated/ holds a note
-    per deck, so a walk that only filtered it out would still list thousands."""
+def _notes(root: Path, skip: Collection[str], dots: bool = True) -> Iterator[Path]:
+    """Every .md under root, never entering a folder named in skip, nor, unless dots, one whose
+    name starts with a dot: _generated/ holds a note per deck, so a walk that only filtered it out
+    would still list thousands."""
     for folder, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in skip]
+        dirs[:] = [d for d in dirs if d not in skip and (dots or not d.startswith("."))]
         yield from (Path(folder, name) for name in files if name.endswith(".md"))
 
 
@@ -109,20 +111,32 @@ def deck_notes(mtg_dir: Path) -> list[Path]:
     return sorted(p for p in _notes(mtg_dir, SKIP_DIRS) if not is_conflict(p))
 
 
-def conflicts(mtg_dir: Path) -> list[Path]:
-    """The conflict copies among the deck notes and the version logs, for a person to merge.
-    _generated/'s are rebuilt, and pruned with the rest of what a sync didn't write."""
+def conflicts(mtg_dir: Path, hidden: str = HIDDEN_FOLDER) -> list[Path]:
+    """The conflict copies among the deck notes and the version logs, in view and in the hidden
+    folder, for a person to merge. _generated/'s are rebuilt, and pruned with the rest of what a
+    sync didn't write."""
     found = [p for p in _notes(mtg_dir, SKIP_DIRS) if is_conflict(p)]
-    logs = mtg_dir / "_log"
-    if logs.is_dir():
-        found += [p for p in logs.iterdir() if is_conflict(p)]
+    for logs in (mtg_dir / "_log", mtg_dir / hidden / "_log"):
+        if logs.is_dir():
+            found += [p for p in logs.iterdir() if is_conflict(p)]
     return sorted(found)
 
 
+def doubled_logs(mtg_dir: Path, hidden: str = HIDDEN_FOLDER) -> list[str]:
+    """The version logs in both mtg/_log/ and mtg/<hidden>/_log/, for a person to merge: a sync
+    appends to the one beside its deck's list and leaves the other as it is."""
+
+    def logs(folder: Path) -> set[str]:
+        return {p.name for p in folder.glob("*-versions.md")}
+
+    return sorted(logs(mtg_dir / "_log") & logs(mtg_dir / hidden / "_log"))
+
+
 def linking(notes_dir: Path) -> list[Path]:
-    """Every note whose card links are a person's: all under the notes folder but Riffle's own
-    (_generated/, _log/) and sync-conflict copies."""
-    return sorted(p for p in _notes(notes_dir, MACHINE) if not is_conflict(p))
+    """Every note whose card links are a person's and in Obsidian's view: all under the notes
+    folder but Riffle's own (_generated/, _log/), sync-conflict copies, and those in a folder whose
+    name starts with a dot, which Obsidian never indexes (the hidden folder's decks among them)."""
+    return sorted(p for p in _notes(notes_dir, MACHINE, dots=False) if not is_conflict(p))
 
 
 def riffle_notes(mtg_dir: Path) -> list[Path]:

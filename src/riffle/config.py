@@ -5,6 +5,7 @@
     database_url = "postgresql+psycopg://tcg@localhost:5432/tcg"
     card_notes = true
     card_images = "cache"
+    hidden_folder = ".data"
 
 The vault is the Obsidian vault itself; notes is the folder in it that holds a
 folder per game (mtg/, one-piece/, fab/, …), relative to the vault. Riffle reads
@@ -16,6 +17,11 @@ card_notes puts a note behind every card link, so hovering one shows the card; c
 is "cache" to keep each picture in the vault (about 100 KB a card), "link" to show
 Scryfall's, or "off" for none. A value that can't be read is named at the next sync, and
 the default is used.
+
+hidden_folder is the folder in mtg/ whose decks stay out of Obsidian's view: a deck whose
+note is in it has its data note and version log there too, in its own _generated/ and
+_log/, and links in it get no card notes. Obsidian never indexes a folder whose name starts
+with a dot, so a name without one isn't used.
 
 The database URL never holds a password: libpq reads it from ~/.pgpass.
 
@@ -55,6 +61,7 @@ def data_dir() -> Path:
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://tcg@localhost:5432/tcg"
 CARD_IMAGES = ("cache", "link", "off")  # kept in the vault, linked from Scryfall, or none
+HIDDEN_FOLDER = ".data"  # in mtg/; Obsidian indexes no folder whose name starts with a dot
 
 DEFAULT_CONFIG = f"""\
 # riffle configuration
@@ -68,6 +75,9 @@ database_url = "{DEFAULT_DATABASE_URL}"
 card_notes = true
 # its pictures: "cache" keeps each in the vault, "link" shows Scryfall's, "off" none
 card_images = "cache"
+# the folder in mtg/ whose decks keep their data notes and logs inside it, out of Obsidian's
+# view: Obsidian indexes no folder whose name starts with a dot
+hidden_folder = "{HIDDEN_FOLDER}"
 """
 
 
@@ -80,6 +90,7 @@ class Config:
     old_notes: str | None = None  # what a config without a notes line is read as, and the change it needs
     card_notes: bool = True
     card_images: str = "cache"
+    hidden_folder: str = HIDDEN_FOLDER
     unread: list[str] = field(default_factory=list)  # each setting that can't be read, and what's used
     backup_log: Path | None = None  # a backup job's log, for riffle status
 
@@ -137,6 +148,18 @@ def load() -> Config:
     if not isinstance(backup, str):
         unread.append(f"backup_log in {tilde(path)} is {backup!r}, not a path; none is used")
         backup = ""
+    hidden = raw.get("hidden_folder", HIDDEN_FOLDER)
+    used = f'"{HIDDEN_FOLDER}" is used'
+    if not isinstance(hidden, str) or hidden in ("", ".", "..") or "/" in hidden:
+        shown = f'"{hidden}"' if isinstance(hidden, str) else repr(hidden)
+        unread.append(f"hidden_folder in {tilde(path)} is {shown}, not a folder's name; {used}")
+        hidden = HIDDEN_FOLDER
+    elif not hidden.startswith("."):
+        unread.append(
+            f'hidden_folder in {tilde(path)} is "{hidden}", which doesn\'t start with a dot, '
+            f"so Obsidian would index it; {used}"
+        )
+        hidden = HIDDEN_FOLDER
     return Config(
         vault=vault,
         notes=notes,
@@ -147,6 +170,7 @@ def load() -> Config:
         else None,
         card_notes=card_notes,
         card_images=images,
+        hidden_folder=hidden,
         unread=unread,
         backup_log=Path(backup).expanduser() if backup else None,
     )

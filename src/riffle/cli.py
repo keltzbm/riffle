@@ -1186,6 +1186,13 @@ def export_deck(
             typer.echo(f"{d.slug}: unmatched (left as written): {', '.join(unresolved)}", err=True)
 
 
+def _some(names: list[str], most: int = 10) -> str:
+    """The names, or the first ten and how many more: the sync after a vault moves its lists
+    removes thousands of notes."""
+    more = f" and {len(names) - most:,} more" if len(names) > most else ""
+    return ", ".join(names[:most]) + more
+
+
 def _run_sync(tracker: Tracker, offline: bool = True) -> None:
     """Everything the data affects: collection pickup, prices, generated notes, logs."""
     cfg0 = config.load()
@@ -1239,7 +1246,7 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
             if cfg.card_notes
             else None
         )
-        res = syncmod.run(cfg.mtg_dir, inv, cat, card_notes=card_notes)
+        res = syncmod.run(cfg.mtg_dir, inv, cat, card_notes=card_notes, hidden=cfg.hidden_folder)
     if pictures and res.card_notes:
         pictures[0].ok(f"{res.card_notes.fetched:,} fetched")
     for label, why in res.failed:
@@ -1248,13 +1255,15 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
         f"{len(res.decks)} decks · {res.changed_notes} notes updated · "
         f"versions changed: {', '.join(res.versions) or 'none'}"
     )
+    if res.moved:
+        _echo(f"moved version logs beside their lists: {_some(res.moved)}")
     if res.card_notes:
         c = res.card_notes
         _echo(f"card notes: {c.cards:,} ({c.written:,} written, {c.removed:,} removed)")
     elif res.cards_removed:
         _echo(f"card notes: off ({res.cards_removed:,} removed)")
     if res.removed:
-        _echo(f"removed stale generated notes: {', '.join(res.removed)}")
+        _echo(f"removed stale generated notes: {_some(res.removed)}")
     for w in res.warnings:
         _echo(f"  ! {w}", err=True)
 
