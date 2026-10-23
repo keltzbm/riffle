@@ -1,7 +1,8 @@
 """The only user-facing surface. Everything here is a thin wrapper."""
 
-import shutil
+import os
 import sys
+import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
@@ -13,7 +14,7 @@ from typing import Annotated
 
 import typer
 
-from riffle import config, disk, net, times, vault
+from riffle import config, disk, net, runs, times, vault
 from riffle import sync as syncmod
 from riffle.export import formats
 from riffle.ingest import manabox, precons
@@ -259,30 +260,124 @@ def ingest_scryfall(
             _run_sync(tracker, offline=True)
 
 
-def _copy_manabox(src: Path) -> Path:
-    """Whole or not at all, keeping the export's own time: a sync reading the collection
-    meanwhile sees the old file or the new one."""
-    dest = config.load().collection_csv
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".part")
-    shutil.copy2(src.expanduser(), tmp)
-    tmp.replace(dest)
-    return dest
+def _copy_manabox(src: Path, dest: Path, made_ns: int) -> None:
+    """Whole or not at all, and on the disk (runs.write): a sync reading the collection meanwhile
+    sees the old file or the new one. Its time is `made_ns`, which the next sync's pickup is
+    measured against: a sync's pickup gives it the export's, so the next export taken is one made
+    after it; an ingest by hand, the ingest's, or the newest ManaBox*.csv's in Downloads when that
+    is later (dated by a clock ahead of this Mac's), so an export put back by hand stays the
+    collection."""
+    runs.write(dest, src.read_bytes())
+    os.utime(dest, ns=(made_ns, made_ns))
+
+
+def _keep_collection(cfg: config.Config) -> tuple[manabox.Kept | None, bool]:
+    """The collection kept with the exports before anything replaces it (manabox.keep): what
+    it's kept as, and whether it was kept just now; (None, False) when there's none, or it isn't
+    an export. One that can't be read can't be kept, so that's OSError, and nothing replaces it."""
+    stored = cfg.collection_csv
+    if not stored.exists():
+        return None, False
+    if manabox.why_not(stored):
+        stored.open("rb").close()
+        return None, False
+    return manabox.keep(stored, cfg.manabox_exports)
+
+
+def _since(
+    was: manabox.Kept | None, now: manabox.Kept, before: Path
+) -> tuple[str, list[str], manabox.Change | None]:
+    """What changed from `before`, the file kept as `was`, to the export kept as `now` that
+    replaces it: the end of the line that says so, the warnings, and the change itself. `before`
+    is read, not its kept copy, so a kept copy changed since can't hide a change."""
+    if was is None:
+        return "; nothing to compare", [], None
+    when = times.shown(was.at)
+    columns = manabox.columns_changed(before, now.path)
+    if columns:
+        return (
+            "",
+            [f"the export's columns changed since the export of {when}: {', '.join(columns)}; no diff"],
+            None,
+        )
+    old = manabox.load(before)
+    change = manabox.change(old, manabox.load(now.path))
+    copies = sum(h.quantity for h in old)
+    warnings = []
+    if change.removed * 2 > copies:
+        warnings.append(
+            f"the export of {times.shown(now.at)} drops {change.removed:,} of {copies:,} copies: "
+            "check it's the whole collection (riffle ingest manabox --diff)"
+        )
+    return f"; since the export of {when}: {change}", warnings, change
+
+
+def _not_kept(e: OSError) -> str:
+    return f"can't keep the export: {e}; the collection was not replaced"
+
+
+def _not_written(e: OSError, now: manabox.Kept) -> str:
+    return (
+        f"can't write the collection: {e}; it's as it was, and the export is kept as manabox/{now.path.name}"
+    )
+
+
+def _said(line: str, warnings: list[str], change: manabox.Change | None) -> None:
+    """An ingest's line, then each copy that changed when there's a change to list, then the
+    warnings."""
+    if line:
+        typer.echo(line)
+    for each in change.lines if change else ():
+        typer.echo(f"  {each}")
+    for w in warnings:
+        _echo(w, err=True)
 
 
 @ingest_app.command("manabox")
 def ingest_manabox(
     csv_path: Path = typer.Argument(None, help="Default: newest ManaBox*.csv in ~/Downloads"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
+    diff: bool = typer.Option(False, "--diff", help="List every copy that changed, a line each"),
 ) -> None:
-    """Copy a ManaBox collection export into the data folder."""
-    src = csv_path or manabox.newest_export(config.load().downloads)
+    """Keep a ManaBox collection export with the others, and make it the collection. One kept
+    already (they're in ~/.local/share/riffle/manabox) puts that export back."""
+    cfg = config.load()
+    src = csv_path or manabox.newest_export(cfg.downloads)
     if src is None:
         raise typer.BadParameter("no ManaBox export in ~/Downloads — pass a path")
-    why = manabox.why_not(src.expanduser())
+    src = src.expanduser()
+    why = manabox.why_not(src)
     if why:
         raise typer.BadParameter(f"{src.name} isn't a ManaBox export: {why}")
-    typer.echo(f"{src.name} -> {_copy_manabox(src)}")
+    try:
+        was, _ = _keep_collection(cfg)
+        now, new = manabox.keep(src, cfg.manabox_exports)
+    except OSError as e:
+        _echo(_not_kept(e), err=True)
+        raise typer.Exit(1) from e
+    if now == was:
+        typer.echo(f"{src.name} is the collection already (manabox/{now.path.name}); nothing changed")
+        if diff:
+            earlier = [k for k in manabox.kept(cfg.manabox_exports) if k.at < now.at]
+            if not earlier:
+                typer.echo("the first export kept, nothing to compare")
+                return
+            said, warnings, change = _since(earlier[-1], now, earlier[-1].path)
+            _said(said.removeprefix("; "), warnings, change)
+        return
+    said, warnings, change = _since(was, now, cfg.collection_csv)
+    try:
+        downloads = (p.stat().st_mtime_ns for p in manabox.exports(cfg.downloads))
+        _copy_manabox(now.path, cfg.collection_csv, max([time.time_ns(), *downloads]))
+    except OSError as e:
+        _echo(_not_written(e, now), err=True)
+        raise typer.Exit(1) from e
+    took = (
+        f"{src.name} is the collection now, kept as manabox/{now.path.name}"
+        if new
+        else f"restored the export of {times.shown(now.at)} (manabox/{now.path.name})"
+    )
+    _said(took + said, warnings, change if diff else None)
     if not no_sync:
         _resync()
 
@@ -1165,21 +1260,54 @@ def _run_sync(tracker: Tracker, offline: bool = True) -> None:
 
 
 def _pick_up(tracker: Tracker, cfg: config.Config) -> None:
-    """The newest ManaBox export in Downloads, when it's newer than the collection kept. A
-    ManaBox*.csv newer still that isn't an export is named, and left where it is."""
+    """Every ManaBox export Riffle sees kept with the others, the collection and each export in
+    Downloads; then the newest export in Downloads made the collection, when it's newer than the
+    collection. A ManaBox*.csv newer still that isn't an export is named, and left where it is."""
     stored = cfg.collection_csv
     since = stored.stat().st_mtime if stored.exists() else None
+    found: list[Path] = []
+    pick = None
     for path in manabox.exports(cfg.downloads):
-        if since is not None and path.stat().st_mtime <= since:
-            return
+        newer = since is None or path.stat().st_mtime > since
         why = manabox.why_not(path)
         if why is None:
-            _copy_manabox(path)
-            _echo(f"picked up {path.name} from Downloads")
-            return
-        tracker.step("collection").warn(
-            f"not picked up: {path.name} in Downloads isn't a ManaBox export ({why})"
+            if not found and newer:
+                pick = path
+            found.append(path)
+        elif not found and newer:
+            tracker.step("collection").warn(
+                f"not picked up: {path.name} in Downloads isn't a ManaBox export ({why})"
+            )
+    try:
+        was, seeded = _keep_collection(cfg)
+        kept = {path: manabox.keep(path, cfg.manabox_exports) for path in reversed(found)}
+    except OSError as e:
+        tracker.step("collection").fail(_not_kept(e))
+        return
+    taken = kept[pick][0] if pick else None
+    fresh = sorted(
+        (k for k, new in [(was, seeded), *kept.values()] if k and new and k != taken), key=lambda k: k.at
+    )
+    if fresh:
+        span = times.shown(fresh[0].at) + (f" to {times.shown(fresh[-1].at)}" if len(fresh) > 1 else "")
+        tracker.step("collection").ok(
+            f"kept {len(fresh)} export{'s' * (len(fresh) != 1)} in manabox/, {span}"
         )
+    if pick is None or taken is None:
+        return
+    said, warnings, _ = _since(was, taken, stored)
+    try:
+        _copy_manabox(taken.path, stored, pick.stat().st_mtime_ns)
+    except OSError as e:
+        tracker.step("collection").fail(_not_written(e, taken))
+        return
+    why = "newer than the collection" if since is not None else "no collection yet"
+    as_ = "kept as" if kept[pick][1] else "already kept as"
+    tracker.step("collection").ok(
+        f"picked up {pick.name} from Downloads ({why}), {as_} manabox/{taken.path.name}{said}"
+    )
+    for w in warnings:
+        tracker.step("collection").warn(w)
 
 
 def _copies(n: int) -> str:
@@ -1368,9 +1496,10 @@ def _check_vault() -> None:
 
 
 def _check_collection() -> None:
-    """Each copy read as its precon box's printing, then each copy a box holds that isn't
-    recorded as the box's printing, with where the card is recorded instead. A box that can't be
-    read is wrong; a copy not found isn't, since a card may have left its box."""
+    """How many ManaBox exports are kept, then each copy read as its precon box's printing, then
+    each copy a box holds that isn't recorded as the box's printing, with where the card is
+    recorded instead. A box that can't be read is wrong; a copy not found isn't, since a card may
+    have left its box."""
     cfg = config.load()
     if not cfg.collection_csv.exists():
         _echo(
@@ -1382,6 +1511,13 @@ def _check_collection() -> None:
     with _setup(boxes) as (_, _, inv):
         copies = sum(h.quantity for h in inv.holdings)
         typer.echo(f"collection: {copies:,} copies in {config.tilde(cfg.collection_csv)}")
+        exports = manabox.kept(cfg.manabox_exports)
+        typer.echo(
+            f"exports kept: {len(exports)}, newest {times.shown(exports[-1].at)}, "
+            f"in {config.tilde(cfg.manabox_exports)}"
+            if exports
+            else "exports kept: none yet"
+        )
         c = inv.corrected
         if c is None and not boxes.problems:
             typer.echo("precon boxes: none registered (a deck note's source: precon:<box> registers one)")

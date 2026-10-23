@@ -92,6 +92,11 @@ class Config:
         return data_dir() / "collection.csv"
 
     @property
+    def manabox_exports(self) -> Path:
+        """Every ManaBox export Riffle has seen, as the file it was (riffle.ingest.manabox.keep)."""
+        return data_dir() / "manabox"
+
+    @property
     def arena_list(self) -> Path:
         return data_dir() / "arena-collection.txt"
 

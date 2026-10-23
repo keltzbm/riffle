@@ -518,7 +518,7 @@ def test_a_manabox_export_is_copied_whole_then_the_vault_resynced(vault, tmp_pat
     result = CliRunner().invoke(app, ["ingest", "manabox", str(export)])
     assert result.exit_code == 0, result.output
     stored = cli.config.load().collection_csv
-    assert stored.read_bytes() == export.read_bytes() and stored.stat().st_mtime == export.stat().st_mtime
+    assert stored.read_bytes() == export.read_bytes()
     assert not stored.with_name(stored.name + ".part").exists()
     assert "1 decks · " in result.output
 
