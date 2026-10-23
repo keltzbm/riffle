@@ -330,6 +330,28 @@ From v0.4.0 the data moves into Postgres, run locally in Docker: OrbStack or Doc
 Mac, Docker Engine on Linux. Its password is in `.env` (gitignored), for Compose, and in
 `~/.pgpass`, for every libpq client, so no config holds it; [Install](#install) writes both.
 
+Two more lines in `.env` say where Postgres listens and where it keeps its files, for a database
+other machines use. `RIFFLE_DB_ADDRESS` is the IP address it publishes its port on, `127.0.0.1`
+unless set, so only this machine reaches it. `RIFFLE_DB_DATA` is where its files live: the Compose
+volume `pgdata` unless set (`tcg_pgdata` to Docker), or a folder on this machine when it's an
+absolute path (`./` and `~/` work too; any other value is read as a volume's name, which Compose
+refuses). Compose makes a folder that isn't there, so a mistyped path starts an empty database; a
+database already in the volume stays there. A server the others reach over Tailscale, say,
+publishes on its Tailscale address and keeps the files on its own disk. From the repo root on the
+server, after Install, whose first `printf` writes `.env` anew, with its own address and folder in
+place of these:
+
+```sh
+printf '%s\n' "RIFFLE_DB_ADDRESS=100.64.0.1" "RIFFLE_DB_DATA=/srv/postgres/riffle" >> .env
+riffle db up && riffle db upgrade
+```
+
+Postgres then answers only at that address, so every machine that uses it, the server too, names it
+in its `database_url` (`postgresql+psycopg://tcg@100.64.0.1:5432/tcg`) and in its `~/.pgpass`
+(`100.64.0.1:5432:*:tcg:` and the password). A Linux server that starts Docker before Tailscale has
+its address needs `net.ipv4.ip_nonlocal_bind=1`, or Postgres stays down at boot until the next
+`riffle db up`.
+
 ```bash
 riffle db up                    # start Postgres (compose.yaml) and wait until it's healthy
 riffle db upgrade               # apply pending migrations
@@ -393,7 +415,7 @@ gh codespace stop                                   # stops by itself when idle,
 |---|---|
 | Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status`; `hidden_folder` (default `.data`) is the folder in `mtg/` whose decks stay out of Obsidian's view |
 | Card data, collection, every ManaBox export (`manabox/`), sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
-| Database | Postgres 18 in Docker (`compose.yaml`, volume `tcg_pgdata`); `database_url` in config, password in `~/.pgpass` |
+| Database | Postgres 18 in Docker (`compose.yaml`; the volume `tcg_pgdata`, or the folder `RIFFLE_DB_DATA` names); `database_url` in config, password in `~/.pgpass` |
 | Output | `mtg/_generated/` and `mtg/_log/` in the notes folder, and `mtg/.data/_generated/` and `mtg/.data/_log/` for the decks in `mtg/.data/` — nothing else |
 
 ## Invariants
