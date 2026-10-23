@@ -7,6 +7,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -249,6 +250,24 @@ def isolated(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     monkeypatch.setattr(disk, "WARN_BELOW", 0)  # the machine's own free space warns nowhere
+
+
+@pytest.fixture
+def unreadable():
+    """Takes a file's read permission for the test and gives it back after, so its folder can
+    be cleaned up."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any file")
+    taken: list[Path] = []
+
+    def take(path: Path) -> Path:
+        path.chmod(0)
+        taken.append(path)
+        return path
+
+    yield take
+    for path in taken:
+        path.chmod(0o644)
 
 
 # ---- times ----------------------------------------------------------------------------

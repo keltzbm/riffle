@@ -7,13 +7,13 @@ import lzma
 import os
 import zipfile
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from riffle import net, runs, times, watching
+from riffle import net, runs, schedule, status, times, watching
 from riffle.cli import app
 from riffle.ingest import checks, pricelists
 
@@ -24,6 +24,12 @@ FETCHED = datetime(2026, 9, 27, 20, 51, 50, tzinfo=UTC)
 def data(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     return tmp_path / "riffle"
+
+
+@pytest.fixture(autouse=True)
+def no_jobs(monkeypatch):
+    """riffle check asks launchd which jobs are installed: none here, unless a test says so."""
+    monkeypatch.setattr(schedule, "status", lambda job=schedule.SYNC: schedule.Status(False, False))
 
 
 def gz(path, body: bytes, fetched: datetime | None = FETCHED) -> None:
@@ -705,3 +711,215 @@ def test_one_list_of_several_waiting_to_be_judged_is_said_as_one(data, monkeypat
     one_list("mtgjson", "meta", mtgjson.lists_dir("meta"), 1, last, lambda made: b"meta")
     monkeypatch.setattr(times, "now", lambda: last + timedelta(hours=8))
     assert by_source()["MTGJSON"].notes == ["1 list: lateness judged from 14 gaps, 1 so far"]
+
+
+# ---- the days with nothing kept, and the days short of what a list owes ---------------------
+
+
+def kept_singles(*days: str) -> None:
+    """Card Kingdom's singles kept whole under each day: made at 13:08 Pacific, fetched 43 minutes on."""
+    for day in days:
+        fetched = datetime.fromisoformat(f"{day}T13:51:50").replace(tzinfo=pricelists.PACIFIC)
+        gz(data_dir_of() / "cardkingdom" / "daily" / day / "singles.json.gz", ck(f"{day} 13:08:38"), fetched)
+
+
+def test_check_names_a_day_with_nothing_kept_between_days_kept_and_status_marks_it(data):
+    kept_singles("2026-09-25", "2026-09-26", "2026-09-28")
+    result = CliRunner().invoke(app, ["check"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[0] == "Card Kingdom  3 lists: 1 day with nothing kept (2026-09-27)"
+    row = status.source_rows()[0]
+    assert status.cells(row, status.window(date(2026, 9, 28), 4)) == ["⣿", "⣿", "✗", "⣿"]
+    kept_singles("2026-09-27")
+    assert CliRunner().invoke(app, ["check"]).output.splitlines()[0] == ("Card Kingdom  4 lists: all right")
+
+
+@pytest.mark.parametrize(
+    ("kept", "missing"),
+    [
+        (Counter({"2026-09-25": 2, "2026-09-26": 1, "2026-09-28": 3}), ["2026-09-27"]),
+        (Counter({"2026-09-30": 1, "2026-10-03": 1}), ["2026-10-01", "2026-10-02"]),
+        (Counter({"2026-09-25": 1, "2026-09-26": 0, "2026-09-27": 1}), ["2026-09-26"]),
+        (Counter({"2026-09-25": 1, "2026-09-26": 0}), []),
+        (Counter({"2026-09-25": 1}), []),
+        (Counter(), []),
+    ],
+)
+def test_missing_is_each_day_with_nothing_kept_between_the_first_and_the_last_kept(kept, missing):
+    assert checks.missing(kept) == missing
+
+
+def summary(problems: int = 0, short: tuple[str, ...] = (), **rows: tuple[str, ...]) -> str:
+    """A Cardmarket report's summary: a list kept on each day given, by row (_ for the unnamed one)."""
+    rep = checks.Report("Cardmarket", "list", problems=["x"] * problems)
+    rep.short = list(short)
+    for row, days in rows.items():
+        for day in days:
+            rep.files += 1
+            rep.days.add(day)
+            rep.tally(day, row.replace("_", ""))
+    return rep.summary()
+
+
+THREE = ("2026-09-25", "2026-09-26", "2026-09-28")
+SHORT = "singles: fewer than 24 lists on 2026-09-26 (19)"
+
+
+@pytest.mark.parametrize(
+    ("problems", "short", "rows", "expected"),
+    [
+        (0, (), {"_": THREE}, "3 lists: 1 day with nothing kept (2026-09-27)"),
+        (2, (), {"_": THREE}, "3 lists: 2 wrong; 1 day with nothing kept (2026-09-27)"),
+        (0, (), {"prices": THREE}, "3 lists: prices: 1 day with nothing kept (2026-09-27)"),
+        (0, (), {"_": THREE[:2]}, "2 lists: all right"),
+        (0, (SHORT,), {"_": THREE[:2]}, f"2 lists: {SHORT}"),
+        (
+            1,
+            (SHORT,),
+            {"_": THREE},
+            f"3 lists: 1 wrong; 1 day with nothing kept (2026-09-27); {SHORT}",
+        ),
+    ],
+)
+def test_summary_says_what_s_wrong_then_the_days_with_nothing_kept_then_the_short_days(
+    problems, short, rows, expected
+):
+    assert summary(problems, short, **rows) == expected
+
+
+def test_more_than_five_missing_days_are_counted_past_the_fifth():
+    evens = ("2026-08-31", *(f"2026-09-{d:02d}" for d in range(2, 15, 2)))
+    assert summary(_=evens) == (
+        "8 lists: 7 days with nothing kept"
+        " (2026-09-01, 2026-09-03, 2026-09-05, 2026-09-07, 2026-09-09, and 2 more)"
+    )
+
+
+def hourly_singles(days: dict[str, list[int]]) -> None:
+    """Card Kingdom's singles kept at 8 minutes past each hour given, by Pacific day, in their runs
+    and the watch log, as riffle watch cardkingdom keeps them."""
+    plist = pricelists.CARD_KINGDOM[0]
+    for day, hours in days.items():
+        for hour in hours:
+            made = datetime.fromisoformat(f"{day}T{hour:02d}:08:38").replace(tzinfo=pricelists.PACIFIC)
+            kept = runs.keep(pricelists.lists_dir(plist), made, ck(f"{made:%Y-%m-%d %H:%M:%S}"))
+            entry = {"at": runs.name(made + timedelta(minutes=30)), "list": plist.name} | watching.record(
+                kept
+            )
+            watching.log(plist.store, entry)
+
+
+HOURLY = list(range(24))
+
+
+def test_a_whole_day_with_fewer_than_nine_tenths_of_a_list_s_expected_count_is_named(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 15, 10, 0, tzinfo=UTC))  # 03:00 Pacific
+    hourly_singles(
+        {
+            "2026-10-12": [20, 21, 22, 23],
+            "2026-10-13": HOURLY,
+            "2026-10-14": HOURLY[:19],
+            "2026-10-15": [0, 1, 2],
+        }
+    )
+    assert by_source()["Card Kingdom"].short == ["singles: fewer than 24 lists on 2026-10-14 (19)"]
+    result = CliRunner().invoke(app, ["check"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[0] == (
+        "Card Kingdom  50 lists over 4 days: singles: fewer than 24 lists on 2026-10-14 (19)"
+    )
+
+
+def test_a_list_s_first_day_and_the_store_s_today_are_never_short_nor_a_day_with_its_count(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 15, 10, 0, tzinfo=UTC))
+    hourly_singles(
+        {"2026-10-12": [20, 21, 22, 23], "2026-10-13": HOURLY, "2026-10-14": HOURLY, "2026-10-15": [0, 1, 2]}
+    )
+    assert by_source()["Card Kingdom"].short == []
+
+
+def test_more_than_five_short_days_are_counted_past_the_fifth(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 21, 10, 0, tzinfo=UTC))
+    six = HOURLY[:6]
+    hourly_singles(
+        {"2026-10-12": [22, 23], **{f"2026-10-{d}": six for d in range(13, 21)}, "2026-10-21": [0, 1, 2]}
+    )
+    assert by_source()["Card Kingdom"].short == [
+        "singles: fewer than 24 lists on 2026-10-13 (6), 2026-10-14 (6), 2026-10-15 (6), 2026-10-16 (6),"
+        " 2026-10-17 (6), and 3 more"
+    ]
+
+
+def test_a_list_with_no_usual_gap_yet_isn_t_judged_for_short_days(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 15, 10, 0, tzinfo=UTC))
+    hourly_singles({"2026-10-12": [22, 23], "2026-10-13": [0, 1, 2, 3, 4], "2026-10-14": [0, 1]})
+    assert by_source()["Card Kingdom"].short == []
+
+
+def test_a_list_kept_with_nothing_in_its_watch_log_isn_t_judged_for_short_days(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 15, 10, 0, tzinfo=UTC))
+    plist = pricelists.CARD_KINGDOM[0]
+    for hour in range(16):
+        made = datetime(2026, 10, 13, hour, 8, 38, tzinfo=pricelists.PACIFIC)
+        runs.keep(pricelists.lists_dir(plist), made, ck(f"{made:%Y-%m-%d %H:%M:%S}"))
+    assert by_source()["Card Kingdom"].short == []
+
+
+def test_check_exits_1_over_a_job_log_it_can_t_read(data, tmp_path, monkeypatch, unreadable):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        schedule, "status", lambda job=schedule.SYNC: schedule.Status(True, True, runs="3", last_exit="0")
+    )
+    log = schedule.log_path(schedule.watch_job("manapool"))
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("2026-10-19 01:26:10 UTC  riffle watch manapool\n01:26:20  exited 0 after 9.8s\n")
+    unreadable(log)
+    result = CliRunner().invoke(app, ["check"])
+    assert result.exit_code == 1, result.output
+    assert (
+        "jobs          watch-manapool.log: unreadable (Permission denied); failures in the last 24 h unknown"
+        in result.output.splitlines()
+    )
+
+
+def watch_runs(store: str, counts: dict[str, int]) -> None:
+    """A watch's log with as many runs each UTC day as counts says, five minutes apart from midnight."""
+    lines = []
+    for day, n in counts.items():
+        start = datetime.fromisoformat(f"{day}T00:00:00+00:00")
+        lines += [
+            f"{start + k * timedelta(minutes=5):%Y-%m-%d %H:%M:%S} UTC  riffle watch {store}"
+            for k in range(n)
+        ]
+    path = schedule.log_path(schedule.watch_job(store))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_check_names_each_day_of_the_last_two_weeks_a_job_ran_too_rarely_a_line_each(data, monkeypatch):
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 22, 12, 0, tzinfo=UTC))
+    monkeypatch.setattr(
+        schedule, "status", lambda job=schedule.SYNC: schedule.Status(True, True, last_exit="0")
+    )
+    days = {f"2026-10-{d:02d}": 288 for d in range(5, 22)}
+    watch_runs("manapool", days | {"2026-10-05": 3, "2026-10-06": 30, "2026-10-10": 30, "2026-10-15": 100})
+    result = CliRunner().invoke(app, ["check"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-2:] == [
+        "jobs          1 of 8 jobs started too few runs on 2026-10-10, the fewest watch-manapool, 30 of 288",
+        "              1 of 8 jobs started too few runs on 2026-10-15, the fewest watch-manapool, 100 of 288",
+    ]
+    # 2026-10-06 ran too rarely too, before the two weeks
+    assert "2026-10-06" not in result.output
+
+
+def test_check_judges_no_jobs_where_launchctl_can_t_be_asked(data, monkeypatch):
+    def no_launchctl(job: schedule.Job = schedule.SYNC) -> schedule.Status:
+        raise FileNotFoundError("launchctl")
+
+    monkeypatch.setattr(times, "now", lambda: datetime(2026, 10, 8, 12, 0, tzinfo=UTC))
+    monkeypatch.setattr(schedule, "status", no_launchctl)
+    watch_runs("manapool", {"2026-10-05": 3, "2026-10-06": 30, "2026-10-07": 288})
+    result = CliRunner().invoke(app, ["check"])
+    assert result.exit_code == 0, result.output
+    assert not [line for line in result.output.splitlines() if line.startswith("jobs")]

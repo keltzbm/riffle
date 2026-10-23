@@ -212,7 +212,8 @@ seven runs in a row the sync warns.
 
 ```bash
 riffle check                                # every kept file under its own day, made before it was fetched;
-                                            # GoatBots' whole years to Dec 31; tcgcsv's unfinished games
+                                            # GoatBots' whole years to Dec 31; tcgcsv's unfinished games;
+                                            # every day with nothing kept; the days in the last two weeks the jobs ran too rarely
 riffle status                               # what's kept, each source's last 14 days as a strip (--days N),
                                             # gaps marked; MTGO's backlog, the jobs, disk, backup
 ```
@@ -222,6 +223,20 @@ that day against the busiest day its row shows (`⣀ ⣤ ⣶ ⣿`); `✗` is a d
 nothing kept between days that had some, `·` one not kept yet. The shapes say
 it all; color only repeats them, in the progress bars' purple. It reads what
 `riffle check` reads and asks no source anything.
+
+`riffle check` names each day a source kept nothing between days it did, and
+each day Card Kingdom or Mana Pool kept fewer than nine tenths of the lists a
+day that list's usual gap makes: neither store serves an older list, so those
+days are gone for good, and `check` names them without failing over them. Below
+the strips, `riffle status` says what the jobs' logs say: the sync's last run
+when it failed, until a run passes; the steps that failed in the last 24 hours;
+and each day a job run every few minutes started fewer than nine tenths of its
+runs, as when the Mac sleeps. The store's line gives the days of disk left at
+this week's rate, and the sync warns when that's under 14. With `backup_log` in
+the config naming a backup job's log (lines like `2026-10-22T08:31:34Z backup
+ok`, and `backup.failed` beside it while a run fails), the backup line says when
+the last backup and check went well; without it, whether Time Machine has a
+destination.
 
 `riffle sync` does this on its own, so the scheduled job builds the history
 day by day. Loading it into a database comes later.
@@ -244,7 +259,10 @@ riffle schedule trickle            # the MTGO trickle, every 10 minutes; --remov
 The scheduled job runs as the Mac wakes, so `riffle sync` first waits up to two
 minutes for the network, then syncs offline if it's still down. No step stops a
 sync: each failure is reported, the rest carries on, and the command exits 1
-naming what failed. `riffle schedule` shows the last exit; `sync.log` says why.
+naming what failed. Each run in a job's log ends with a closing line,
+`22:14:12  exited 1 after 12m 07s`. `riffle schedule` reads it back: each job's
+last run and how it ended, when the next is due, the run it's failing on until a
+run passes, and the steps that failed in the last 24 hours; `sync.log` says why.
 The log's times are UTC; what Riffle prints to the terminal is the Mac's time,
 with the zone. The notes it writes are dated in UTC, and the price log by the
 Scryfall day of the prices it logs.
@@ -324,7 +342,7 @@ gh codespace stop                                   # stops by itself when idle,
 
 | What | Where |
 |---|---|
-| Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks |
+| Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status` |
 | Card data, collection, sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
 | Database | Postgres 18 in Docker (`compose.yaml`, volume `tcg_pgdata`); `database_url` in config, password in `~/.pgpass` |
 | Output | `mtg/_generated/` and `mtg/_log/` in the notes folder — nothing else |

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import lateness, runs, times, watching
+from riffle import joblogs, lateness, runs, times, watching
 from riffle.config import data_dir
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
 from riffle.progress import elapsed
@@ -49,7 +49,8 @@ from riffle.runs import zstd
 SLACK = pricelists.SLACK
 MTGJSON_DATE = re.compile(rb'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
 TCGCSV_SET = re.compile(rb'^\{"groupId": (\d+), "fetched": "[^"]*", "lastModified": "([^"]+)"', re.MULTILINE)
-SHOWN = 5  # unfinished games named in a note; the rest are counted
+SHOWN = 5  # unfinished games, missing days or short days named; the rest are counted
+DAY = timedelta(days=1)
 
 
 @dataclass
@@ -62,17 +63,48 @@ class Report:
     notes: list[str] = field(default_factory=list)
     kept: dict[str, Counter[str]] = field(default_factory=dict)  # row -> ISO day -> kept: riffle status
     late: bool = False  # a list late by its own margin (riffle.lateness)
+    short: list[str] = field(default_factory=list)  # each list's days kept short of its usual count
 
     def tally(self, day: str, row: str = "") -> None:
         """One more kept on day, in a row of its own when a source has more than one."""
         self.kept.setdefault(row, Counter())[day] += 1
 
     def summary(self) -> str:
+        """What was kept, then what's wrong, the days with nothing kept, and the short days; all
+        right if none. A day lost isn't counted wrong: it can't be fetched again, so it would
+        fail every check from then on."""
         count = f"{self.files:,} {self.what}{'s' * (self.files != 1)}"
         if self.days and len(self.days) != self.files:
             count += f" over {len(self.days):,} day{'s' * (len(self.days) != 1)}"
-        found = f"{len(self.problems)} wrong" if self.problems else "all right"
-        return f"{count}: {found}" if self.files else "nothing kept yet"
+        found = [f"{len(self.problems)} wrong"] if self.problems else []
+        for row, days in sorted(self.kept.items()):
+            lost = missing(days)
+            if lost:
+                said = f"{len(lost)} day{'s' * (len(lost) != 1)} with nothing kept ({_first(lost)})"
+                found.append(f"{row}: {said}" if row else said)
+        found += self.short
+        return f"{count}: {'; '.join(found) or 'all right'}" if self.files else "nothing kept yet"
+
+
+def missing(days: Counter[str]) -> list[str]:
+    """The days with nothing kept between the first and the last with something, oldest first:
+    what riffle check names and riffle status draws as a gap."""
+    kept = sorted(day for day, n in days.items() if n)
+    if len(kept) < 2:
+        return []
+    have, day, last = set(kept), date.fromisoformat(kept[0]) + DAY, date.fromisoformat(kept[-1])
+    out = []
+    while day < last:
+        if day.isoformat() not in have:
+            out.append(day.isoformat())
+        day += DAY
+    return out
+
+
+def _first(named: list[str]) -> str:
+    """The first SHOWN, and how many more."""
+    more = len(named) - SHOWN
+    return ", ".join(named[:SHOWN]) + (f", and {more} more" if more > 0 else "")
 
 
 def _rel(path: Path) -> str:
@@ -184,15 +216,18 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
     """A store's lists kept since 2026-09-29: each file as kept, each list made before its
     fetch; and each list's usual gap, and whether it's late."""
     named = {plist.name: plist for plist in lists}
+    each: dict[str, Counter[str]] = {plist.name: Counter() for plist in lists}  # list -> day -> kept
     for path, entry in _kept_entries(rep, lists[0].store):
         plist = named.get(entry.get("list", ""))
         made, got = runs.parse(entry.get("made", "")), runs.parse(entry.get("at", ""))
         if plist is None or made is None or got is None or "file" not in entry:
             rep.problems.append(f"{_rel(path)}: an entry it can't read: {entry}")
             continue
+        day = pricelists.day_of(made, plist).isoformat()
         rep.files += 1
-        rep.days.add(pricelists.day_of(made, plist).isoformat())
-        rep.tally(pricelists.day_of(made, plist).isoformat())
+        rep.days.add(day)
+        rep.tally(day)
+        each[plist.name][day] += 1
         _hashed(rep, entry)
         if made - got > SLACK:
             rep.problems.append(
@@ -200,11 +235,12 @@ def _watched(rep: Report, lists: tuple[pricelists.PriceList, ...]) -> None:
                 f"{rep.source}'s clock isn't {plist.zone_name}"
             )
     for plist in lists:
-        _usual_gap(rep, plist)
+        _usual_gap(rep, plist, each[plist.name])
 
 
-def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
-    """How often a list has come lately, and whether it's late (riffle.lateness), from its own stamps."""
+def _usual_gap(rep: Report, plist: pricelists.PriceList, kept: Counter[str]) -> None:
+    """How often a list has come lately, and whether it's late (riffle.lateness), from its own
+    stamps; and the days it was kept short of that (kept: the watch's lists, by day)."""
     folder = pricelists.lists_dir(plist)
     made = sorted(filter(None, map(runs.parse, runs.kept(folder))))
     if len(made) < 2:
@@ -217,6 +253,7 @@ def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
         rep.notes.append(f"{said}; lateness judged from {lateness.LEAST_GAPS} gaps, {gaps} so far")
         return
     said += f", one every {elapsed(verdict.usual.total_seconds())} lately"
+    _short(rep, plist, kept, verdict.usual)
     if verdict.margin > lateness.MARGIN:
         said += f", its margin {verdict.margin:.2f} from its own gaps"
     if verdict.late:
@@ -227,6 +264,23 @@ def _usual_gap(rep: Report, plist: pricelists.PriceList) -> None:
             f"past {verdict.margin:.2f} × its longest gap in 30 days ({bar})"
         )
     rep.notes.append(said)
+
+
+def _short(rep: Report, plist: pricelists.PriceList, kept: Counter[str], usual: timedelta) -> None:
+    """Each whole day, from the day after the list's first to the day before the store's today,
+    on which fewer than joblogs.ENOUGH of the lists its usual gap makes a day were kept: lists an
+    hourly store published and no running watch asked for, since the store serves only its newest."""
+    if not kept:
+        return
+    owed, today = round(DAY / usual), pricelists.day_of(times.now(), plist)
+    day, short = date.fromisoformat(min(kept)) + DAY, []
+    while day < today:
+        n = kept.get(day.isoformat(), 0)
+        if n < joblogs.ENOUGH * owed:
+            short.append(f"{day.isoformat()} ({n})")
+        day += DAY
+    if short:
+        rep.short.append(f"{plist.name}: fewer than {owed} lists on {_first(short)}")
 
 
 def cardmarket_guides() -> Report:

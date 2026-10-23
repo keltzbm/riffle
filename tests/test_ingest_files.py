@@ -126,6 +126,28 @@ def test_the_card_note_settings(tmp_path, monkeypatch, lines, notes, images, unr
     )
 
 
+@pytest.mark.parametrize(
+    ("line", "named", "unread"),
+    [
+        ('backup_log = "~/.local/state/backup/backup.log"\n', True, []),
+        ("", False, []),
+        ('backup_log = ""\n', False, []),
+        (
+            "backup_log = 3\n",
+            False,
+            ["backup_log in ~/.config/riffle/config.toml is 3, not a path; none is used"],
+        ),
+    ],
+)
+def test_the_backup_log_setting_names_the_backup_job_s_log(tmp_path, monkeypatch, line, named, unread):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    config.write_default().write_text(line)
+    cfg = config.load()
+    assert cfg.backup_log == (tmp_path / ".local" / "state" / "backup" / "backup.log" if named else None)
+    assert cfg.unread == unread
+
+
 def test_config_file_is_read_and_never_overwritten(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     path = config.write_default()

@@ -239,33 +239,45 @@ def save(event: Event) -> Path:
 
 def _event_files(folder: Path, since: date | None) -> Iterator[Path]:
     """Every event file in the store, skipping the months before since: the top folder's,
-    kept there by earlier builds, then each month's."""
+    kept there by earlier builds, then each month's. A top-folder copy of an event its month
+    holds too is passed over, so no event is read twice; _file_events sets it aside."""
     if not folder.exists():
         return
-    yield from folder.glob("*.json")
+    for path in folder.glob("*.json"):
+        parsed = parse_slug(path.stem)
+        if parsed is None or not (folder / parsed[1][:4] / parsed[1][5:7] / path.name).exists():
+            yield path
     first = since.isoformat()[:7] if since else ""
     for month in sorted(folder.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]")):
         if f"{month.parent.name}-{month.name}" >= first:
             yield from month.glob("*.json")
 
 
-def kept_days() -> Counter[str]:
-    """Events kept, by the date in their names: every one in the store (riffle status)."""
+def kept_days(since: date | None = None) -> Counter[str]:
+    """Events stored with their decks, by the dates in their names (riffle status). One dated
+    before since is counted by its name, unread: a strip shows the days from since, and needs
+    the earlier ones only to know where its first day is."""
     found: Counter[str] = Counter()
+    first = since.isoformat() if since else ""
     for path in _event_files(store_dir(), None):
         parsed = parse_slug(path.stem)
-        if parsed is not None:
+        if parsed is not None and (parsed[1] < first or _has_decks(path)):
             found[parsed[1]] += 1
     return found
 
 
 def _file_events() -> int:
     """Events earlier builds kept in the store's top folder, moved under their months. A
-    rename: nothing is rewritten, and a file whose name isn't an event's stays."""
+    rename: nothing is rewritten, and a file whose name isn't an event's stays. One whose month
+    holds it already is set aside beside it as <slug>.json.dup, both copies kept."""
     moved = 0
     for path in sorted(store_dir().glob("*.json")) if store_dir().exists() else ():
-        dest = event_path(path.stem)
-        if parse_slug(path.stem) is None or dest.exists():
+        dest, dup = event_path(path.stem), path.with_name(f"{path.name}.dup")
+        if parse_slug(path.stem) is None:
+            continue
+        if dest.exists():
+            if not dup.exists():
+                path.replace(dup)
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         path.replace(dest)
@@ -319,8 +331,10 @@ def is_stored(slug: str) -> bool:
     """Stored with decks. An empty event was saved before its lists were
     published (older versions did this) — it counts as not stored."""
     path = stored_path(slug)
-    if not path.exists():
-        return False
+    return path.exists() and _has_decks(path)
+
+
+def _has_decks(path: Path) -> bool:
     try:
         return bool(json.loads(path.read_text(encoding="utf-8")).get("decks"))
     except (OSError, ValueError):

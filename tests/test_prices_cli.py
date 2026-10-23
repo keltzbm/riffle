@@ -111,10 +111,12 @@ def test_ingest_prices_reports_every_source_failing_then_exits_1(monkeypatch):
     assert "! Card Kingdom singles: HTTP 502" in result.output
     assert "! Mana Pool singles: HTTP 502" in result.output
     assert "! tcgcsv prices: no answer after 3 tries" in result.output
-    assert result.output.rstrip().endswith(
+    *_v, failed, closed = result.output.rstrip().split("\n")
+    assert failed == (
         "8 steps failed: Scryfall prices, MTGJSON prices today, MTGJSON 90 days, GoatBots prices, "
         "Cardmarket mtg, Card Kingdom singles, Mana Pool singles, tcgcsv prices"
     )
+    assert "  exited 1 after " in closed
 
 
 def test_a_disk_error_in_one_source_is_reported_and_the_rest_still_run(monkeypatch):

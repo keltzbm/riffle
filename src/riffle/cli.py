@@ -18,7 +18,7 @@ from riffle import sync as syncmod
 from riffle.export import formats
 from riffle.ingest import manabox, precons
 from riffle.models import Deck
-from riffle.progress import Step, Tracker, Watched, contained, elapsed, failure, open_tracker
+from riffle.progress import LogTracker, Step, Tracker, Watched, contained, elapsed, failure, open_tracker
 from riffle.store import Catalog
 
 app = typer.Typer(help="Collection, decks, prices, and the Obsidian vault.", no_args_is_help=True)
@@ -128,15 +128,27 @@ def _catalog() -> Iterator[Catalog]:
 @contextmanager
 def _tracked(title: str) -> Iterator[Tracker]:
     """A command's steps. A failed step doesn't stop the command: it finishes its work, then
-    names what failed and exits 1, so the scheduled job's last exit shows it. Inside the block,
-    print with _echo, not typer.echo."""
-    with open_tracker(title) as tracker:
-        watched = Watched(tracker)
-        yield watched
-    if watched.failed:
-        n = len(watched.failed)
-        typer.echo(f"{n} step{'s' * (n != 1)} failed: {', '.join(watched.failed)}", err=True)
-        raise typer.Exit(1)
+    names what failed and exits 1, so the scheduled job's last exit shows it. A run written as
+    plain lines, a scheduled job's, ends with a closing line saying how it exited, whatever
+    ended it (riffle.joblogs reads it back). Inside the block, print with _echo, not typer.echo."""
+    log: LogTracker | None = None
+    code = 1
+    try:
+        with open_tracker(title) as tracker:
+            log = tracker if isinstance(tracker, LogTracker) else None
+            watched = Watched(tracker)
+            yield watched
+        if watched.failed:
+            n = len(watched.failed)
+            typer.echo(f"{n} step{'s' * (n != 1)} failed: {', '.join(watched.failed)}", err=True)
+            raise typer.Exit(1)
+        code = 0
+    except typer.Exit as e:
+        code = e.exit_code
+        raise
+    finally:
+        if log is not None:
+            log.footer(code)
 
 
 def _lock_path() -> Path:
@@ -1299,6 +1311,8 @@ def check_cmd(
     if what == "collection":
         _check_collection()
         return
+    from riffle import status
+
     wrong = 0
     for rep in checks.run():
         typer.echo(f"{rep.source:<14}{rep.summary()}")
@@ -1307,8 +1321,19 @@ def check_cmd(
         for problem in rep.problems:
             typer.echo(f"  ! {problem}", err=True)
         wrong += len(rep.problems)
+    try:
+        installed = [job for job, _ in status.installed_jobs()]
+    except OSError:
+        # no launchctl to ask, so no jobs to judge: they run only on a Mac
+        installed = []
+    logs, unread = status.job_logs(installed)
+    today = times.now().astimezone(UTC).date()
+    said = status.short_runs(logs, today, today - timedelta(days=status.DAYS - 1)) + unread
+    for n, line in enumerate(said):
+        typer.echo(f"{'jobs' if n == 0 else '':<14}{line}")
     if wrong:
         typer.echo(f"{wrong} price file{'s' * (wrong != 1)} dated wrong", err=True)
+    if wrong or unread:
         raise typer.Exit(1)
 
 
@@ -1475,15 +1500,58 @@ def _show_every(job, what: str, start: str) -> None:
     if not st.installed and not st.loaded:
         typer.echo(f"no {what} job — start one with: {start}")
         return
+    first, after, log = _show_runs(job)
     typer.echo(job.label)
     typer.echo(f"  every      {(job.interval or 0) // 60} minutes: riffle {' '.join(job.args)}")
+    for line in first:
+        typer.echo(line)
     typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + start}")
     if st.loaded:
         typer.echo(
             f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
         )
-    typer.echo(f"  log        {sched.log_path(job)}")
+    for line in after:
+        typer.echo(line)
+    typer.echo(log)
     typer.echo(f"  plist      {sched.plist_path(job)}")
+
+
+def _show_runs(job) -> tuple[list[str], list[str], str]:
+    """What a job's log says (riffle.joblogs): its newest run and how it ended, and for a job
+    run every few minutes when the next is due; the run it's failing on, until a run passes, and
+    the steps that failed in the last 24 hours; and its log line. launchd's own count starts
+    again at each reload, so its last exit can be 0 the morning after ten failed runs."""
+    from riffle import joblogs, status
+    from riffle import schedule as sched
+
+    path = sched.log_path(job)
+    try:
+        runs = joblogs.read(path)
+    except (OSError, UnicodeDecodeError) as e:
+        return [], [], f"  log        {path}: {status.unreadable(e)}"
+    if not runs:
+        return ["  last run   none in the log"], [], f"  log        {path}"
+    newest = runs[-1]
+    ended = "exit unknown" if newest.exit is None else f"exited {newest.exit} after {newest.took}"
+    first = [f"  last run   {_when(newest.started)}: {ended}"]
+    if job.interval:
+        first.append(f"  next run   about {_when(newest.started + timedelta(seconds=job.interval))}")
+    after = []
+    failing = joblogs.failing(runs)
+    if failing:
+        run, n = failing
+        which = f"the {joblogs.nth(n)} run in a row, the last" if n > 1 else "the last run,"
+        after.append(f"  failing    {which} {_when(run.started)}" + (f": {run.last}" if run.last else ""))
+    failed = joblogs.failed_since(runs, times.now() - timedelta(days=1))
+    if failed:
+        n, (at, what) = len(failed), failed[-1]
+        after.append(f"  failed     {n} step{'s' * (n != 1)} in the last 24 h, the last {_when(at)}: {what}")
+    return first, after, f"  log        {path}"
+
+
+def _when(t: datetime) -> str:
+    """A time as schedule show prints it: the Mac's, as launchd runs the jobs by it."""
+    return times.local(t, "%a %Y-%m-%d %H:%M")
 
 
 def _show_sync() -> None:
@@ -1496,18 +1564,21 @@ def _show_sync() -> None:
     now = times.now().astimezone()  # launchd runs the job by the Mac's clock
     at = ", ".join(sched.fmt(t) for t in st.times) or "(none in plist)"
     nxt = sched.next_run(st.times, now.replace(tzinfo=None))
+    first, after, log = _show_runs(sched.SYNC)
     typer.echo(f"{sched.LABEL}")
     typer.echo(f"  times      {at}  (24-hour, daily, the Mac's time: {now.tzname()})")
-    typer.echo(
-        f"  next run   {times.local(nxt.astimezone(), '%a %Y-%m-%d %H:%M')}" if nxt else "  next run   —"
-    )
+    for line in first:
+        typer.echo(line)
+    typer.echo(f"  next run   {_when(nxt.astimezone())}" if nxt else "  next run   —")
     reload = "riffle schedule set " + " ".join(sched.fmt(t) for t in st.times)
     typer.echo(f"  loaded     {'yes' if st.loaded else 'NO — reload with: ' + reload}")
     if st.loaded:
         typer.echo(
             f"  runs       {st.runs or '0'}   last exit {st.last_exit or '—'}   state {st.state or '—'}"
         )
-    typer.echo(f"  log        {sched.log_path()}")
+    for line in after:
+        typer.echo(line)
+    typer.echo(log)
     typer.echo(f"  plist      {sched.plist_path()}")
 
 

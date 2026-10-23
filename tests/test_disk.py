@@ -75,3 +75,41 @@ def test_a_disk_that_cant_be_read_fails_the_step(low, tracker):
 
     disk.check(tracker, usage=broken)
     assert tracker.outcomes() == {"disk": ("fail", "free space unknown (Input/output error)")}
+
+
+# ---- the days left, warned of at two weeks ----------------------------------------------
+
+FALLING = [(NOW - timedelta(days=7), 440 * GB), (NOW - timedelta(days=2), 340 * GB)]  # 20 GB a day
+RISING = [(NOW - timedelta(days=4), 280 * GB)]
+
+
+def test_history_is_every_reading_oldest_first():
+    assert disk.history() == []
+    readings((NOW - timedelta(days=2), 50 * GB), (NOW - timedelta(days=1), 48 * GB))
+    assert disk.history() == [(NOW - timedelta(days=2), 50 * GB), (NOW - timedelta(days=1), 48 * GB)]
+
+
+def test_the_rate_is_signed_so_free_space_rising_or_holding_reads_too():
+    assert disk.rate(FALLING, NOW, 300 * GB) == 20 * GB
+    assert disk.rate(RISING, NOW, 300 * GB) == -5 * GB
+    assert disk.rate([(NOW - timedelta(days=4), 300 * GB)], NOW, 300 * GB) == 0
+    assert disk.rate([(NOW - timedelta(hours=12), 320 * GB)], NOW, 300 * GB) is None
+
+
+def test_days_left_only_while_free_space_falls():
+    assert disk.days_left(FALLING, NOW, 300 * GB) == 15
+    assert disk.days_left(RISING, NOW, 300 * GB) is None
+    assert disk.days_left([(NOW - timedelta(days=4), 300 * GB)], NOW, 300 * GB) is None
+    assert disk.days_left([], NOW, 300 * GB) is None
+
+
+def test_under_two_weeks_of_disk_left_warns_with_plenty_of_space(low, tracker):
+    readings((NOW - timedelta(days=7), 530_500_000_000))  # 26.5 GB a day
+    disk.check(tracker, usage=free(345 * GB))
+    assert tracker.outcomes() == {"disk": ("warn", "345 GB free; about 13 days left at 26.5 GB a day")}
+
+
+def test_two_weeks_of_disk_left_is_no_warning(low, tracker):
+    readings((NOW - timedelta(days=7), 506 * GB))  # 23 GB a day: 15 days
+    disk.check(tracker, usage=free(345 * GB))
+    assert tracker.steps == []

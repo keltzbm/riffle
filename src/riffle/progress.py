@@ -207,13 +207,20 @@ class LogTracker:
         now: Callable[[], datetime] = times.now,
     ) -> None:
         self._out, self._err, self.clock, self.now = out, err, clock, now
+        self._began = clock()
 
     def write(self, line: str, error: bool = False) -> None:
         stream = (self._err or sys.stderr) if error else (self._out or sys.stdout)
         print(line, file=stream, flush=True)
 
     def header(self, title: str) -> None:
+        self._began = self.clock()
         self.write(f"{times.utc(self.now(), '%Y-%m-%d %H:%M:%S')}  {title}")
+
+    def footer(self, code: int) -> None:
+        """The run's closing line: when it ended, its exit code, and how long it took."""
+        took = elapsed(self.clock() - self._began)
+        self.write(f"{self.now().astimezone(UTC).strftime('%H:%M:%S')}  exited {code} after {took}")
 
     def step(self, label: str, total: int | None = None, unit: str = "") -> "_LogStep":
         return _LogStep(self, label)
