@@ -1,8 +1,9 @@
 """`riffle db up`: start the local Postgres with Docker Compose and wait until it's healthy.
 
 compose.yaml sits at the repo root, and Riffle runs as an editable install from
-that checkout, so the file is found from here. Compose reads the password from
-the .env file beside it the first time it creates the volume.
+that checkout, so the file is found from here. Compose reads the .env file beside
+it: the password when it first creates the database, and at every `up` the address
+Postgres publishes on and where its files live (RIFFLE_DB_ADDRESS, RIFFLE_DB_DATA).
 """
 
 import shutil
