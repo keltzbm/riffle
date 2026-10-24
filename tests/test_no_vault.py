@@ -12,6 +12,8 @@ from riffle.cli import app
 from riffle.ingest import scryfall
 from tests.test_sync_failures import ONLINE, before_closing, network, online_steps
 
+pytestmark = pytest.mark.usefixtures("backup_made")
+
 UNREACHABLE = 'database_url = "postgresql+psycopg://tcg@127.0.0.1:1/unreachable"\n'
 # the commands that read the vault, each deck named by its slug, so the vault is needed
 COMMANDS = [

@@ -5,7 +5,10 @@ from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import insert, inspect, select
 from sqlalchemy.exc import IntegrityError
+from typer.testing import CliRunner
 
+from riffle import config, db
+from riffle.cli import app
 from riffle.db import migrate
 from riffle.db.models import Base, Game
 
@@ -60,3 +63,13 @@ def test_downgrade_to_empty_and_back(pg_engine):
     with pg_engine.connect() as conn:
         codes = conn.execute(select(Game.game_id).order_by(Game.game_id)).scalars().all()
     assert codes == ["fab", "mtg", "op"]
+
+
+def test_db_status_names_the_server_and_a_schema_at_head(pg_engine):
+    url = pg_engine.url.render_as_string(hide_password=False)
+    config.config_path().write_text(f'database_url = "{url}"\n', encoding="utf-8")
+    result = CliRunner().invoke(app, ["db", "status"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == f"database   {db.display(url)}" and lines[1].startswith("server     PostgreSQL 18")
+    assert lines[2] == f"schema     {migrate.head()} (head)"

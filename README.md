@@ -356,7 +356,26 @@ its address needs `net.ipv4.ip_nonlocal_bind=1`, or Postgres stays down at boot 
 riffle db up                    # start Postgres (compose.yaml) and wait until it's healthy
 riffle db upgrade               # apply pending migrations
 riffle db status                # server and schema revision; exits 1 if unreachable or behind
+riffle db backup                # dump it to ~/.local/share/riffle/db-backups/, read it back, keep a week
+riffle db restore <dump>        # replace everything in it with a dump, in one transaction
 ```
+
+`riffle sync` ends with the same backup, but not with `--offline`. A dump is `pg_dump`'s custom
+format compressed with zstd, named `tcg-<UTC time>.dump`; it's written under a temporary name and
+read back whole before it gets its own, its SHA-256 goes beside it (`tcg-<UTC time>.dump.sha256`,
+as `sha256sum` writes it), and the database's dumps older than a week are removed. `riffle db
+restore` asks first, unless given `--yes`. It refuses a dump that no longer matches its SHA-256,
+then drops the `public` schema and loads the dump in one transaction, so the database ends up
+holding exactly what the dump held or, if anything fails, what it held before; Ctrl-C ends the
+load on the server too, so it rolls back. A dump from an older Riffle needs `riffle db upgrade`
+afterwards, and the restore says so. Both commands run Postgres's own tools inside its container,
+so no machine needs a Postgres client, and both refuse a `database_url` that names a server other
+than the one this machine runs in Docker: a database is backed up where it runs. In a sync that is
+a warning, and any other failure fails the step. Each program in the container has a time limit,
+a minute to say which server it runs and half an hour for a dump, a read-back or a load, so a
+Docker that stops answering fails the step instead of holding up every sync after it. On a Mac,
+`docker` is found in `/usr/local/bin` or `/opt/homebrew/bin` when it isn't on PATH, as in a
+launchd job.
 
 `riffle ingest scryfall` and `riffle sync` load the Scryfall download into the
 card catalog in Postgres (the "card catalog" step): about 40 seconds the first
@@ -416,6 +435,7 @@ gh codespace stop                                   # stops by itself when idle,
 | Config | `~/.config/riffle/config.toml` — the vault, the notes folder in it (`notes`, default `games/tcg`), a folder per game; decks are read from its `mtg/` only, and without one a sync has no decks; `backup_log`, a backup job's log for `riffle status`; `hidden_folder` (default `.data`) is the folder in `mtg/` whose decks stay out of Obsidian's view |
 | Card data, collection, every ManaBox export (`manabox/`), sync state, MTGO events, daily prices | `~/.local/share/riffle/` — outside the synced vault |
 | Database | Postgres 18 in Docker (`compose.yaml`; the volume `tcg_pgdata`, or the folder `RIFFLE_DB_DATA` names); `database_url` in config, password in `~/.pgpass` |
+| Database dumps | `~/.local/share/riffle/db-backups/` — `tcg-<UTC time>.dump` and its `.sha256`, from `riffle db backup` and each sync; a week is kept |
 | Output | `mtg/_generated/` and `mtg/_log/` in the notes folder, and `mtg/.data/_generated/` and `mtg/.data/_log/` for the decks in `mtg/.data/` — nothing else |
 
 ## Invariants

@@ -456,11 +456,12 @@ def test_the_command_over_an_empty_store(monkeypatch):
     assert lines[3] == "               1  2  3 "
     assert lines[4] == "Card Kingdom             0 lists"
     assert "MTGO events              0 events" in lines
-    assert lines[-4:] == [
+    assert lines[-5:] == [
         "MTGO          0 events owed",
         "jobs          9 of 9 loaded; every last run exited 0",
         f"store         nothing kept yet in {data_dir()}",
         "backup        Time Machine to Backup Disk",
+        "db backup     none yet: riffle db backup makes one, and each sync after it",
     ]
 
 
@@ -521,10 +522,11 @@ def test_the_command_says_what_each_source_the_jobs_and_the_store_hold(tmp_path,
     assert result.exit_code == 0, result.output
     lines = re.sub(r"\x1b\[[0-9;]*m", "", result.output).splitlines()
     assert "Card Kingdom   ⣿  ✗  ⣿   2 lists" in lines
-    assert lines[-4:] == [
+    assert lines[-5:] == [
         "jobs          9 of 9 loaded; every last run exited 0",
         "              2 steps failed in the last 24 h, the last 2026-10-03 05:17 UTC in watch-manapool:"
         " Mana Pool sealed: not asked: Mana Pool gave no answer",
         f"store         100 KB in {data_dir()}; 300.0 GB free, about 15 days at this week's rate",
         "backup        last backup ok 2026-10-02 08:31 UTC (~/.local/state/backup/backup.log)",
+        "db backup     none yet: riffle db backup makes one, and each sync after it",
     ]

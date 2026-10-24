@@ -375,6 +375,20 @@ def _time_machine(run: Callable[..., subprocess.CompletedProcess]) -> str:
     return f"Time Machine to {', '.join(names)}" if names else "unknown: tmutil said nothing it could read"
 
 
+def db_backup_line(folder: Path) -> str:
+    """When the newest database dump in the folder was made (riffle.db.backup), its size, and how
+    many dumps the folder holds."""
+    from riffle.db import backup
+
+    found = sorted(
+        (at, path) for path in folder.glob("*.dump") if path.is_file() and (at := backup.made(path))
+    )
+    if not found:
+        return "none yet: riffle db backup makes one, and each sync after it"
+    at, newest = found[-1]
+    return f"newest {times.shown(at)}, {_size(newest.stat().st_size)}; {len(found)} in {config.tilde(folder)}"
+
+
 def _backup_log() -> Path | None:
     """The backup job's log the config names; none if the config can't be read."""
     try:
@@ -399,6 +413,7 @@ def report(now: datetime, n: int, root: Path) -> tuple[list[str], bool]:
         ),
         ("store", [store_line(root, now=lambda: now)]),
         ("backup", [backup_line(log=_backup_log())]),
+        ("db backup", [db_backup_line(root / "db-backups")]),
     ):
         lines += [f"{label if n == 0 else '':<{width}}{line}" for n, line in enumerate(said)]
     return lines, not any(row.unreadable for row in rows)
