@@ -5,7 +5,7 @@ import pwd
 import re
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -393,6 +393,18 @@ def pg_engine():
 
 
 @pytest.fixture
+def backup_made(monkeypatch):
+    """Each sync's database backup made at once: the database every test's config names can't be
+    reached, so a test of the sync's other steps would see its backup fail."""
+    from riffle.db import backup
+
+    def made(url, where, at, **kwargs):
+        return backup.Dump(where / backup.name("tcg", at), 0, 1)
+
+    monkeypatch.setattr(backup, "backup", made)
+
+
+@pytest.fixture
 def pg(pg_engine):
     """A connection inside a transaction that's rolled back after the test."""
     with pg_engine.connect() as conn:
@@ -401,3 +413,18 @@ def pg(pg_engine):
             yield conn
         finally:
             trans.rollback()
+
+
+# ---- Docker ----------------------------------------------------------------------------
+
+
+def docker_env() -> dict[str, str]:
+    """The environment docker runs in: the test's, plus the user's own Docker config directory,
+    where a Mac's docker finds the compose plugin (~/.docker/cli-plugins); every test's HOME is a
+    temporary one, under which `docker compose` is an unknown command."""
+    env = dict(os.environ)
+    if "DOCKER_CONFIG" not in env:
+        # a container's user with no entry: docker's system plugin directories serve
+        with suppress(KeyError):
+            env["DOCKER_CONFIG"] = str(Path(pwd.getpwuid(os.getuid()).pw_dir) / ".docker")
+    return env

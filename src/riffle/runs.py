@@ -30,9 +30,12 @@ list checked against the list's SHA-256, before it counts as kept.
 import hashlib
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import BinaryIO
 
 if sys.version_info >= (3, 14):
     from compression import zstd
@@ -150,18 +153,26 @@ def _pack(data: bytes, base: bytes | None = None) -> bytes:
     return packer.compress(data, zstd.ZstdCompressor.FLUSH_FRAME)
 
 
-def write(path: Path, data: bytes) -> None:
-    """Whole or not at all, and on the disk before it's read back."""
+@contextmanager
+def writing(path: Path) -> Iterator[BinaryIO]:
+    """Whole or not at all, and on the disk before it's read back: what the block writes to the
+    file it's given, a .part beside path, becomes path only if the block finishes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
     try:
         with part.open("wb") as f:
-            f.write(data)
+            yield f
             f.flush()
             os.fsync(f.fileno())
         part.replace(path)
     finally:
         part.unlink(missing_ok=True)
+
+
+def write(path: Path, data: bytes) -> None:
+    """Whole or not at all, and on the disk before it's read back."""
+    with writing(path) as f:
+        f.write(data)
 
 
 def _set_aside(path: Path) -> Path:

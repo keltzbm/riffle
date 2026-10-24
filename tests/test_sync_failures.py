@@ -20,6 +20,8 @@ from riffle.cli import app
 from riffle.ingest import cardmarket, goatbots, mtgjson, pricelists, scryfall, scryfall_catalog, tcgcsv
 from riffle.progress import Watched
 
+pytestmark = pytest.mark.usefixtures("backup_made")
+
 REAL_UPDATE = scryfall_catalog.update
 NOTE = "---\ngame: mtg\nformat: modern\n---\n\n## Moxfield import\n\n```\n4 Lightning Bolt\n```\n"
 

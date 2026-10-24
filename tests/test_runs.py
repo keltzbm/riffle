@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -208,3 +209,43 @@ def test_only_lists_count_as_kept(tmp_path):
     assert list(runs.kept(tmp_path)) == [runs.name(AT)]
     assert runs.runs(tmp_path) == [run] and runs.runs(tmp_path / "none") == []
     assert runs.stamp_of(run / "x.txt") is None
+
+
+# ---- writing: a file whole or not at all, as a stream ------------------------------------------
+
+
+def test_writing_lands_the_bytes_at_the_path_with_no_part_left(tmp_path, monkeypatch):
+    """The block writes to <path>.part beside the path, its folder made if missing; when the block
+    ends, the file is flushed, fsynced and renamed into place."""
+    synced: list[int] = []
+    monkeypatch.setattr(runs.os, "fsync", lambda fd: synced.append(fd))
+    path = tmp_path / "dumps" / "tcg.dump"
+    with runs.writing(path) as f:
+        f.write(b"PGDMP")
+        assert Path(f.name) == path.with_name("tcg.dump.part") and not path.exists()
+        f.write(b"...")
+        fd = f.fileno()
+    assert path.read_bytes() == b"PGDMP..." and synced == [fd]
+    assert [p.name for p in path.parent.iterdir()] == ["tcg.dump"]
+
+
+def test_writing_replaces_a_file_already_at_the_path_only_when_the_block_ends(tmp_path):
+    path = tmp_path / "tcg.dump"
+    path.write_bytes(b"old")
+    with runs.writing(path) as f:
+        f.write(b"new")
+        assert path.read_bytes() == b"old"  # a reader mid-write sees the file as it was
+    assert path.read_bytes() == b"new"
+    assert [p.name for p in tmp_path.iterdir()] == ["tcg.dump"]
+
+
+@pytest.mark.parametrize("before", [None, b"old"], ids=["nothing there", "a file there"])
+def test_a_writing_block_that_raises_leaves_no_part_and_what_was_there_unchanged(tmp_path, before):
+    path = tmp_path / "tcg.dump"
+    if before is not None:
+        path.write_bytes(before)
+    with pytest.raises(ValueError, match="pg_dump failed"), runs.writing(path) as f:
+        f.write(b"half")
+        raise ValueError("pg_dump failed")
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert [p.name for p in tmp_path.iterdir()] == (["tcg.dump"] if before else [])

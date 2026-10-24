@@ -13,11 +13,9 @@ from riffle import schedule as sched
 from riffle import status
 from riffle.cli import app
 from riffle.db import compose
+from tests.test_db_setup import NO_DOCKER
 
 NEEDS_SYSTEMD = "scheduling needs systemd on Linux"
-DOCKER = (
-    "docker isn't on PATH: install Docker Engine (Linux) or OrbStack or Docker Desktop (macOS), and start it"
-)
 SCHEDULE = [
     [],
     ["show"],
@@ -70,8 +68,8 @@ def test_status_says_there_is_no_scheduler_on_linux_without_systemctl(monkeypatc
 
 def test_db_up_names_docker_for_linux_and_macos_when_none_is_on_path():
     with pytest.raises(FileNotFoundError) as caught:
-        compose.up(run=lambda args: subprocess.CompletedProcess(args, 0), which=lambda _: None)
-    assert str(caught.value) == DOCKER
+        compose.up(run=lambda args: subprocess.CompletedProcess(args, 0), which=lambda _: None, places=())
+    assert str(caught.value) == NO_DOCKER
 
 
 @pytest.mark.parametrize("args", [["set"], ["trickle", "--bogus"]], ids=["no times", "an unknown option"])

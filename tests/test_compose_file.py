@@ -1,19 +1,16 @@
 """compose.yaml's two settings, RIFFLE_DB_ADDRESS and RIFFLE_DB_DATA: the file itself, how Compose
 reads it with them unset and set, and the README that documents them."""
 
-import contextlib
 import json
-import os
-import pwd
 import re
 import shutil
 import subprocess
 from itertools import takewhile
-from pathlib import Path
 
 import pytest
 
 from riffle.db import compose
+from tests.conftest import docker_env
 
 COMPOSE_FILE = compose.REPO / "compose.yaml"  # the file riffle db up runs
 README = compose.REPO / "README.md"
@@ -41,18 +38,6 @@ def test_compose_file_takes_the_address_and_data_folder_from_the_environment():
 # ---- Compose's own reading ------------------------------------------------------------
 
 
-def _docker_env() -> dict[str, str]:
-    """The environment docker runs in: the test's, plus the user's own Docker config directory,
-    where a Mac's docker finds the compose plugin (~/.docker/cli-plugins); every test's HOME is a
-    temporary one, under which `docker compose` is an unknown command."""
-    env = dict(os.environ)
-    if "DOCKER_CONFIG" not in env:
-        # a container's user with no entry: docker's system plugin directories serve
-        with contextlib.suppress(KeyError):
-            env["DOCKER_CONFIG"] = str(Path(pwd.getpwuid(os.getuid()).pw_dir) / ".docker")
-    return env
-
-
 @pytest.fixture
 def render(tmp_path, monkeypatch):
     """Renders compose.yaml as Compose reads it, with the settings given written to an env file.
@@ -62,7 +47,7 @@ def render(tmp_path, monkeypatch):
     installed, as on CI's macOS runners."""
     for name in ("POSTGRES_PASSWORD", *SETTINGS):
         monkeypatch.delenv(name, raising=False)
-    env = _docker_env()
+    env = docker_env()
     if shutil.which("docker") is None:
         pytest.skip("docker isn't on PATH")
     version = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, env=env)
