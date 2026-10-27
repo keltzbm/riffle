@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Changed
+- Collect Cardmarket price guides and product lists through one shared fetch, validation, and retention path. Each keeps its URLs, JSON fields, ETag keys, stored files, and messages. A missing guide still fails a played game; a product list never served is still noted without failing.
+
+### Changed
 - Share JSON-object reading across the pace, precon, empty-answer, and MTGO month caches, and share temporary-file replacement across ten writers. Each caller keeps its file format, partial-file cleanup, and durability policy; unchanged notes still stay untouched. Strict readers still report corrupted state.
 
 ### Changed
