@@ -121,11 +121,6 @@ def playset_eligible(card_id: str, catalog: Catalog) -> bool:
     return any(is_legal(card_id, f, catalog) for f in BUILT_FORMATS)
 
 
-def target_copies(card_id: str, catalog: Catalog) -> int:
-    """How many to own: a playset if a built format can use it, else one."""
-    return 4 if playset_eligible(card_id, catalog) else 1
-
-
 # ---- whole decks ---------------------------------------------------------------
 
 

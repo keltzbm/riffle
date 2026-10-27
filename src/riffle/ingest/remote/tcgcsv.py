@@ -259,18 +259,6 @@ def kept_game(game_dir: Path) -> bytes | None:
     return gzip.decompress(old.read_bytes()) if old.exists() else None
 
 
-def stored_days(games: dict[str, str] = GAMES) -> list[date]:
-    """Days with every game finished, oldest first."""
-    if not daily_dir().exists():
-        return []
-    days = []
-    for entry in daily_dir().iterdir():
-        day = _date(entry.name)
-        if day is not None and all(finished(entry / game) for game in games):
-            days.append(day)
-    return sorted(days)
-
-
 def made() -> list[datetime]:
     """When tcgcsv published each day kept, from its last-updated.txt, oldest first."""
     found = []

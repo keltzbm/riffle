@@ -169,14 +169,6 @@ def get_once(url: str, accept: str = "*/*", timeout: float = 60) -> Answer:
         raise FetchError(_why(e)) from e
 
 
-def get_text(url: str, accept: str = "text/html", timeout: float = 60, retries: int = 2) -> str:
-    """The body as text. Here a 404 is an error: the page was expected to exist."""
-    body = get(url, accept, timeout, retries)
-    if body is None:
-        raise FetchError("HTTP 404")
-    return body.decode("utf-8", errors="replace")
-
-
 def download(
     url: str,
     dest: Path,
