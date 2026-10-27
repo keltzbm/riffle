@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Changed
+- Share JSON-object reading across the pace, precon, empty-answer, and MTGO month caches, and share temporary-file replacement across ten writers. Each caller keeps its file format, partial-file cleanup, and durability policy; unchanged notes still stay untouched. Strict readers still report corrupted state.
+
+### Changed
 - Group the code by responsibility: CLI command modules, local and remote ingestion, MTGO page parsing and storage, shared watch logic, and operations. Metagame records live independently of the MTGO collector, shared link handling no longer belongs to output, and scheduler backends use shared job definitions without importing the dispatcher. Tests follow the same layout. Commands, configuration, stored files, database revisions, and job labels stay the same.
 
 ### Added

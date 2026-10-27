@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from riffle import times
+from riffle import files, times
 from riffle.analysis.ownership import BUY, MARK, OWN, Row, summary
 from riffle.analysis.pricing import DeckPrice
 from riffle.config import data_dir
@@ -46,13 +46,8 @@ def write_whole(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text(encoding="utf-8") == text:
         return False
-    tmp = path.with_name(f".{path.name}.part")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    with files.replacing(path, temporary=path.with_name(f".{path.name}.part"), cleanup=True) as part:
+        part.write_text(text, encoding="utf-8")
     return True
 
 
@@ -195,10 +190,8 @@ def set_aside_state() -> Path:
 def save_state(state: dict) -> None:
     """Whole or not at all: a run cut off mid-write leaves the last state."""
     path = _state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    with files.replacing(path) as part:
+        part.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
 def move_log(log_dir: Path, elsewhere: Path, slug: str) -> bool:

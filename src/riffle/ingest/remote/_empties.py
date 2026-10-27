@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from riffle import times
+from riffle import files, times
 from riffle.config import data_dir
 from riffle.progress import Step
 
@@ -34,19 +34,13 @@ def path() -> Path:
 
 
 def _load() -> dict[str, dict]:
-    try:
-        found = json.loads(path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return found if isinstance(found, dict) else {}
+    return files.read_json_object(path())
 
 
 def _save(entries: dict[str, dict]) -> None:
     dest = path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
-    part.write_text(json.dumps(entries, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    part.replace(dest)
+    with files.replacing(dest) as part:
+        part.write_text(json.dumps(entries, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def record(key: str, what: str, at: datetime | None = None) -> Empty:

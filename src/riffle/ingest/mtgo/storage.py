@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 
-from riffle import trickle
+from riffle import files, trickle
 from riffle.config import data_dir
 from riffle.ingest.mtgo import pages as pages_mod
 from riffle.models.metagame import Event
@@ -37,10 +37,8 @@ def stored_path(slug: str) -> Path:
 def save(event: Event) -> Path:
     """Whole or not at all: a run cut off mid-write leaves no event file."""
     path = event_path(event.slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(json.dumps(asdict(event), indent=1), encoding="utf-8")
-    tmp.replace(path)
+    with files.replacing(path) as part:
+        part.write_text(json.dumps(asdict(event), indent=1), encoding="utf-8")
     return path
 
 

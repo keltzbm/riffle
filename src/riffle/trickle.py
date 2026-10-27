@@ -22,6 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+from riffle import files
 from riffle.config import data_dir
 
 CEILING = 5  # requests in any WINDOW, whoever makes them
@@ -47,18 +48,8 @@ def stamp(t: datetime) -> str:
 
 def _write_json(path: Path, value: object) -> None:
     """Whole or not at all: a run cut off mid-write leaves the old file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
-
-
-def _read_json(path: Path) -> dict:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    with files.replacing(path) as part:
+        part.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 # ---- the request log ------------------------------------------------------------
@@ -182,7 +173,7 @@ def pace_path(source: str) -> Path:
 
 def load_pace(source: str) -> Pace:
     """The saved pace; what an older build saved that this one doesn't keep is left out."""
-    saved = _read_json(pace_path(source))
+    saved = files.read_json_object(pace_path(source))
     try:
         pace = Pace(**{k: v for k, v in saved.items() if k in Pace.__dataclass_fields__})
         pace.level = min(max(pace.level, LEVELS[0]), LEVELS[-1])
@@ -261,7 +252,7 @@ def owed_path(source: str) -> Path:
 
 def load_owed(source: str) -> dict[str, Owed]:
     out = {}
-    for key, value in _read_json(owed_path(source)).items():
+    for key, value in files.read_json_object(owed_path(source)).items():
         try:
             out[key] = Owed(**value)
         except TypeError:

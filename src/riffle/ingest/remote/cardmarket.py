@@ -74,7 +74,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
-from riffle import net, runs, times
+from riffle import files, net, runs, times
 from riffle.config import data_dir
 from riffle.ingest.remote import _empties as empties
 from riffle.progress import SILENT, Step, Tracker
@@ -190,11 +190,9 @@ def _saved() -> dict:
 
 def _save(looked: datetime, known: dict[str, dict]) -> None:
     path = games_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(path.name + ".part")
-    saved = {"looked": watching.at(looked), "games": known}
-    part.write_text(json.dumps(saved, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    part.replace(path)
+    with files.replacing(path) as part:
+        saved = {"looked": watching.at(looked), "games": known}
+        part.write_text(json.dumps(saved, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def learned() -> dict[str, int]:
