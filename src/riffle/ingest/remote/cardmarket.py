@@ -314,67 +314,7 @@ def _looked(fetch: Fetch, tracker: Tracker, now: datetime) -> dict[str, int] | N
 def _guide(game: str, ref: int | str, fetch: Fetch, tags: dict[str, str], now: datetime, step: Step) -> dict:
     """Ask for a game's guide once and keep it if it's new; end step saying what came. The log
     entry: "why" is in it when the step failed without an error, for a played game with no guide."""
-    name = f"price_guide_{ref}.json"
-    folder = lists_dir(game)
-    have = runs.kept(folder)
-    key = f"{STORE}/{game}"
-
-    def known(head: bytes) -> bool:
-        at = _created(head)
-        return at is not None and runs.name(at) in have
-
-    fresh = folder.parent / f"{game}.new"
-    try:
-        fresh.parent.mkdir(parents=True, exist_ok=True)
-        got = fetch(
-            f"{BASE}/{name}",
-            fresh,
-            known,
-            etag=tags.get(game),
-            accept="application/json",
-            progress=step.update,
-            missing=MISSING,
-        )
-        if got is None:
-            return _missing(game, ref, key, now, step)
-        if got.status == "unchanged":
-            step.ok("no new guide since the last one kept")
-            return {"result": "unchanged"}
-        if got.status == "known":
-            at = _created(got.head)
-            assert at is not None  # known() found it
-            if got.etag:
-                tags[game] = got.etag
-            step.ok(f"have the guide made {times.shown(at)}")
-            return {"result": "known", "made": runs.name(at)}
-        body = fresh.read_bytes()
-        try:
-            doc = json.loads(body)
-            rows = doc["priceGuides"]
-            if not isinstance(rows, list):
-                raise TypeError("priceGuides")
-            at = created_at(doc["createdAt"])
-        except (ValueError, KeyError, TypeError, RecursionError) as e:
-            made = _created(body[: net.HEAD])
-            publish = runs.name(made) if made else got.etag
-            raise watching.broken(
-                STORE, game, publish, fresh, name, now, f"{name}: not the expected JSON"
-            ) from e
-        if not rows:
-            empties.report(step, key, "empty guide", now)
-            return {"result": "empty"}
-        empties.clear(key)
-        kept = runs.keep(folder, at, body)
-        if got.etag:
-            tags[game] = got.etag
-        note = f"kept the guide made {times.shown(at)}, {_count(len(rows), 'product')}: {watching.how(kept)}"
-        if kept.notes:
-            step.warn(f"{note}; {'; '.join(kept.notes)}")
-        else:
-            step.ok(note)
-        return watching.record(kept)
-    finally:
-        fresh.unlink(missing_ok=True)
+    return _collect(game, ref, fetch, tags, now, step)
 
 
 def _missing(game: str, ref: int | str, key: str, now: datetime, step: Step, what: str = "") -> dict:
@@ -396,21 +336,39 @@ def _products(
     """Ask for one of a game's product lists once and keep it if it's new, by the run rule under
     its createdAt; end step saying what came. One that isn't whole JSON is set aside once per
     publish. One Cardmarket has never served is noted, not warned about. The log entry."""
-    name = f"products_{kind}_{ref}.json"
-    listed = f"{game} {kind}"
-    folder = products_dir(game, kind)
+    return _collect(game, ref, fetch, tags, now, step, kind=kind)
+
+
+def _collect(
+    game: str,
+    ref: int | str,
+    fetch: Fetch,
+    tags: dict[str, str],
+    now: datetime,
+    step: Step,
+    *,
+    kind: str | None = None,
+) -> dict:
+    """Fetch and retain a guide or product list with the same publication and ETag rules."""
+    if kind is None:
+        name, base = f"price_guide_{ref}.json", BASE
+        listed, folder, key = game, lists_dir(game), f"{STORE}/{game}"
+        field, noun = "priceGuides", "guide"
+    else:
+        name, base = f"products_{kind}_{ref}.json", PRODUCTS
+        listed, folder, key = f"{game} {kind}", products_dir(game, kind), f"{STORE}/{game}/{kind}"
+        field, noun = "products", "product list"
     have = runs.kept(folder)
-    key = f"{STORE}/{game}/{kind}"
 
     def known(head: bytes) -> bool:
         at = _created(head)
         return at is not None and runs.name(at) in have
 
-    fresh = folder.parent / f"{kind}.new"
+    fresh = folder.parent / f"{game if kind is None else kind}.new"
     try:
         fresh.parent.mkdir(parents=True, exist_ok=True)
         got = fetch(
-            f"{PRODUCTS}/{name}",
+            f"{base}/{name}",
             fresh,
             known,
             etag=tags.get(listed),
@@ -418,27 +376,28 @@ def _products(
             progress=step.update,
             missing=MISSING,
         )
-        if got is None and not have:
+        if got is None and kind is not None and not have:
             step.ok("Cardmarket serves none yet; asked again once a Cardmarket day")
             return {"result": "missing"}
         if got is None:
-            return _missing(game, ref, key, now, step, f"{kind} product list")
+            what = "" if kind is None else f"{kind} product list"
+            return _missing(game, ref, key, now, step, what)
         if got.status == "unchanged":
-            step.ok("no new product list since the last one kept")
+            step.ok(f"no new {noun} since the last one kept")
             return {"result": "unchanged"}
         if got.status == "known":
             at = _created(got.head)
             assert at is not None  # known() found it
             if got.etag:
                 tags[listed] = got.etag
-            step.ok(f"have the product list made {times.shown(at)}")
+            step.ok(f"have the {noun} made {times.shown(at)}")
             return {"result": "known", "made": runs.name(at)}
         body = fresh.read_bytes()
         try:
             doc = json.loads(body)
-            rows = doc["products"]
+            rows = doc[field]
             if not isinstance(rows, list):
-                raise TypeError("products")
+                raise TypeError(field)
             at = created_at(doc["createdAt"])
         except (ValueError, KeyError, TypeError, RecursionError) as e:
             made = _created(body[: net.HEAD])
@@ -447,14 +406,14 @@ def _products(
                 STORE, listed, publish, fresh, name, now, f"{name}: not the expected JSON"
             ) from e
         if not rows:
-            empties.report(step, key, "empty product list", now)
+            empties.report(step, key, f"empty {noun}", now)
             return {"result": "empty"}
         empties.clear(key)
         kept = runs.keep(folder, at, body)
         if got.etag:
             tags[listed] = got.etag
         rows_kept = _count(len(rows), "product")
-        note = f"kept the product list made {times.shown(at)}, {rows_kept}: {watching.how(kept)}"
+        note = f"kept the {noun} made {times.shown(at)}, {rows_kept}: {watching.how(kept)}"
         if kept.notes:
             step.warn(f"{note}; {'; '.join(kept.notes)}")
         else:

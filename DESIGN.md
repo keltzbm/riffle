@@ -125,3 +125,8 @@ metadata retains failed partials, notes use hidden temporary names and discard
 failed writes, and `runs.writing` flushes and syncs durable data before replacement.
 `files.read_json_object` supplies the shared empty-object fallback for disposable
 caches. Readers that must report corruption, including sync state, remain strict.
+
+Cardmarket's guide and product-list entry points share `_collect` in their source
+module. It handles fetching, publication detection, validation, retention, ETags,
+and cleanup. Resource-specific URLs, fields, labels, and missing-list rules remain
+explicit there; this helper does not define a cross-source collection framework.
