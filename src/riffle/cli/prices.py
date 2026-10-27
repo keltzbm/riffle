@@ -1,13 +1,11 @@
 """Handle price collection and historical price commands."""
 
-from collections.abc import Callable
-from functools import partial
-
 import typer
 
 from riffle import config, vault
 from riffle.cli import _common as common
-from riffle.progress import Tracker, contained, failure
+from riffle.ingest.remote import tcgcsv
+from riffle.ops import ingest as workflow
 
 
 def ingest_prices(
@@ -15,49 +13,13 @@ def ingest_prices(
 ) -> None:
     """Keep today's prices: tcgcsv, Cardmarket, Scryfall, MTGJSON, GoatBots, Card Kingdom, Mana Pool."""
     with common._run("riffle ingest prices") as tracker:
-        _snapshot_prices(tracker, online=True, delay=delay)
-
-
-def _snapshot_prices(tracker: Tracker, online: bool, delay: float = 0.1) -> None:
-    """Today's price snapshot. Problems are reported, never raised: a sync must finish without it."""
-    from riffle.ingest.remote import cardmarket, goatbots, mtgjson, pricelists, scryfall, tcgcsv
-
-    step = tracker.step("Scryfall prices")
-    try:
-        path, written = scryfall.snapshot_prices()
-    except FileNotFoundError:
-        step.fail("no bulk file yet — run: riffle ingest scryfall")
-    except (ValueError, KeyError) as e:
-        step.fail(str(e))
-    except Exception as e:
-        step.fail(failure(e))
-    else:
-        day = path.name.split(".")[0]
-        if written:
-            step.ok(f"kept {day}")
-        elif online:
-            step.ok(f"already have {day}")
-        else:
-            step.drop()  # offline resyncs (watch, ingest manabox) shouldn't repeat "already have"
-    if not online:
-        return
-    # Each source in turn; whatever one raises fails only its own steps (see failure).
-    sources: list[tuple[str, Callable[..., object]]] = [
-        ("MTGJSON prices", partial(mtgjson.watch, always=True)),
-        ("MTGJSON 90 days", mtgjson.snapshot),
-        ("GoatBots prices", partial(goatbots.watch, always=True)),
-        ("GoatBots years", goatbots.snapshot),
-        ("Cardmarket prices", partial(cardmarket.watch, always=True)),
-        ("Card Kingdom prices", partial(pricelists.watch, pricelists.CARD_KINGDOM)),
-        ("Mana Pool prices", partial(pricelists.watch, pricelists.MANA_POOL)),
-    ]
-    for label, snapshot in sources:
-        with contained(tracker, label, failure) as scope:
-            snapshot(tracker=scope)
-    with contained(tracker, "tcgcsv prices", failure) as scope:
-        snap = tcgcsv.watch(delay=delay, tracker=scope, always=True).snap
+        snap = workflow.snapshot_prices(tracker, online=True, delay=delay)
         if snap is not None:
-            common._echo(f"tcgcsv prices: {snap.day} · {snap.requests} requests")
+            _summary(snap)
+
+
+def _summary(snapshot: tcgcsv.Snapshot) -> None:
+    common._echo(f"tcgcsv prices: {snapshot.day} · {snapshot.requests} requests")
 
 
 def prices_log(

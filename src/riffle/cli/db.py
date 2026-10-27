@@ -1,14 +1,12 @@
 """Handle database setup, migration, backup, and restore commands."""
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import typer
 
 from riffle import config, times
 from riffle.cli import _common as common
-from riffle.progress import Step, Tracker
+from riffle.ops import database as workflow
 
 
 def _db_engine():
@@ -21,14 +19,8 @@ def _db_engine():
         raise typer.Exit(1) from e
 
 
-def _cant_reach(url: str, e: Exception) -> str:
-    from riffle import db
-
-    return f"can't reach Postgres at {db.display(url)}: {db.reason(e)}"
-
-
 def _unreachable(url: str, e: Exception) -> typer.Exit:
-    typer.echo(_cant_reach(url, e), err=True)
+    typer.echo(workflow.cant_reach(url, e), err=True)
     typer.echo("start it with: riffle db up", err=True)
     return typer.Exit(1)
 
@@ -42,46 +34,6 @@ def _schema(eng) -> tuple[str, bool]:
         return f"schema     {current} (head)", True
     have = f"{current}, head is {head}" if current else f"empty, head is {head}"
     return f"schema     {have} — run: riffle db upgrade", False
-
-
-def _in_step(step: Step, url: str, undone: str, act: Callable[[], Any], warn_elsewhere: bool = False) -> Any:
-    """act()'s result, or None once its error has ended the step, saying what wasn't done and
-    why; a database this machine doesn't run in Docker only warns when warn_elsewhere."""
-    from sqlalchemy.exc import OperationalError
-
-    from riffle import db
-    from riffle.db import backup
-
-    try:
-        return act()
-    except backup.NotHere as e:
-        (step.warn if warn_elsewhere else step.fail)(f"{undone}: {e}")
-    except OperationalError as e:
-        step.fail(f"{undone}: {_cant_reach(url, e)}; start it with: riffle db up")
-    except (db.BadURL, backup.Failed, OSError) as e:
-        step.fail(f"{undone}: {e}")
-    return None
-
-
-def _backup(tracker: Tracker, warn_elsewhere: bool = False) -> None:
-    """The database dumped beside the data (riffle.db.backup), as the step `database backup`. In
-    the sync, a database this machine doesn't run in Docker only warns: it's backed up where it
-    runs."""
-    from riffle.db import backup
-    from riffle.watch import watching
-
-    step = tracker.step("database backup")
-    url = config.load().database_url
-    dump = _in_step(
-        step, url, "not backed up", lambda: backup.backup(url, backup.folder(), times.now()), warn_elsewhere
-    )
-    if dump is None:
-        return
-    said = f"{config.tilde(dump.path)}, {watching.size(dump.size)}, read back whole; {dump.kept} kept"
-    if dump.not_removed:  # made all the same: only the older dumps stay
-        step.warn(f"{said}; older dumps not removed: {dump.not_removed}")
-    else:
-        step.ok(said)
 
 
 def db_up() -> None:
@@ -140,7 +92,7 @@ def db_status() -> None:
 def db_backup() -> None:
     """Dump the database beside the data, read the dump back whole, and keep a week of dumps."""
     with common._run("riffle db backup") as tracker:
-        _backup(tracker)
+        workflow.backup(tracker, config.load().database_url)
 
 
 def db_restore(
@@ -173,12 +125,12 @@ def db_restore(
 
     with common._run(f"riffle db restore {dump.name}") as tracker:
         step = tracker.step("database restore")
-        if _in_step(step, url, "not restored", restore):
+        if workflow.in_step(step, url, "not restored", restore):
             step.ok(f"{dump.name} into {db.display(url)}")
             try:
                 said = _schema(db.engine(url))[0]
             except OperationalError as e:  # restored all the same
-                said = f"schema     unknown: {_cant_reach(url, e)}"
+                said = f"schema     unknown: {workflow.cant_reach(url, e)}"
             common._echo(said)
 
 
