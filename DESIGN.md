@@ -130,3 +130,8 @@ Cardmarket's guide and product-list entry points share `_collect` in their sourc
 module. It handles fetching, publication detection, validation, retention, ETags,
 and cleanup. Resource-specific URLs, fields, labels, and missing-list rules remain
 explicit there; this helper does not define a cross-source collection framework.
+
+GoatBots uses its own `_collect` for prices and card definitions. ZIP parsing
+stays in `_newest`/`_prices` and `_defined`; `_extra_days` handles price archives
+containing multiple days. Shared collection checks publication times, compares
+already-retained content, updates ETags, and preserves each resource's log fields.

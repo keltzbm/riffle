@@ -350,6 +350,17 @@ def _newest(path: Path) -> tuple[dict[date, str], bytes, str]:
         return days, _read(zf, entry, LATEST), datetime(*zf.getinfo(entry).date_time).isoformat()
 
 
+def _extra_days(fresh: Path, days: dict[date, str], now: datetime) -> tuple[dict, str]:
+    """Keep a multi-day price ZIP aside and describe its extra days."""
+    facts = {
+        "days": sorted(day.isoformat() for day in days),
+        "aside": watching.set_aside(STORE, fresh, LATEST, now),
+    }
+    latest = max(days)
+    others = ", ".join(sorted(day.isoformat() for day in days if day != latest))
+    return facts, f"the zip also held {others}; set aside whole as {facts['aside']}"
+
+
 def _unknown(head: bytes) -> bool:
     """A zip's first bytes don't say which day it holds: whether it's kept shows only in its
     Last-Modified."""
@@ -377,60 +388,7 @@ def _day(fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> dic
     """Ask for the latest price zip once, with the ETag of the last one kept, and keep its price
     file if it's new; end step saying what came. A zip made when one kept was is compared with
     it (riffle.watch.watching.again). The log entry."""
-    folder = lists_dir()
-    fresh = folder.parent / f"{LIST}.new"
-    try:
-        got = _ask(fetch, LATEST, fresh, tags.get(LIST), step)
-        if got.status == "unchanged":
-            step.ok("no new list since the last one kept")
-            return {"result": "unchanged"}
-        served = watching.served(fresh, got)
-        try:
-            days, body, written = _newest(fresh)
-            day = max(days)
-            entry = days[day]
-            n = _prices(body, entry)
-        except net.FetchError as e:
-            raise watching.broken(STORE, LIST, _publish(got), fresh, LATEST, now, str(e)) from e
-        if not n:
-            empties.report(step, "goatbots/prices", "empty price file", now)
-            return {"result": "empty"}
-        empties.clear("goatbots/prices")
-        if got.modified is None:
-            why = f"{LATEST}: no Last-Modified, so no time it was made"
-            raise watching.broken(STORE, LIST, _publish(got), fresh, LATEST, now, why)
-        stamp, made = runs.name(got.modified), times.shown(got.modified)
-        if stamp in runs.kept(folder):
-            if got.etag:
-                tags[LIST] = got.etag
-            sha256 = hashlib.sha256(body).hexdigest()
-            more, said = watching.again(STORE, folder, stamp, sha256, fresh, LATEST, now)
-            note = f"have {day}'s list, made {made}; {said}"
-            if more["same"]:
-                step.ok(note)
-            else:
-                step.warn(note)
-            return {"result": "known", "made": stamp} | more
-        kept = runs.keep(folder, got.modified, body)
-        if got.etag:
-            tags[LIST] = got.etag
-        facts = {"day": day.isoformat(), "entry": entry, "entry_time": written} | served
-        notes = list(kept.notes)
-        if len(days) > 1:
-            facts |= {
-                "days": sorted(d.isoformat() for d in days),
-                "aside": watching.set_aside(STORE, fresh, LATEST, now),
-            }
-            others = ", ".join(sorted(d.isoformat() for d in days if d != day))
-            notes.append(f"the zip also held {others}; set aside whole as {facts['aside']}")
-        note = f"kept {day}'s list, made {made}, {_count(n, 'price')}: {watching.how(kept)}"
-        if notes:
-            step.warn(f"{note}; {'; '.join(notes)}")
-        else:
-            step.ok(note)
-        return watching.record(kept) | facts
-    finally:
-        fresh.unlink(missing_ok=True)
+    return _collect(LIST, fetch, tags, now, step)
 
 
 def _defined(path: Path) -> tuple[bytes, int]:
@@ -450,44 +408,73 @@ def _cards(fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> d
     """Ask for the card definitions once, with the ETag of the last kept, and keep their file if
     they're new, by the run rule under the zip's Last-Modified; end step saying what came. A zip
     that isn't whole definitions is set aside once per publish. The log entry."""
-    folder = lists_dir(CARDS)
-    fresh = folder.parent / f"{CARDS}.new"
+    return _collect(CARDS, fetch, tags, now, step)
+
+
+def _collect(name: str, fetch: Watcher, tags: dict[str, str], now: datetime, step: Step) -> dict:
+    """Collect prices or definitions with the same publication and retention checks."""
+    prices = name == LIST
+    archive = LATEST if prices else DEFINITIONS
+    unchanged = "no new list since the last one kept" if prices else "no new definitions since the last kept"
+    empty = "empty price file" if prices else "empty card definitions"
+    folder = lists_dir(name)
+    fresh = folder.parent / f"{name}.new"
     try:
-        got = _ask(fetch, DEFINITIONS, fresh, tags.get(CARDS), step)
+        got = _ask(fetch, archive, fresh, tags.get(name), step)
         if got.status == "unchanged":
-            step.ok("no new definitions since the last kept")
+            step.ok(unchanged)
             return {"result": "unchanged"}
         served = watching.served(fresh, got)
+        days: dict[date, str] = {}
+        day: date | None = None
+        facts: dict = {}
         try:
-            body, n = _defined(fresh)
+            if prices:
+                days, body, written = _newest(fresh)
+                day = max(days)
+                entry = days[day]
+                n = _prices(body, entry)
+                facts = {"day": day.isoformat(), "entry": entry, "entry_time": written} | served
+            else:
+                body, n = _defined(fresh)
         except net.FetchError as e:
-            raise watching.broken(STORE, CARDS, _publish(got), fresh, DEFINITIONS, now, str(e)) from e
+            raise watching.broken(STORE, name, _publish(got), fresh, archive, now, str(e)) from e
         if not n:
-            empties.report(step, "goatbots/cards", "empty card definitions", now)
+            empties.report(step, f"{STORE}/{name}", empty, now)
             return {"result": "empty"}
-        empties.clear("goatbots/cards")
+        empties.clear(f"{STORE}/{name}")
         if got.modified is None:
-            why = f"{DEFINITIONS}: no Last-Modified, so no time they were made"
-            raise watching.broken(STORE, CARDS, _publish(got), fresh, DEFINITIONS, now, why)
+            what = "it was" if prices else "they were"
+            why = f"{archive}: no Last-Modified, so no time {what} made"
+            raise watching.broken(STORE, name, _publish(got), fresh, archive, now, why)
         stamp, made = runs.name(got.modified), times.shown(got.modified)
-        facts = {"day": got.modified.date().isoformat()} | served
+        description = f"{day}'s list, made {made}" if prices else f"the definitions made {made}"
+        if not prices:
+            facts = {"day": got.modified.date().isoformat()} | served
         if stamp in runs.kept(folder):
             if got.etag:
-                tags[CARDS] = got.etag
+                tags[name] = got.etag
             sha256 = hashlib.sha256(body).hexdigest()
-            more, said = watching.again(STORE, folder, stamp, sha256, fresh, DEFINITIONS, now)
-            note = f"have the definitions made {made}; {said}"
+            more, said = watching.again(STORE, folder, stamp, sha256, fresh, archive, now)
+            note = f"have {description}; {said}"
             if more["same"]:
                 step.ok(note)
             else:
                 step.warn(note)
-            return {"result": "known", "made": stamp} | more | facts
+            result = {"result": "known", "made": stamp} | more
+            # Known price entries keep their original short log shape.
+            return result if prices else result | facts
         kept = runs.keep(folder, got.modified, body)
         if got.etag:
-            tags[CARDS] = got.etag
-        note = f"kept the definitions made {made}, {_count(n, 'card')}: {watching.how(kept)}"
-        if kept.notes:
-            step.warn(f"{note}; {'; '.join(kept.notes)}")
+            tags[name] = got.etag
+        notes = list(kept.notes)
+        if len(days) > 1:
+            extra, note = _extra_days(fresh, days, now)
+            facts |= extra
+            notes.append(note)
+        note = f"kept {description}, {_count(n, 'price' if prices else 'card')}: {watching.how(kept)}"
+        if notes:
+            step.warn(f"{note}; {'; '.join(notes)}")
         else:
             step.ok(note)
         return watching.record(kept) | facts
