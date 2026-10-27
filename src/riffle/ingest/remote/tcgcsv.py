@@ -84,7 +84,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from riffle import net, runs, times
+from riffle import files, net, runs, times
 from riffle.config import data_dir
 from riffle.progress import SILENT, Step, Tracker
 from riffle.runs import zstd
@@ -375,10 +375,8 @@ def _count(n: int, noun: str) -> str:
 
 
 def _write(dest: Path, body: bytes) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".part")
-    tmp.write_bytes(body)
-    tmp.replace(dest)
+    with files.replacing(dest) as part:
+        part.write_bytes(body)
 
 
 def _keep_stamp(stamp: datetime) -> None:

@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
-from riffle import runs
+from riffle import files, runs
 from riffle.config import data_dir
 from riffle.ingest.remote import mtgjson
 from riffle.models import Holding, Printing
@@ -133,19 +133,9 @@ def _deck_files(path: Path, wanted: set[str]) -> dict[str, dict]:
     return found
 
 
-def _read(path: Path) -> dict:
-    try:
-        cache = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return cache if isinstance(cache, dict) else {}
-
-
 def _write(path: Path, cache: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(path.name + ".part")
-    part.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-    part.replace(path)
+    with files.replacing(path) as part:
+        part.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
 
 def _box(name: str, kept: dict) -> Box:
@@ -157,16 +147,16 @@ def load(registry: Mapping[str, list[Path]]) -> Boxes:
     cache when it was read from the newest deck files kept, else from the store; the cache then
     holds the registered boxes alone."""
     path = data_dir() / CACHE
-    cache = _read(path)
+    cache = files.read_json_object(path)
     if not registry:
         if cache:
             path.unlink(missing_ok=True)
         return Boxes()
-    files = runs.kept(mtgjson.lists_dir(DECK_FILES))
+    deck_files = runs.kept(mtgjson.lists_dir(DECK_FILES))
     lists = runs.kept(mtgjson.lists_dir(DECK_LIST))
-    if not (files and lists):
+    if not (deck_files and lists):
         return Boxes(problems=[NOT_KEPT])
-    stamp = next(reversed(files))
+    stamp = next(reversed(deck_files))
     have = dict(cache.get("boxes") or {}) if cache.get("deck_files") == stamp else {}
     out = Boxes()
     missing = [name for name in registry if name not in have]
@@ -180,7 +170,7 @@ def load(registry: Mapping[str, list[Path]]) -> Boxes:
                     wanted[name] = hits[0]
                 else:
                     out.problems.append(_unmatched(name, registry[name], hits))
-            read = _deck_files(files[stamp], {d["fileName"] for d in wanted.values()}) if wanted else {}
+            read = _deck_files(deck_files[stamp], {d["fileName"] for d in wanted.values()}) if wanted else {}
             for name, d in wanted.items():
                 if d["fileName"] in read:
                     have[name] = {
@@ -206,7 +196,10 @@ def cached() -> Boxes:
     """The boxes the last load kept, for a command that doesn't read the vault."""
     try:
         return Boxes(
-            [_box(name, kept) for name, kept in (_read(data_dir() / CACHE).get("boxes") or {}).items()]
+            [
+                _box(name, kept)
+                for name, kept in (files.read_json_object(data_dir() / CACHE).get("boxes") or {}).items()
+            ]
         )
     except (KeyError, TypeError, ValueError):  # a cache in another shape: none, until the next load
         return Boxes()

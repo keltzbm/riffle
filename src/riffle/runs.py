@@ -42,7 +42,7 @@ if sys.version_info >= (3, 14):
 else:
     from backports import zstd
 
-from riffle import times
+from riffle import files, times
 
 LEVEL = 19  # half the bytes of level 9 on a 201 MB list, in about a minute (measured 2026-09-29)
 MOST_DAYS = timedelta(days=30)  # the lists a base lost with its copy can take
@@ -157,16 +157,10 @@ def _pack(data: bytes, base: bytes | None = None) -> bytes:
 def writing(path: Path) -> Iterator[BinaryIO]:
     """Whole or not at all, and on the disk before it's read back: what the block writes to the
     file it's given, a .part beside path, becomes path only if the block finishes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(path.name + ".part")
-    try:
-        with part.open("wb") as f:
-            yield f
-            f.flush()
-            os.fsync(f.fileno())
-        part.replace(path)
-    finally:
-        part.unlink(missing_ok=True)
+    with files.replacing(path, cleanup=True) as part, part.open("wb") as f:
+        yield f
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def write(path: Path, data: bytes) -> None:

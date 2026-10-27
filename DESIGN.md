@@ -78,6 +78,7 @@ src/riffle/
 ├── config.py       XDG paths, config.toml
 ├── times.py        shared time handling
 ├── locks.py        process locks
+├── files.py        shared JSON-object reads and temporary-file replacement
 ├── net.py          HTTP for every source: retries, 429s, streamed downloads
 ├── runs.py         retained snapshots, differences, and verified writes
 ├── progress.py     step tracking, terminal progress, and plain logs
@@ -117,3 +118,10 @@ handling lives at the root because catalog readers and parsers also use it.
 
 The executable remains `riffle.cli:app`. This layout changes no command names,
 configuration keys, database revisions, retained-data paths, or installed job labels.
+
+`files.replacing` creates the parent directory and replaces the target only when
+the writing block finishes. Callers keep their serialization and cleanup policy:
+metadata retains failed partials, notes use hidden temporary names and discard
+failed writes, and `runs.writing` flushes and syncs durable data before replacement.
+`files.read_json_object` supplies the shared empty-object fallback for disposable
+caches. Readers that must report corruption, including sync state, remain strict.

@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn
 
-from riffle import locks, net, trickle
+from riffle import files, locks, net, trickle
 from riffle.config import data_dir
 from riffle.ingest.mtgo import pages as pages_mod
 from riffle.ingest.mtgo import storage as storage_mod
@@ -596,19 +596,13 @@ def _set_aside_undated(owed: dict[str, trickle.Owed], at: datetime) -> list[str]
 
 
 def _read_months() -> dict[str, dict]:
-    try:
-        months = json.loads(months_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return months if isinstance(months, dict) else {}
+    return files.read_json_object(months_path())
 
 
 def _save_json(path: Path, value: dict) -> None:
     """Whole or not at all: a run cut off mid-write leaves the old file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(json.dumps(dict(sorted(value.items())), indent=1) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    with files.replacing(path) as part:
+        part.write_text(json.dumps(dict(sorted(value.items())), indent=1) + "\n", encoding="utf-8")
 
 
 def _save_months(months: dict[str, dict]) -> None:
