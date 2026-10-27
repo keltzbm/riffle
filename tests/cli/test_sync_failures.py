@@ -20,6 +20,7 @@ import riffle.cli.sync as cli_sync
 from riffle import config, net, progress
 from riffle.cli import app
 from riffle.ingest.remote import cardmarket, goatbots, mtgjson, pricelists, scryfall, scryfall_catalog, tcgcsv
+from riffle.ops import sync as workflow
 from riffle.progress import Watched
 
 pytestmark = pytest.mark.usefixtures("backup_made")
@@ -205,7 +206,7 @@ def test_an_online_sync_keeps_the_card_pictures_and_shows_them_coming(vault, mon
         dest.write_bytes(b"jpg")
         return 3
 
-    monkeypatch.setattr(cli_sync, "_picture", picture)
+    monkeypatch.setattr(workflow, "_picture", picture)
     (vault / "ideas.md").write_text("[[Sol Ring]] [[Fire // Ice]]")
     result = CliRunner().invoke(app, ["sync"])
     assert result.exit_code == 0, result.output
@@ -228,7 +229,7 @@ def test_the_picture_fetch_asks_scryfall_for_an_image(monkeypatch, tmp_path):
 
     asked = []
     monkeypatch.setattr(net, "download", lambda url, dest, **kw: asked.append((url, dest, kw)) or 3)
-    assert cli_sync._picture("https://cards.scryfall.io/x.jpg", tmp_path / "x.jpg") == 3
+    assert workflow._picture("https://cards.scryfall.io/x.jpg", tmp_path / "x.jpg") == 3
     assert asked == [
         ("https://cards.scryfall.io/x.jpg", tmp_path / "x.jpg", {"accept": "image/*", "timeout": 30})
     ]
@@ -350,7 +351,7 @@ def test_scryfall_alone_down_fails_only_its_own_steps(vault, monkeypatch):
 
 
 def test_the_network_wait_tries_every_source_scryfall_first():
-    hosts = cli_sync._hosts()
+    hosts = workflow._hosts()
     assert hosts[0] == "api.scryfall.com" and len(hosts) == len(set(hosts))
     others = {"mtgjson.com", "www.goatbots.com", "tcgcsv.com", "api.cardkingdom.com", "manapool.com"}
     assert others <= set(hosts)

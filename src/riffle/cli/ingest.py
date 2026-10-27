@@ -8,10 +8,10 @@ from pathlib import Path
 
 import typer
 
-from riffle import config, runs, times
+from riffle import config, times
 from riffle.cli import _common as common
 from riffle.ingest.local import manabox
-from riffle.progress import Tracker
+from riffle.ops import ingest as workflow
 
 
 def init(
@@ -52,90 +52,19 @@ def init(
         typer.echo(f"  ! {config.no_vault()}", err=True)
 
 
-def _refresh(tracker: Tracker, force: bool = False) -> None:
-    """Scryfall's bulk files and set list, downloaded, and default cards loaded into the card catalog."""
-    from riffle.ingest.remote import scryfall, scryfall_catalog
-
-    scryfall.refresh(force=force, tracker=tracker)
-    scryfall_catalog.update(tracker=tracker, force=force)
-
-
 def ingest_scryfall(
     force: bool = typer.Option(False, help="Download and load default cards even if already kept"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Don't resync the vault afterwards"),
 ) -> None:
     """Download every Scryfall bulk file not kept yet and the set list, and load the cards."""
-    from riffle.cli import prices as prices_mod
     from riffle.cli import sync as sync_mod
 
     with common._run("riffle ingest scryfall") as tracker:
-        _refresh(tracker, force=force)
+        workflow.refresh(tracker, force=force)
         if no_sync:
-            prices_mod._snapshot_prices(tracker, online=False)
+            workflow.snapshot_prices(tracker, online=False)
         else:
             sync_mod._run_sync(tracker, offline=True)
-
-
-def _copy_manabox(src: Path, dest: Path, made_ns: int) -> None:
-    """Whole or not at all, and on the disk (runs.write): a sync reading the collection meanwhile
-    sees the old file or the new one. Its time is `made_ns`, which the next sync's pickup is
-    measured against: a sync's pickup gives it the export's, so the next export taken is one made
-    after it; an ingest by hand, the ingest's, or the newest ManaBox*.csv's in Downloads when that
-    is later (dated by a clock ahead of this Mac's), so an export put back by hand stays the
-    collection."""
-    runs.write(dest, src.read_bytes())
-    os.utime(dest, ns=(made_ns, made_ns))
-
-
-def _keep_collection(cfg: config.Config) -> tuple[manabox.Kept | None, bool]:
-    """The collection kept with the exports before anything replaces it (manabox.keep): what
-    it's kept as, and whether it was kept just now; (None, False) when there's none, or it isn't
-    an export. One that can't be read can't be kept, so that's OSError, and nothing replaces it."""
-    stored = cfg.collection_csv
-    if not stored.exists():
-        return None, False
-    if manabox.why_not(stored):
-        stored.open("rb").close()
-        return None, False
-    return manabox.keep(stored, cfg.manabox_exports)
-
-
-def _since(
-    was: manabox.Kept | None, now: manabox.Kept, before: Path
-) -> tuple[str, list[str], manabox.Change | None]:
-    """What changed from `before`, the file kept as `was`, to the export kept as `now` that
-    replaces it: the end of the line that says so, the warnings, and the change itself. `before`
-    is read, not its kept copy, so a kept copy changed since can't hide a change."""
-    if was is None:
-        return "; nothing to compare", [], None
-    when = times.shown(was.at)
-    columns = manabox.columns_changed(before, now.path)
-    if columns:
-        return (
-            "",
-            [f"the export's columns changed since the export of {when}: {', '.join(columns)}; no diff"],
-            None,
-        )
-    old = manabox.load(before)
-    change = manabox.change(old, manabox.load(now.path))
-    copies = sum(h.quantity for h in old)
-    warnings = []
-    if change.removed * 2 > copies:
-        warnings.append(
-            f"the export of {times.shown(now.at)} drops {change.removed:,} of {copies:,} copies: "
-            "check it's the whole collection (riffle ingest manabox --diff)"
-        )
-    return f"; since the export of {when}: {change}", warnings, change
-
-
-def _not_kept(e: OSError) -> str:
-    return f"can't keep the export: {e}; the collection was not replaced"
-
-
-def _not_written(e: OSError, now: manabox.Kept) -> str:
-    return (
-        f"can't write the collection: {e}; it's as it was, and the export is kept as manabox/{now.path.name}"
-    )
 
 
 def _said(line: str, warnings: list[str], change: manabox.Change | None) -> None:
@@ -167,10 +96,10 @@ def ingest_manabox(
     if why:
         raise typer.BadParameter(f"{src.name} isn't a ManaBox export: {why}")
     try:
-        was, _ = _keep_collection(cfg)
+        was, _ = workflow.keep_collection(cfg)
         now, new = manabox.keep(src, cfg.manabox_exports)
     except OSError as e:
-        common._echo(_not_kept(e), err=True)
+        common._echo(workflow.not_kept(e), err=True)
         raise typer.Exit(1) from e
     if now == was:
         typer.echo(f"{src.name} is the collection already (manabox/{now.path.name}); nothing changed")
@@ -179,15 +108,15 @@ def ingest_manabox(
             if not earlier:
                 typer.echo("the first export kept, nothing to compare")
                 return
-            said, warnings, change = _since(earlier[-1], now, earlier[-1].path)
+            said, warnings, change = workflow.since(earlier[-1], now, earlier[-1].path)
             _said(said.removeprefix("; "), warnings, change)
         return
-    said, warnings, change = _since(was, now, cfg.collection_csv)
+    said, warnings, change = workflow.since(was, now, cfg.collection_csv)
     try:
         downloads = (p.stat().st_mtime_ns for p in manabox.exports(cfg.downloads))
-        _copy_manabox(now.path, cfg.collection_csv, max([time.time_ns(), *downloads]))
+        workflow.copy_manabox(now.path, cfg.collection_csv, max([time.time_ns(), *downloads]))
     except OSError as e:
-        common._echo(_not_written(e, now), err=True)
+        common._echo(workflow.not_written(e, now), err=True)
         raise typer.Exit(1) from e
     took = (
         f"{src.name} is the collection now, kept as manabox/{now.path.name}"

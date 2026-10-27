@@ -95,6 +95,9 @@ src/riffle/
 │   └── mtgo/       pages (parsing), storage, and MTGO-specific trickle collection
 ├── ops/
 │   ├── schedule/   jobs (shared definitions), dispatch, launchd, and systemd
+│   ├── sync.py     full-sync workflow, independent of terminal handling
+│   ├── ingest.py   source refreshes, price snapshots, and ManaBox pickup
+│   ├── database.py tracked backups and database operation failures
 │   ├── status.py   collection and job status
 │   ├── joblogs.py  scheduled-run log readers
 │   ├── disk.py     disk space and growth checks
@@ -107,9 +110,18 @@ src/riffle/
 tests/              grouped by these responsibilities; repo/ checks docs and repository policy
 ```
 
-Start with a command in `cli/`, then follow its calls into analysis, ingestion, or
-the catalog. `cli/sync.py` still coordinates a full sync; `sync.py` handles the
-deck and note work. Extracting the full workflow is a separate change.
+Start with a command in `cli/`, then follow its calls into operations, analysis,
+ingestion, or the catalog. `cli/sync.py` handles options, terminal summaries,
+exit codes, and watch polling. `ops/sync.py` coordinates a full sync: network
+readiness, source refreshes, prices, collection pickup, notes, and the final
+backup. It reports results through a small output protocol and progress steps,
+without importing the CLI or Typer. `sync.py` handles deck analysis and generated
+notes against the catalog protocol.
+
+The ingest, prices, and database commands call the same operations as a sync.
+Each price source can fail independently. Offline resyncs skip downloads and
+backups; an online invocation still attempts its backup after a network failure
+or a vault validation failure. An unavailable catalog ends the run before backup.
 
 Metagame analysis imports `Event` and `MtgoDeck` from `models/metagame.py`, so it
 does not load the MTGO collector. Scheduler dispatch selects a backend; both

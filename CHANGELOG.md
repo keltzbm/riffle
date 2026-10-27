@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Changed
+- Move full-sync coordination into `ops/sync.py`, with shared source collection and database operations used by the sync, ingest, prices, and database commands. The CLI keeps options, terminal summaries, exit handling, and watch polling. Source order, failure continuation, offline behavior, generated files, and final backups stay the same.
+
+### Changed
 - Collect GoatBots' latest prices and card definitions through one shared fetch, publication check, retention, and reporting path. Keep the separate ZIP parsers, extra-day price handling, ETags, stored files, and existing log fields and messages.
 
 ### Changed

@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 import pytest
 from typer.testing import CliRunner
 
-import riffle.cli.sync as cli_sync
 from riffle import runs, vault
 from riffle.analysis.resolve import resolve_holdings
 from riffle.cli import app
@@ -19,6 +18,7 @@ from riffle.ingest.local import manabox, precons
 from riffle.ingest.local.precons import Box, Boxes, Fix, Short
 from riffle.ingest.remote import mtgjson, scryfall
 from riffle.models import Holding
+from riffle.ops import sync as workflow
 
 BUILT = datetime(2026, 10, 5, 6, 7, 25, tzinfo=UTC)
 HEADER = "Name,Set code,Collector number,Foil,Quantity,Scryfall ID\n"
@@ -409,7 +409,7 @@ def test_a_collection_that_isnt_an_export_writes_no_notes(home):
 def test_the_syncs_line_leaves_out_what_isnt_missing():
 
     fixed = precons.Corrected([], 2, [Fix("Sol Ring", "C21 263", "FDC 286", 2, ("Calling All Angels",))])
-    assert cli_sync._corrected(fixed, 1) == "1 registered; 2 copies read as a box's printing"
+    assert workflow._corrected(fixed, 1) == "1 registered; 2 copies read as a box's printing"
 
 
 def test_a_sync_names_a_box_it_cant_find_and_corrects_by_the_rest(home):

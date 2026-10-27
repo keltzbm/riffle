@@ -14,13 +14,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import riffle.cli.ingest as cli_ingest
 from riffle import config
 from riffle.cli import app
 from riffle.config import data_dir
 from riffle.ingest.local import manabox
 from riffle.ingest.remote import scryfall
 from riffle.models import Holding
+from riffle.ops import ingest as workflow
 
 # ---- exports as ManaBox writes them ---------------------------------------------------
 
@@ -883,12 +883,12 @@ def test_a_collection_that_cant_be_written_fails_its_step_and_the_next_sync_take
     when = later()
     eight = home.export("ManaBox_Collection 8.csv", when, NEW)
     written = home.collection.stat().st_mtime_ns
-    copy = cli_ingest._copy_manabox
+    copy = workflow.copy_manabox
 
     def full_disk(*_v):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(cli_ingest, "_copy_manabox", full_disk)
+    monkeypatch.setattr(workflow, "copy_manabox", full_disk)
     unwritten = (
         "can't write the collection: [Errno 28] No space left on device; it's as it was, "
         f"and the export is kept as manabox/{stamp_of(when)}.csv"
@@ -902,7 +902,7 @@ def test_a_collection_that_cant_be_written_fails_its_step_and_the_next_sync_take
     assert ingest.stderr.splitlines() == [unwritten]
     assert home.collection.read_text(encoding="utf-8") == export_text(OLD)
     assert home.collection.stat().st_mtime_ns == written
-    monkeypatch.setattr(cli_ingest, "_copy_manabox", copy)
+    monkeypatch.setattr(workflow, "copy_manabox", copy)
     again = sync()
     assert (
         "collection: picked up ManaBox_Collection 8.csv from Downloads (newer than the collection), "
