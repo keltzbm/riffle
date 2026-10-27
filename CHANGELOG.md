@@ -7,6 +7,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 ## [Unreleased]
 
 ### Changed
+- Collect GoatBots' latest prices and card definitions through one shared fetch, publication check, retention, and reporting path. Keep the separate ZIP parsers, extra-day price handling, ETags, stored files, and existing log fields and messages.
+
+### Changed
 - Collect Cardmarket price guides and product lists through one shared fetch, validation, and retention path. Each keeps its URLs, JSON fields, ETag keys, stored files, and messages. A missing guide still fails a played game; a product list never served is still noted without failing.
 
 ### Changed
