@@ -27,8 +27,8 @@ from pathlib import Path
 from urllib.parse import quote, quote_plus
 
 from riffle import net
-from riffle.export.links import card_link, note_key, safe_name, targets
 from riffle.export.obsidian import write_whole
+from riffle.links import card_link, note_key, safe_name, targets
 from riffle.models import CardRules, CardView, Face, Holding, Prices
 from riffle.store import Catalog
 

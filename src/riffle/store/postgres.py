@@ -26,7 +26,7 @@ from sqlalchemy.exc import OperationalError
 
 from riffle import db
 from riffle.db import migrate
-from riffle.export.links import safe_name
+from riffle.links import safe_name
 from riffle.models import CardRules, CardView, Face, PricedPrinting, Prices, Printing
 
 GAME = "mtg"

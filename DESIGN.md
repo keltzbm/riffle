@@ -76,17 +76,44 @@ a sync service copies. Config is `~/.config/riffle/config.toml`: `vault` names t
 ```
 src/riffle/
 ├── config.py       XDG paths, config.toml
-├── net.py          HTTP for every source: User-Agent, retries, 429s, streamed downloads
-├── vault.py        read deck notes, frontmatter, buy lines — read-only
-├── sync.py         the work behind `riffle sync`, CLI- and DB-free
-├── models/         Printing, Prices, Deck, DeckEntry, Holding
-├── ingest/         scryfall, scryfall_catalog (bulk file → Postgres), manabox, decklist, arena, mtgo, tcgcsv,
-│                   mtgjson, goatbots, cardmarket, pricelists (whole store price lists)
-├── store/          Catalog protocol + Postgres implementation
-├── db/             Postgres: engine, ORM models, migrations, `db up`, ids (derived IDs, aliases.toml),
-│                   catalog (the stage-and-merge loader any game's source uses)
+├── times.py        shared time handling
+├── locks.py        process locks
+├── net.py          HTTP for every source: retries, 429s, streamed downloads
+├── runs.py         retained snapshots, differences, and verified writes
+├── progress.py     step tracking, terminal progress, and plain logs
+├── trickle.py      source-independent pacing, request logs, and owed items
+├── links.py        shared card names, note links, and filenames
+├── vault.py        read deck notes, frontmatter, and buy lines
+├── sync.py         deck analysis and generated-note synchronization
+├── models/         card, deck, collection, and metagame records; no database imports
+├── watch/          watching, cadence, and lateness shared by source collectors
+├── ingest/
+│   ├── local/      manabox, arena, decklist, precons: read local files
+│   ├── remote/     scryfall, scryfall_catalog, mtgjson, tcgcsv, goatbots,
+│   │               cardmarket, pricelists, and shared empty-answer handling
+│   └── mtgo/       pages (parsing), storage, and MTGO-specific trickle collection
+├── ops/
+│   ├── schedule/   jobs (shared definitions), dispatch, launchd, and systemd
+│   ├── status.py   collection and job status
+│   ├── joblogs.py  scheduled-run log readers
+│   ├── disk.py     disk space and growth checks
+│   └── checks.py   retained-file integrity and collection-gap checks
+├── store/          Catalog protocol and Postgres reader
+├── db/             engine, ORM tables, migrations, IDs, catalog loader, backups, Compose
 ├── analysis/       resolve, ownership, pricing, colors, legality, metagame
-├── export/         formats (moxfield/manabox/mtgo/tcgplayer), obsidian
-└── cli.py          typer app — the only entry point
-tests/              run against an in-memory Catalog; no download needed
+├── export/         card output, deck formats, and Obsidian output
+└── cli/            __init__ registers the app; command modules and _common share its handling
+tests/              grouped by these responsibilities; repo/ checks docs and repository policy
 ```
+
+Start with a command in `cli/`, then follow its calls into analysis, ingestion, or
+the catalog. `cli/sync.py` still coordinates a full sync; `sync.py` handles the
+deck and note work. Extracting the full workflow is a separate change.
+
+Metagame analysis imports `Event` and `MtgoDeck` from `models/metagame.py`, so it
+does not load the MTGO collector. Scheduler dispatch selects a backend; both
+backends depend on `ops/schedule/jobs.py`, which never imports them. Shared link
+handling lives at the root because catalog readers and parsers also use it.
+
+The executable remains `riffle.cli:app`. This layout changes no command names,
+configuration keys, database revisions, retained-data paths, or installed job labels.

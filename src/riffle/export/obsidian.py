@@ -27,7 +27,7 @@ from riffle import times
 from riffle.analysis.ownership import BUY, MARK, OWN, Row, summary
 from riffle.analysis.pricing import DeckPrice
 from riffle.config import data_dir
-from riffle.export.links import card_link
+from riffle.links import card_link
 from riffle.models import Deck, Holding, Prices
 from riffle.store import Catalog
 

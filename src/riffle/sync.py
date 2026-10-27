@@ -10,7 +10,7 @@ from riffle.analysis import ownership, pricing
 from riffle.analysis.resolve import counts, resolve_deck, resolve_holdings
 from riffle.config import HIDDEN_FOLDER
 from riffle.export import cards, formats, obsidian
-from riffle.ingest import arena, manabox, precons
+from riffle.ingest.local import arena, manabox, precons
 from riffle.models import Deck, Holding
 from riffle.progress import failure
 from riffle.store import Catalog

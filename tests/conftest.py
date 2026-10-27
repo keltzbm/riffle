@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from riffle import disk
-from riffle.export.links import safe_name
+from riffle.links import safe_name
 from riffle.models import CardRules, CardView, Face, PricedPrinting, Prices, Printing
+from riffle.ops import disk
 
 CARDS = {
     # card_id: (name, layout, usd, tix)
