@@ -31,9 +31,7 @@ def test_card_status_and_copy_limits(cat):
 
 def test_playset_eligibility(cat):
     assert legality.playset_eligible("o-bolt", cat)
-    assert legality.target_copies("o-bolt", cat) == 4
     assert not legality.playset_eligible("o-crypt", cat)  # vintage isn't a built format
-    assert legality.target_copies("o-sol", cat) == 1
 
 
 def test_format_aliases():
@@ -138,6 +136,12 @@ def test_one_odd_printing_cannot_hide_a_legal_card():
 )
 def test_copy_limit_table(cat, oid, fmt, limit):
     assert legality.copy_limit(oid, fmt, cat) == limit
+
+
+@pytest.mark.parametrize("card_id, limit", [("o-forest", None), ("o-bolt", 4)])
+def test_copy_limits_fall_back_to_basic_status_without_rules(cat, monkeypatch, card_id, limit):
+    monkeypatch.setattr(cat, "rules", lambda ids: {})
+    assert legality.copy_limit(card_id, "modern", cat) == limit
 
 
 @pytest.mark.parametrize(

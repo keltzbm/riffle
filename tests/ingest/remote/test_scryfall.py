@@ -224,7 +224,6 @@ def test_the_same_contents_are_not_kept_twice(monkeypatch, tracker, clock):
     assert [p.name for p in scryfall.kept_files()] == ["2026-09-24T090540Z.jsonl.gz"]
     last = lines(scryfall.checks_path())[-1]
     assert last["published"] == PM and last["same_as"] == "2026-09-24T090540Z.jsonl.gz" and "kept" not in last
-    assert scryfall.is_current(pm)
     assert watching.entries(scryfall.STORE)[-1] == watching.entries(scryfall.STORE)[-1] | {
         "result": "new",  # a new publish all the same, for when it went online (riffle.watch.watching.online)
         "made": "2026-09-24T210523Z",
@@ -233,27 +232,6 @@ def test_the_same_contents_are_not_kept_twice(monkeypatch, tracker, clock):
     assert not list(scryfall.bulk_dir().glob("*.new"))
     scryfall.refresh(tracker=tracker)
     assert tracker.outcomes()["Scryfall default cards"] == ("ok", "current, the 2026-09-24 21:05 UTC file")
-
-
-@pytest.mark.parametrize(
-    ("published", "current"),
-    [(AM, True), (PM, False), ("2026-09-23T21:05:23.456+00:00", False)],
-    ids=["the file kept", "later the same day", "an earlier file never seen"],
-)
-def test_current_means_this_very_publish_is_kept(monkeypatch, clock, published, current):
-    default = entry("default_cards", AM)
-    Scryfall(monkeypatch, default, files={default["jsonl_download_uri"]: gz(CARDS)})
-    scryfall.refresh()
-    assert scryfall.is_current({"updated_at": published}) is current
-
-
-def test_a_missing_or_unstamped_download_is_never_current(monkeypatch, clock):
-    assert not scryfall.is_current({"updated_at": AM})
-    default = entry("default_cards", AM)
-    Scryfall(monkeypatch, default, files={default["jsonl_download_uri"]: gz(CARDS)})
-    scryfall.refresh()
-    assert not scryfall.is_current({"updated_at": None})
-    assert not scryfall.is_current({"updated_at": "not a time"})
 
 
 @pytest.mark.parametrize(
@@ -404,7 +382,7 @@ def test_a_bad_download_is_set_aside_and_asked_again(monkeypatch, tracker, clock
         )
     }
     assert (scryfall.bulk_dir() / aside).read_bytes() == body  # kept, never deleted
-    assert scryfall.bulk_file() is None and not scryfall.is_current(default)
+    assert scryfall.bulk_file() is None
     served.files[default["jsonl_download_uri"]] = gz(CARDS)
     scryfall.refresh(tracker=tracker)
     assert scryfall.bulk_file().name == "2026-09-24T090540Z.jsonl.gz"
@@ -563,8 +541,11 @@ def test_a_sync_that_finds_the_watch_asking_asks_nothing(monkeypatch, tracker, c
     assert not served.asked and not served.downloaded
 
 
-def test_a_type_the_index_stops_listing_warns_and_one_without_a_time_fails(monkeypatch, tracker, clock):
-    default, art = entry("default_cards", AM), entry("art_tags", None)
+@pytest.mark.parametrize("published", [None, "not a time"], ids=["missing", "malformed"])
+def test_a_type_the_index_stops_listing_warns_and_one_without_a_time_fails(
+    monkeypatch, tracker, clock, published
+):
+    default, art = entry("default_cards", AM), entry("art_tags", published)
     scryfall.bulk_dir("rulings").mkdir(parents=True)
     Scryfall(monkeypatch, default, art, files={default["jsonl_download_uri"]: gz(CARDS)})
     scryfall.refresh(tracker=tracker)
@@ -803,7 +784,6 @@ def test_a_bulk_file_cut_short_is_set_aside_and_fetched_again(tmp_path, monkeypa
         scryfall.snapshot_prices()
     assert scryfall.bulk_file() is None  # so the next online refresh downloads it again
     assert (tmp_path / "riffle" / "default-cards.jsonl.gz.bad").exists()
-    assert not scryfall.is_current({"updated_at": AM})
     assert not list((tmp_path / "riffle" / "scryfall" / "daily").glob("*"))
 
 

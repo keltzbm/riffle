@@ -273,14 +273,6 @@ def _seen(kind: str, published: datetime) -> bool:
     )
 
 
-def is_current(info: dict) -> bool:
-    """Whether the default-cards file Scryfall publishes now is kept, or was checked and found
-    the same as one kept. By publish time, not day: Scryfall publishes about twice a day, and
-    each file is kept."""
-    published = _published(info.get("updated_at"))
-    return published is not None and bulk_file() is not None and _seen(DEFAULT, published)
-
-
 def download_url(info: dict) -> tuple[str, str]:
     """(url, the kept file's suffix): JSONL.gz now, the old JSON array as a fallback."""
     if info.get("jsonl_download_uri"):

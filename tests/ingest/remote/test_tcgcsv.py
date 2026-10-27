@@ -134,7 +134,7 @@ def test_snapshot_stores_a_game_as_returned_under_tcgcsv_day(data_dir, sleeps):
     by_id = [f"{B}/tcgplayer/62/100/prices", f"{B}/tcgplayer/62/200/prices"]
     assert [url for url in asked if url.endswith("/prices")] == by_id  # sorted by id, not as listed
     assert sleeps == [0.1] * 5  # a pause before each request after the day's first two
-    assert tcgcsv.stored_days(FAB) == [DAY]
+    assert tcgcsv.finished(day / "fab")
     assert not list(day.rglob("*.part")) and not (day / "fab" / "missing.txt").exists()
 
 
@@ -169,7 +169,7 @@ def test_a_failed_set_keeps_the_rest_and_the_next_run_asks_only_for_it(data_dir,
     assert tracker.outcomes()["tcgcsv fab"] == ("fail", why)
     fab = tcgcsv.day_dir(DAY, "fab")
     assert not tcgcsv.finished(fab) and (fab / "prices.jsonl.part").exists()
-    assert tcgcsv.stored_days({"fab": "x", "op": "x"}) == []  # a day counts only when every game has it
+    assert tcgcsv.finished(tcgcsv.day_dir(DAY, "op"))
     fetch, asked = fake_fetch(fab_answers())
     snap = tcgcsv.snapshot(both, fetch=fetch, tracker=tracker)
     assert asked == [f"{B}/last-updated.txt", f"{B}/tcgplayer/62/100/prices"]  # nothing kept is asked again
@@ -179,7 +179,7 @@ def test_a_failed_set_keeps_the_rest_and_the_next_run_asks_only_for_it(data_dir,
     )
     assert lines(fab) == [row(100, prices(1, 2)), row(200, prices(3))]  # sorted by set
     assert not (fab / "prices.jsonl.part").exists()
-    assert tcgcsv.stored_days({"fab": "x", "op": "x"}) == [DAY]
+    assert all(tcgcsv.finished(tcgcsv.day_dir(DAY, game)) for game in both)
 
 
 def test_unknown_category_is_reported_without_guessing(data_dir, sleeps):
@@ -629,7 +629,7 @@ def test_a_day_kept_before_the_runs_still_counts_as_finished(data_dir, sleeps, t
     (fab / "prices.jsonl.gz").write_bytes(gzip.compress(body))
     tcgcsv.snapshot(FAB, fetch=fake_fetch(fab_answers())[0], tracker=tracker)
     assert tracker.outcomes()["tcgcsv fab"] == ("ok", "already have 2026-09-24")
-    assert tcgcsv.kept_game(fab) == body and tcgcsv.stored_days(FAB) == [DAY]
+    assert tcgcsv.kept_game(fab) == body and tcgcsv.finished(fab)
     assert tcgcsv.kept_game(tcgcsv.day_dir(DAY, "op")) is None
 
 

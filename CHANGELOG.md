@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Removed
+- Remove unused Python helpers `riffle.analysis.colors.archetype_name` and its `COLOR_ARCHETYPES` table, `riffle.analysis.legality.target_copies`, `riffle.net.get_text`, `riffle.ingest.remote.scryfall.is_current`, and `riffle.ingest.remote.tcgcsv.stored_days`. They had no callers in the application or the checked external scripts. Command names and behavior stay the same.
+
 ### Changed
 - Move full-sync coordination into `ops/sync.py`, with shared source collection and database operations used by the sync, ingest, prices, and database commands. The CLI keeps options, terminal summaries, exit handling, and watch polling. Source order, failure continuation, offline behavior, generated files, and final backups stay the same.
 

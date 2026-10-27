@@ -53,7 +53,7 @@ def test_every_request_identifies_the_tool(server):
 
 def test_stalls_are_retried_with_growing_waits(server):
     server["answers"] = [TimeoutError("slow"), TimeoutError("slow"), Resp(b"ok")]
-    assert net.get_text("https://example.test") == "ok"
+    assert net.get("https://example.test") == b"ok"
     assert server["sleeps"] == [2.0, 4.0]
 
 
@@ -102,12 +102,6 @@ def test_a_reply_carries_the_answers_headers_by_lower_case_name(server):
     )
 
 
-def test_get_text_treats_404_as_an_error(server):
-    server["answers"] = [http_error(404)]
-    with pytest.raises(net.FetchError, match="HTTP 404"):
-        net.get_text("https://example.test")
-
-
 def test_client_errors_are_not_retried(server):
     server["answers"] = [http_error(403)]
     with pytest.raises(net.FetchError, match="HTTP 403"):
@@ -143,6 +137,21 @@ def test_interrupted_download_leaves_no_file(server, tmp_path):
     with pytest.raises(net.FetchError, match="interrupted"):
         net.download("https://example.test", dest)
     assert not dest.exists() and not (tmp_path / "f.part").exists()
+
+
+def test_cancelled_download_preserves_the_old_file_and_removes_the_partial(server, tmp_path):
+    server["answers"] = [Resp(b"new contents")]
+    dest = tmp_path / "f"
+    dest.write_bytes(b"old contents")
+
+    def cancel(done, total):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        net.download("https://example.test", dest, progress=cancel)
+
+    assert dest.read_bytes() == b"old contents"
+    assert not (tmp_path / "f.part").exists()
 
 
 def test_a_chunked_download_cut_off_is_a_fetch_error(server, tmp_path):
