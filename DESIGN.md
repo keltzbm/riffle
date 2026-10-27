@@ -147,3 +147,58 @@ GoatBots uses its own `_collect` for prices and card definitions. ZIP parsing
 stays in `_newest`/`_prices` and `_defined`; `_extra_days` handles price archives
 containing multiple days. Shared collection checks publication times, compares
 already-retained content, updates ETags, and preserves each resource's log fields.
+
+## How sync runs
+
+Start at `cli/sync.py:sync_cmd`, then read `ops/sync.py:run`. The first handles the
+command; the second gives the workflow's order. Follow a step into its owning
+module when you need its details:
+
+1. **Enter the command.** `cli/sync.py` supplies the output adapter and translates
+   an unavailable catalog or inventory into exit 1. `cli/_common.py:_run` opens
+   the progress display or plain log and holds the shared run lock until the
+   command ends. Its tracker remembers failed steps and sets the final exit code.
+2. **Refresh online data.** `ops/sync.py:run` reads config and waits for any source
+   host to accept a connection. An online run calls `ops/ingest.py:refresh`,
+   retaining Scryfall bulk data and sets, then loading the card catalog into
+   Postgres. No connection means a failed network step and an offline fallback.
+3. **Keep prices.** `ops/ingest.py:snapshot_prices` builds a Scryfall price day
+   from the retained bulk file, including offline. Online, it then asks MTGJSON,
+   GoatBots, Cardmarket, Card Kingdom, Mana Pool, and TCGCSV, in that order. Each
+   source reports its own failures so the remaining sources can run. The TCGCSV
+   result returns to the output adapter for its summary.
+4. **Pick up the collection.** After the online disk check,
+   `ops/ingest.py:pick_up` scans Downloads newest first. It retains the current
+   collection and all valid ManaBox exports before replacing the collection with
+   a newer valid candidate. `copy_manabox` preserves the candidate's modification
+   time, which determines whether the next download is newer. Manual restores
+   use a later timestamp so an old download cannot undo them.
+5. **Generate notes.** `ops/sync.py:_notes` validates the vault and collection,
+   loads registered precon boxes, and opens one read-only catalog transaction.
+   `sync.py:inventory` resolves holdings; `sync.py:run` analyzes decks and writes
+   generated notes, version logs, and sync state. The catalog closes before the
+   output adapter prints the result. Root `sync.py` uses the `Catalog` protocol
+   and does not open Postgres or handle terminal output.
+6. **Back up.** `ops/database.py:backup` makes the final database dump for an
+   online invocation. This decision uses the original offline option: a network
+   fallback or a vault validation failure still reaches backup. An unavailable
+   catalog or inventory ends the run before it.
+
+The main write boundaries are:
+
+| Work | Writes |
+|---|---|
+| Source collection | Retained files and request logs under the XDG data directory; the Scryfall catalog load updates Postgres |
+| ManaBox pickup | Retained exports under `manabox/`, then `collection.csv` under the data directory |
+| Note generation | The configured vault's `mtg/_generated/` and `mtg/_log/`, with corresponding folders under `hidden_folder` for hidden decks; sync state stays in the data directory |
+| Database backup | Verified dumps and hashes under the data directory's `db-backups/` |
+
+A sync commits files as it goes; it is not one transaction across the store,
+database, and vault. A later failure leaves earlier retained data in place.
+Recorded failures still make the command exit 1, even when later work succeeds.
+Warnings alone do not fail the command.
+
+With `--watch`, `cli/sync.py` polls note and input modification times and calls
+`_resync` after a change. That follows the same workflow offline: it can pick up
+exports and rewrite notes, but makes no downloads or database backup. A failed
+resync is reported and the watch keeps running.
