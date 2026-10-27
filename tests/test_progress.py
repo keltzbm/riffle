@@ -289,7 +289,7 @@ def test_a_finished_step_leaves_no_bar_for_later_lines_to_bring_back():
 def test_lines_the_cli_prints_during_the_steps_go_above_them(capsys):
     """typer.echo finds the terminal under Rich's stand-in for stdout, so a line it printed
     went around the display, onto its last line. The CLI's _echo goes through the stand-in."""
-    from riffle.cli import _echo
+    from riffle.cli._common import _echo
 
     buf = io.StringIO()
     console = Console(file=buf, force_terminal=True, width=100, color_system=None)

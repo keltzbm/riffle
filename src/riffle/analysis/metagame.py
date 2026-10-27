@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from riffle.ingest.mtgo import Event, MtgoDeck
+from riffle.models.metagame import Event, MtgoDeck
 
 
 @dataclass

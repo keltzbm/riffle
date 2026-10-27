@@ -11,8 +11,8 @@ from collections.abc import Collection, Iterator
 from pathlib import Path
 
 from riffle.config import HIDDEN_FOLDER
-from riffle.export.links import note_key
-from riffle.ingest.decklist import LINE, parse_text
+from riffle.ingest.local.decklist import LINE, parse_text
+from riffle.links import note_key
 from riffle.models import Deck
 
 SKIP_DIRS = {"_generated", "_log", "archetypes", "matchups"}
