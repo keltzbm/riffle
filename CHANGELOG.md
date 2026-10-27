@@ -6,6 +6,9 @@ Work in progress goes under **Unreleased** and moves into a version heading at r
 
 ## [Unreleased]
 
+### Changed
+- Clarify sync and collection-pickup docstrings and local names, and add a DESIGN walkthrough from the command to source collection, note generation, and backup. Document file writes, offline fallback, failure handling, and watch mode. Command behavior stays the same.
+
 ### Removed
 - Remove unused Python helpers `riffle.analysis.colors.archetype_name` and its `COLOR_ARCHETYPES` table, `riffle.analysis.legality.target_copies`, `riffle.net.get_text`, `riffle.ingest.remote.scryfall.is_current`, and `riffle.ingest.remote.tcgcsv.stored_days`. They had no callers in the application or the checked external scripts. Command names and behavior stay the same.
 
